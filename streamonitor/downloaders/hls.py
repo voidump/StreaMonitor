@@ -39,6 +39,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 content = r.content.decode("utf-8")
                 if m3u_processor:
                     content = m3u_processor(content)
+                # Skip ADVERT playlists (promotional/ad content)
+                if '#EXT-X-MOUFLON-ADVERT' in content:
+                    self.logger.warning('Received ADVERT playlist, skipping')
+                    return
                 chunklist = m3u8.loads(content)
                 if len(chunklist.segments) == 0:
                     return
@@ -53,6 +57,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         chunk_uri = '/'.join(url.split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
                     m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies)
                     if m.status_code != 200:
+                        self.logger.error(f'Failed to download segment: HTTP {m.status_code}')
+                        if m.text:
+                            self.logger.error(f'Response: {m.text[:200]}')
                         return
                     outfile.write(m.content)
                     if self.stopDownloadFlag:
