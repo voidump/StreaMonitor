@@ -505,7 +505,15 @@ class StripChat(RoomIdBot):
         for _batch_ids in [model_id_list[i:i+batch_num] for i in range(0, len(model_id_list), batch_num)]:
             session = requests.Session()
             session.headers.update(cls.headers)
-            r = session.get(base_url + '&'.join(f'modelIds[]={model_id}' for model_id in _batch_ids), timeout=10)
+            # Retry with increased timeout for transient network issues
+            for attempt in range(2):
+                try:
+                    r = session.get(base_url + '&'.join(f'modelIds[]={model_id}' for model_id in _batch_ids), timeout=20)
+                    break
+                except requests.exceptions.Timeout:
+                    if attempt == 0:
+                        continue
+                    raise
 
             try:
                 data = r.json()
@@ -524,7 +532,7 @@ class StripChat(RoomIdBot):
             if model_data.get('country'):
                 streamer.country = model_data.get('country', '').upper()
             status = model_data.get('status')
-            if status == "public" and model_data.get("isOnline"):
+            if status == "public":
                 streamer.setStatus(Status.PUBLIC)
             elif status in cls._PRIVATE_STATUSES:
                 streamer.setStatus(Status.PRIVATE)
