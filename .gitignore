@@ -6,4 +6,6 @@ downloads/
 venv*/
 .idea/
 config.json
-
+backup_config/
+stripchat_mouflon_keys.json
+*.local_backup
