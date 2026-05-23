@@ -44,8 +44,16 @@ def loadStreamers():
             logger.warning(f'Unknown site: {site} (user: {username})')
             continue
 
-        streamer_bot = bot_class.fromConfig(streamer)
+        try:
+            streamer_bot = bot_class.fromConfig(streamer)
+        except Exception as e:
+            logger.error(f'Failed to load streamer {username} ({site}): {e}')
+            continue
+
         streamers.append(streamer_bot)
-        streamer_bot.start()
+        try:
+            streamer_bot.start()
+        except Exception as e:
+            logger.error(f'Failed to start streamer {username} ({site}): {e}')
         time.sleep(0.1)
     return streamers
