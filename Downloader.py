@@ -19,9 +19,10 @@ def is_docker():
 
 
 def main():
-    if not OOSDetector.disk_space_good():
-        print(OOSDetector.under_threshold_message)
-        sys.exit(1)
+    # Disk space check disabled to allow running on low disk space
+    # if not OOSDetector.disk_space_good():
+    #     print(OOSDetector.under_threshold_message)
+    #     sys.exit(1)
 
     streamers = config.loadStreamers()
 
