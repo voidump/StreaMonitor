@@ -93,6 +93,8 @@ class HTTPManager(Manager):
                     "site": streamer.siteslug,
                     "running": streamer.running,
                     "recording": streamer.recording,
+                    "recording_bytes": getattr(streamer, 'recording_bytes', 0),
+                    "recording_segments": getattr(streamer, 'recording_segments', 0),
                     "sc": streamer.sc.value,
                     "status": streamer.status(),
                     "url": streamer.url,

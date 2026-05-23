@@ -78,6 +78,8 @@ class Bot(Thread):
         self.getVideo = getVideoFfmpeg
         self.stopDownload = None
         self.recording = False
+        self.recording_bytes = 0  # Live recording size in bytes
+        self.recording_segments = 0  # Live recording segment count
         self.video_files = []
         self.video_files_total_size = 0
         self.cache_file_list()

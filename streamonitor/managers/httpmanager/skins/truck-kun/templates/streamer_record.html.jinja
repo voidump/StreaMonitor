@@ -36,7 +36,12 @@
         </button>
     </td>
     <td class="center">{{ streamer.sc | status_text }}</td>
-    <td class="right-align">{{ streamer.video_files_total_size | tohumanfilesize(fix_decimals=2) }}</td>
+    <td class="right-align">
+        {{ streamer.video_files_total_size | tohumanfilesize(fix_decimals=2) }}
+        {% if streamer.recording and streamer.recording_bytes > 0 %}
+            <br><small style="color: #e74c3c;">🔴 {{ streamer.recording_bytes | tohumanfilesize(fix_decimals=1) }}</small>
+        {% endif %}
+    </td>
     <td class="right-align">{{ streamer.video_files | count }}</td>
     <td class="center">
         <button hx-get="/streamer-info/{{ streamer.username }}/{{ streamer.site }}"
