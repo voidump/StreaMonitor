@@ -26,6 +26,7 @@ class StripChat(RoomIdBot):
 
     bulk_update = True
     _static_data = None
+    _INIT_FAILED = object()  # sentinel: initialization attempted but failed; do not retry
     _main_js_data = None
     _doppio_js_data = None
     _mouflon_cache_filename = 'stripchat_mouflon_keys.json'
@@ -72,14 +73,19 @@ class StripChat(RoomIdBot):
 
     def __init__(self, username, room_id=None):
         if StripChat._static_data is None:
-            StripChat._static_data = {}
+            StripChat._static_data = {}  # marker: initialization in progress
             try:
                 self.getInitialData()
             except Exception as e:
                 print(f'Error initializing StripChat static data: {e}')
-                StripChat._static_data = None
+            # If getInitialData (or its silent fallback) did not populate the
+            # data, mark as failed so subsequent streamers don't retry and
+            # don't block in the wait loop below.
+            if StripChat._static_data == {} or StripChat._static_data is None:
+                StripChat._static_data = StripChat._INIT_FAILED
 
-        # Wait for static data initialization with timeout
+        # Wait for in-progress initialization from another thread (timeout 15s).
+        # _INIT_FAILED is an object() instance so the `== {}` check is False.
         end_time = time.time() + 15
         while StripChat._static_data == {} and time.time() < end_time:
             time.sleep(0.01)
@@ -186,7 +192,7 @@ class StripChat(RoomIdBot):
             # Fall back to basic static data fetch
             try:
                 session = requests.Session()
-                r = session.get('https://stripchat.com/api/front/v3/config/static', headers=cls.headers)
+                r = session.get('https://stripchat.com/api/front/v3/config/static', headers=cls.headers, timeout=5)
                 if r.status_code == 200:
                     StripChat._static_data = r.json().get('static')
             except:
