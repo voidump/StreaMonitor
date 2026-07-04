@@ -192,7 +192,7 @@ class StripChat(RoomIdBot):
             # Fall back to basic static data fetch
             try:
                 session = requests.Session()
-                r = session.get('https://stripchat.com/api/front/v3/config/static', headers=cls.headers, timeout=5)
+                r = session.get('https://hu.stripchat.com/api/front/v3/config/static', headers=cls.headers, timeout=5)
                 if r.status_code == 200:
                     StripChat._static_data = r.json().get('static')
             except:
@@ -414,7 +414,7 @@ class StripChat(RoomIdBot):
 
     def _getStatusData(self, username):
         r = self.session.get(
-            f'https://stripchat.com/api/front/v2/models/username/{username}/cam?uniq={StripChat.uniq()}',
+            f'https://hu.stripchat.com/api/front/v2/models/username/{username}/cam?uniq={StripChat.uniq()}',
             headers=self.headers,
             timeout=4
         )
@@ -504,7 +504,7 @@ class StripChat(RoomIdBot):
             if streamer.room_id:
                 model_ids[streamer.room_id] = streamer
 
-        base_url = 'https://stripchat.com/api/front/models/list?'
+        base_url = 'https://hu.stripchat.com/api/front/models/list?'
         batch_num = 100
         data_map = {}
         model_id_list = list(model_ids)
