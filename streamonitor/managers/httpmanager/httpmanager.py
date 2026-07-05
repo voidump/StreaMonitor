@@ -36,7 +36,7 @@ class HTTPManager(Manager):
         else:
             raise ValueError(f'Invalid skin name: {skin}')
 
-    def run(self):
+    def create_app(self):
         app = Flask(
             __name__,
             template_folder=f'skins/{self.skin}/templates'
@@ -166,8 +166,11 @@ class HTTPManager(Manager):
             return render_template('recordings.html.jinja', **context), status_code
 
         @app.route('/video/<user>/<site>/<path:filename>', methods=['GET'])
+        @login_required
         def get_video(user, site, filename):
             streamer = cast(Union[Bot, None], self.getStreamer(user, site))
+            if streamer is None:
+                return 'Streamer not found', 404
             return send_from_directory(
                 os.path.abspath(streamer.outputFolder),
                 filename
@@ -456,4 +459,8 @@ class HTTPManager(Manager):
             } | filter_context
             return render_template('streamers_result.html.jinja', **context), status_code
 
+        return app
+
+    def run(self):
+        app = self.create_app()
         app.run(host=WEBSERVER_HOST, port=WEBSERVER_PORT)

@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import time
 
@@ -23,14 +24,21 @@ def load_config():
 
 
 def save_config(config):
+    # Write to a temp file and rename so a crash mid-write can't corrupt the
+    # existing config.
+    tmp_loc = config_loc + ".tmp"
     try:
-        with open(config_loc, "w+") as f:
+        with open(tmp_loc, "w") as f:
             json.dump(config, f, indent=4)
-
+        os.replace(tmp_loc, config_loc)
         return True
     except Exception as e:
-        print(e)
-        sys.exit(1)
+        logger.error(f"Failed to save config: {e}")
+        try:
+            os.remove(tmp_loc)
+        except OSError:
+            pass
+        return False
 
 
 def loadStreamers():

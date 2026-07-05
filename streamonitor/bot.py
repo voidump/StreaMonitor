@@ -13,6 +13,7 @@ import requests
 import requests.cookies
 
 from streamonitor.enums import Status, COUNTRIES, Gender, GENDER_DATA
+from streamonitor.http_session import TimeoutSession
 import streamonitor.log as log
 from parameters import DOWNLOADS_DIR, DEBUG, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE, CONTAINER, HTTP_USER_AGENT
 from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
@@ -64,7 +65,7 @@ class Bot(Thread):
         self.username = username
         self.logger = self.getLogger()
 
-        self.session = requests.Session()
+        self.session = TimeoutSession()
         self.session.headers.update(self.headers)
         self.cookies = None
         self.cookieUpdater = None

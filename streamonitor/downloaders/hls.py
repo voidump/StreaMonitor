@@ -5,6 +5,7 @@ from threading import Thread
 from ffmpy import FFmpeg, FFRuntimeError
 from time import sleep
 from parameters import DEBUG, CONTAINER, SEGMENT_TIME, FFMPEG_PATH
+from streamonitor.http_session import DEFAULT_TIMEOUT
 
 _http_lib = None
 if not _http_lib:
@@ -44,7 +45,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 while not self.stopDownloadFlag:
                     did_download = False
                     try:
-                        r = session.get(url, headers=self.headers, cookies=self.cookies)
+                        r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=DEFAULT_TIMEOUT)
                         content = r.content.decode("utf-8")
                     except Exception as e:
                         self.logger.warning(f'Failed to fetch playlist: {e}')
@@ -76,7 +77,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         if not chunk_uri.startswith("https://"):
                             chunk_uri = '/'.join(url.split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
                         try:
-                            m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies)
+                            m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=DEFAULT_TIMEOUT)
                         except Exception as e:
                             self.logger.warning(f'Segment download error: {e}')
                             consecutive_failures += 1
