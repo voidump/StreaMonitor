@@ -2,6 +2,7 @@ import time
 import requests
 from streamonitor.bot import RoomIdBot
 from streamonitor.enums import Status
+from streamonitor.http_session import DEFAULT_TIMEOUT
 
 
 # Site of Hungarian group AdultPerformerNetwork
@@ -18,7 +19,7 @@ class SexChatHU(RoomIdBot):
     def _getBabesList(cls, force_update=False):
         if SexChatHU._performers_list_cache_timestamp < time.time() - 60 * 60 or \
                 SexChatHU._performers_list_cache is None or force_update:  # Cache for 1 hour
-            req = requests.get('https://sexchat.hu/ajax/api/roomList/babes', headers=cls.headers)
+            req = requests.get('https://sexchat.hu/ajax/api/roomList/babes', headers=cls.headers, timeout=DEFAULT_TIMEOUT)
             SexChatHU._performers_list_cache = req.json()
             SexChatHU._performers_list_cache_timestamp = time.time()
 
