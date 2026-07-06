@@ -81,6 +81,8 @@ class Bot(Thread):
         self.recording = False
         self.recording_bytes = 0  # Live recording size in bytes
         self.recording_segments = 0  # Live recording segment count
+        self.lastCheckTs = None  # Epoch timestamp of last status check
+        self.monitorState = 'active'  # active | paused | stopped (v3 web UI)
         self.video_files = []
         self.video_files_total_size = 0
         self.cache_file_list()
@@ -186,6 +188,7 @@ class Bot(Thread):
                         except Exception as e:
                             self.logger.exception(e)
                             self.sc = Status.ERROR
+                        self.lastCheckTs = datetime.now().timestamp()
                     # Check if the status has changed and log the update if it's different from the previous status
                     if self.sc != self.previous_status:
                         self.log(self.status())
@@ -385,6 +388,7 @@ class Bot(Thread):
         instance.running = data.get('running', True)
         instance.country = data.get('country')
         instance.gender = data.get('gender')
+        instance.monitorState = data.get('monitorState', 'active')
         return instance
 
     def export(self):
@@ -448,6 +452,7 @@ class RoomIdBot(Bot):
     def fromConfig(cls, data):
         instance = cls(username=data['username'], room_id=data.get('room_id'))
         instance.running = data.get('running', True)
+        instance.monitorState = data.get('monitorState', 'active')
         return instance
 
     def export(self):

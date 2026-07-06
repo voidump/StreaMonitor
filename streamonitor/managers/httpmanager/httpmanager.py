@@ -17,6 +17,7 @@ from streamonitor.manager import Manager
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.utils import human_file_size
 
+from .api_v2 import register_api_v2
 from .filters import status_icon, status_text
 from .mappers import web_status_lookup
 from .models import InvalidStreamer
@@ -31,7 +32,8 @@ class HTTPManager(Manager):
         self.loaded_site_names.sort()
 
         skin = WEBSERVER_SKIN
-        if skin in os.listdir(os.path.join(os.path.dirname(__file__), 'skins')):
+        available_skins = os.listdir(os.path.join(os.path.dirname(__file__), 'skins'))
+        if skin == 'webui' or skin in available_skins:
             self.skin = skin
         else:
             raise ValueError(f'Invalid skin name: {skin}')
@@ -41,7 +43,9 @@ class HTTPManager(Manager):
             __name__,
             template_folder=f'skins/{self.skin}/templates'
         )
-        
+
+        webui_dir = os.path.join(os.path.dirname(__file__), 'webui')
+
         werkzeug_logger = logging.getLogger('werkzeug')
         werkzeug_logger.disabled = True
 
@@ -117,6 +121,8 @@ class HTTPManager(Manager):
         @app.route('/', methods=['GET'])
         @login_required
         def status():
+            if self.skin == 'webui':
+                return send_from_directory(webui_dir, 'console.html')
             usage = OOSDetector.space_usage()
             streamers, filter_context = streamer_list(self.streamers, request)
             context = {
@@ -458,6 +464,19 @@ class HTTPManager(Manager):
                 'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
             } | filter_context
             return render_template('streamers_result.html.jinja', **context), status_code
+
+        register_api_v2(app, self, login_required)
+
+        if self.skin == 'webui':
+            @app.route('/css/<path:filename>', methods=['GET'])
+            @login_required
+            def webui_css(filename):
+                return send_from_directory(os.path.join(webui_dir, 'css'), filename)
+
+            @app.route('/js/<path:filename>', methods=['GET'])
+            @login_required
+            def webui_js(filename):
+                return send_from_directory(os.path.join(webui_dir, 'js'), filename)
 
         return app
 
