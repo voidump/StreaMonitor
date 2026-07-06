@@ -8,6 +8,7 @@ from streamonitor.log import Logger
 
 logger = Logger('[CONFIG]').get_logger()
 config_loc = "config.json"
+history_loc = "history.json"
 
 
 def load_config():
@@ -39,6 +40,40 @@ def save_config(config):
         except OSError:
             pass
         return False
+
+
+def load_history():
+    try:
+        with open(history_loc, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        logger.error(f"Failed to load history: {e}")
+        return []
+
+
+def save_history(history):
+    # Same atomic write-then-rename strategy as save_config.
+    tmp_loc = history_loc + ".tmp"
+    try:
+        with open(tmp_loc, "w") as f:
+            json.dump(history, f, indent=4)
+        os.replace(tmp_loc, history_loc)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save history: {e}")
+        try:
+            os.remove(tmp_loc)
+        except OSError:
+            pass
+        return False
+
+
+def add_history_entry(entry):
+    history = load_history()
+    history.insert(0, entry)
+    return save_history(history)
 
 
 def loadStreamers():

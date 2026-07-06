@@ -396,6 +396,7 @@ class Bot(Thread):
             "site": self.site,
             "username": self.username,
             "running": self.running,
+            "monitorState": self.monitorState,
             "country": self.country,
             "gender": self.gender.value if isinstance(self.gender, Enum) else self.gender,
         }

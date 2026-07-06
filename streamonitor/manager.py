@@ -1,4 +1,6 @@
 import math
+import shutil
+import time
 from logging import INFO, WARN, ERROR
 from threading import Thread
 from termcolor import colored
@@ -80,6 +82,58 @@ class Manager(Thread):
         except Exception as e:
             self.logger.error(e)
             return "Failed to remove streamer"
+
+    def do_pause(self, streamer, username, site):
+        # Layer 1: temporarily stop recording, keep the entry as-is
+        # (monitorState stays 'active'; the paused state is derived from running).
+        if not streamer:
+            return "Streamer not found"
+        return self.do_stop(streamer, username, site)
+
+    def do_resume(self, streamer, username, site):
+        # Layer 1: resume a paused streamer.
+        if not streamer:
+            return "Streamer not found"
+        return self.do_start(streamer, username, site)
+
+    def do_stop_recording(self, streamer, username, site):
+        # Layer 2: archive the streamer. Stop the bot and mark it stopped, but
+        # keep the config entry (name/link/local files) for a one-click restart.
+        if not streamer:
+            return "Streamer not found"
+        streamer.monitorState = 'stopped'
+        return self.do_stop(streamer, username, site)
+
+    def do_reactivate(self, streamer, username, site):
+        # Layer 2 inverse: restore an archived streamer and start it again.
+        if not streamer:
+            return "Streamer not found"
+        streamer.monitorState = 'active'
+        return self.do_start(streamer, username, site)
+
+    def do_purge(self, streamer, username, site, delete_files=False):
+        # Layer 3: permanent delete. Stop the bot, record it in history, drop it
+        # from config and optionally remove its recordings on disk.
+        if not streamer:
+            return "Streamer not found"
+        try:
+            streamer.stop(None, None)
+            streamer.logger.handlers = []
+            config.add_history_entry({
+                'site': streamer.site,
+                'siteslug': streamer.siteslug,
+                'username': streamer.username,
+                'url': streamer.url,
+                'deletedAt': int(time.time()),
+            })
+            if delete_files:
+                shutil.rmtree(streamer.outputFolder, ignore_errors=True)
+            self.streamers.remove(streamer)
+            self.saveConfig()
+            return "OK"
+        except Exception as e:
+            self.logger.error(e)
+            return "Failed to delete streamer"
 
     def do_start(self, streamer, username, site):
         if not streamer:
