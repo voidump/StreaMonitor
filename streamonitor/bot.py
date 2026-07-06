@@ -79,6 +79,7 @@ class Bot(Thread):
         self.getVideo = getVideoFfmpeg
         self.stopDownload = None
         self.recording = False
+        self.recording_filename = None  # Basename of the file currently being written
         self.recording_bytes = 0  # Live recording size in bytes
         self.recording_segments = 0  # Live recording segment count
         self.lastCheckTs = None  # Epoch timestamp of last status check
@@ -182,6 +183,7 @@ class Bot(Thread):
             while self.running:
                 try:
                     self.recording = False
+                    self.recording_filename = None
                     if not self.bulk_update or self.sc == Status.NOTRUNNING:
                         try:
                             self.sc = self.getStatus()
@@ -228,6 +230,7 @@ class Bot(Thread):
                             self.log('Started downloading show')
                             self.recording = True
                             file = self.genOutFilename()
+                            self.recording_filename = os.path.basename(file)
                             try:
                                 ret = self.getVideo(self, video_url, file)
                             except Exception as e:
@@ -240,6 +243,7 @@ class Bot(Thread):
                                 self._sleep(self.sleep_on_error)
                                 continue
                             self.recording = False
+                            self.recording_filename = None
                             self.log('Recording ended')
                             try:
                                 self.cache_file_list()
@@ -253,6 +257,7 @@ class Bot(Thread):
                         self.logger.exception(e)
                     self.log(self.status())
                     self.recording = False
+                    self.recording_filename = None
                     self._sleep(self.sleep_on_error)
                     continue
 

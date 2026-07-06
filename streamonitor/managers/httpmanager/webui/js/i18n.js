@@ -126,6 +126,8 @@ const I18N = {
     hk_mute:'静音 / 取消静音', hk_mark:'标记待删除',
     apiLoading:'正在加载数据…', apiError:'无法连接后端，显示的是上次数据', apiRetry:'重试',
     apiOpError:'操作失败，请重试',
+    recInProgress:'录制中', recTag:'录制中', recDelBlocked:'录制中的文件不可删除',
+    recDelSkipped:n=>`已跳过 ${n} 个录制中的文件`,
   },
   en: {
     tagline:'Recorder Console', protoTag:'UI prototype · mock data',
@@ -245,6 +247,8 @@ const I18N = {
     hk_mute:'Mute / unmute', hk_mark:'Mark for deletion',
     apiLoading:'Loading data…', apiError:'Cannot reach the backend — showing last data', apiRetry:'Retry',
     apiOpError:'Operation failed — please retry',
+    recInProgress:'Recording', recTag:'REC', recDelBlocked:'Cannot delete a recording in progress',
+    recDelSkipped:n=>`Skipped ${n} file(s) being recorded`,
   }
 };
 let lang = localStorage.getItem('sm_lang') || 'zh';

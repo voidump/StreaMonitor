@@ -159,6 +159,8 @@ function startTick(s){
   }, 1000);
 }
 function togglePlay(s){
+  const v = document.getElementById('pvideo');
+  if (v){ if (v.paused) v.play().catch(()=>{}); else v.pause(); return; }   // real media drives its own play/pause events
   const cur = s.files.find(f=>f.id===player.fileId);
   if (!cur) return;
   player.playing = !player.playing;
@@ -168,6 +170,16 @@ function togglePlay(s){
 function stepFile(s, idx, dir){
   const nf = s.files[idx+dir];
   if (!nf) return;
+  const v = document.getElementById('pvideo');
+  if (v){   // rebuild <video> with the new file's URL; bindRealVideo resumes playback if it was playing
+    const wasPlaying = !v.paused || player.playing;
+    stopTick();
+    setPlayerFile(nf);
+    player.playing = wasPlaying;
+    nf.lastWatched = NOW;
+    render();
+    return;
+  }
   const wasPlaying = player.playing;
   stopTick();
   setPlayerFile(nf);
@@ -180,6 +192,7 @@ function deleteFile(s, fid){
   const idx = s.files.findIndex(f=>f.id===fid);
   if (idx<0) return;
   const f = s.files[idx];
+  if (apiState.mode==='api'){ apiDeleteFileFlow(s, f, idx); return; }   // real delete + authoritative refresh
   const wasCurrent = player.fileId===fid;
   const wasPlaying = player.playing;
   s.files.splice(idx,1);
@@ -195,6 +208,7 @@ function deleteFile(s, fid){
   if (player.playing) startTick(s);
 }
 function batchDeleteMarked(s){
+  if (apiState.mode==='api'){ apiBatchDeleteMarked(s); return; }   // real batch delete (skips recording file)
   const markedIds = new Set(s.files.filter(f=>f.marked).map(f=>f.id));
   if (!markedIds.size) return;
   const curIdx = s.files.findIndex(f=>f.id===player.fileId);
@@ -437,12 +451,18 @@ function bindDetail(s){
     player.pos = +seek.value;
     seek.style.setProperty('--pct',(player.pos/(+seek.max)*100)+'%');
     const pt=document.getElementById('ptime'); if(pt)pt.textContent=fmtDur(player.pos);
+    const v=document.getElementById('pvideo'); if(v){ try{ v.currentTime=player.pos; }catch(err){} }
   });
   // download / delete
   document.querySelectorAll('[data-dl]').forEach(b=>b.addEventListener('click', e=>{
     e.stopPropagation();
     const f=s.files.find(x=>x.id===b.dataset.dl);
-    if (f) toast(t('dlToast')(fileName(s,f)));
+    if (!f) return;
+    if (apiState.mode==='api' && f._url){   // stream the real file down as an attachment
+      const a=document.createElement('a'); a.href=f._url; a.download=f._filename||''; document.body.appendChild(a); a.click(); a.remove();
+      return;
+    }
+    toast(t('dlToast')(fileName(s,f)));
   }));
   document.querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click', e=>{
     e.stopPropagation(); confirmDelId=b.dataset.del; render();

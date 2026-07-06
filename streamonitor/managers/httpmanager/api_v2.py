@@ -1,4 +1,5 @@
 import json
+import os
 
 from flask import Response, request
 
@@ -41,6 +42,7 @@ def _streamer_summary(streamer):
         'status': _status_key(streamer.sc),
         'statusText': streamer.status(),
         'recording': streamer.recording,
+        'recordingFilename': getattr(streamer, 'recording_filename', None),
         'recordingBytes': getattr(streamer, 'recording_bytes', 0),
         'videoCount': len(streamer.video_files),
         'totalSize': streamer.video_files_total_size,
@@ -65,6 +67,7 @@ def register_api_v2(app, manager, login_required):
         if streamer is None:
             return _json({'error': 'Streamer not found'}, 404)
         streamer.cache_file_list()
+        recording_name = getattr(streamer, 'recording_filename', None)
         videos = []
         for video in streamer.video_files:
             videos.append({
@@ -72,11 +75,33 @@ def register_api_v2(app, manager, login_required):
                 'size': video.filesize,
                 'mtime': int(video._stat.st_mtime),
                 'url': f'/video/{streamer.username}/{streamer.siteslug}/{video.filename}',
+                'recording': bool(streamer.recording and video.filename == recording_name),
             })
         videos.sort(key=lambda v: v['mtime'], reverse=True)
         detail = _streamer_summary(streamer)
         detail['videos'] = videos
         return _json(detail)
+
+    @app.route('/api/v2/streamers/<site>/<user>/videos/<path:filename>', methods=['DELETE'])
+    @login_required
+    def api_v2_delete_video(site, user, filename):
+        streamer = manager.getStreamer(user, site)
+        if streamer is None:
+            return _json({'error': 'Streamer not found'}, 404)
+        # Double-safety with the frontend graying-out: never delete the file
+        # that is currently being written by the recorder.
+        if streamer.recording and filename == getattr(streamer, 'recording_filename', None):
+            return _json({'error': 'Cannot delete a recording in progress'}, 409)
+        streamer.cache_file_list()
+        match = next((v for v in streamer.video_files if v.filename == filename), None)
+        if match is None:
+            return _json({'error': 'Video not found'}, 404)
+        try:
+            os.remove(match.abs_path)
+        except Exception:
+            return _json({'error': 'Failed to delete video'}, 500)
+        streamer.cache_file_list()
+        return _json({'ok': True})
 
     @app.route('/api/v2/basesettings', methods=['GET'])
     @login_required

@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 
 import pytest
 
@@ -340,3 +341,87 @@ def test_api_history_readd_out_of_range_404(tmp_path, monkeypatch):
     manager = HTTPManager([])
     response = _client(manager).post("/api/v2/history/5/readd", headers=AUTH)
     assert response.status_code == 404
+
+
+# --- video streaming (Range) + deletion ---
+
+def _make_streamer_with_video(filename="alice-20260706-120000.mp4", data=b"0" * 1000):
+    streamer = make_streamer()
+    os.makedirs(streamer.outputFolder, exist_ok=True)
+    path = os.path.join(streamer.outputFolder, filename)
+    with open(path, "wb") as f:
+        f.write(data)
+    streamer.cache_file_list()
+    return streamer, path
+
+
+def test_video_supports_range_requests(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video(data=b"0123456789" * 100)
+    manager = HTTPManager([streamer])
+    client = _client(manager)
+
+    partial = client.get(
+        "/video/alice/FS/alice-20260706-120000.mp4",
+        headers={**AUTH, "Range": "bytes=0-99"},
+    )
+    assert partial.status_code == 206
+    assert partial.headers["Content-Range"] == "bytes 0-99/1000"
+    assert len(partial.data) == 100
+
+    full = client.get("/video/alice/FS/alice-20260706-120000.mp4", headers=AUTH)
+    assert full.status_code == 200
+    assert full.headers["Accept-Ranges"] == "bytes"
+
+
+def test_api_delete_video_removes_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, path = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-120000.mp4", headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["ok"] is True
+    assert not os.path.exists(path)
+
+
+def test_api_delete_video_missing_returns_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/alice/videos/nope.mp4", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_api_delete_video_unknown_streamer_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/ghost/videos/x.mp4", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_api_delete_video_protects_recording(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, path = _make_streamer_with_video()
+    streamer.recording = True
+    streamer.recording_filename = "alice-20260706-120000.mp4"
+    manager = HTTPManager([streamer])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-120000.mp4", headers=AUTH)
+    assert response.status_code == 409
+    assert os.path.exists(path)
+
+
+def test_api_detail_flags_recording_video(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    streamer.recording = True
+    streamer.recording_filename = "alice-20260706-120000.mp4"
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["recordingFilename"] == "alice-20260706-120000.mp4"
+    assert payload["videos"][0]["recording"] is True

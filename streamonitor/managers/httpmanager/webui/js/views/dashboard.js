@@ -215,7 +215,7 @@ function renderHistory(){
       <span class="avatar"><img src="${h.avatarDataUrl}" width="30" height="30" style="width:100%;height:100%;object-fit:cover" alt=""></span>
       <div class="hist-main">
         <div class="s-name">${esc(h.user)}</div>
-        <div class="hist-sub">${siteBadge(h.site)}<span class="hist-dates">${t('histAdded')} ${t('dateFmt')(h.addedDate)} · ${t('histRemoved')} ${t('dateFmt')(h.removedDate)}</span></div>
+        <div class="hist-sub">${siteBadge(h.site)}<span class="hist-dates">${h.addedDate?`${t('histAdded')} ${t('dateFmt')(h.addedDate)} · `:''}${t('histRemoved')} ${t('dateFmt')(h.removedDate)}</span></div>
       </div>
       <div class="hist-acts">
         <button class="btn" data-readd="${i}">${IC.plus}<span>${t('histReadd')}</span></button>

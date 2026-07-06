@@ -211,16 +211,21 @@ async function loadDetail(site, user){
     const data = await apiGet('/streamers/'+encodeURIComponent(site)+'/'+encodeURIComponent(user));
     const s = streamers.find(x=>x.id===site+'/'+user);
     if (!s) return;
-    const oldById = {}; s.files.forEach(f=>{ oldById[f.id]=f; });   // preserve marks/progress
     const vids = (data && data.videos) || [];
+    const sig = vids.map(v=>v.filename+':'+(v.size||0)+':'+(v.recording?1:0)).join('|');
+    if (data){ if (data.totalSize!=null) s._totalSize = data.totalSize; if (data.videoCount!=null) s._videoCount = data.videoCount; }
+    const vidEl = document.getElementById('pvideo');
+    if (s._detailLoaded && s._filesSig===sig && vidEl && !vidEl.paused){
+      apiState.error = false; return;   // playing a real video and nothing changed — don't rebuild the <video>
+    }
+    const oldById = {}; s.files.forEach(f=>{ oldById[f.id]=f; });   // preserve marks/progress
     s.files = vids.map(v=>{
       const id = v.filename; const old = oldById[id];
       return { id, dt: parseTs(v.mtime), dur: old?old.dur:0, size: v.size||0,
         watchPct: old?old.watchPct:0, marked: old?!!old.marked:false,
-        lastWatched: old?old.lastWatched:null, _filename: v.filename, _url: v.url||'' };
+        lastWatched: old?old.lastWatched:null, _filename: v.filename, _url: v.url||'', _recording: !!v.recording };
     }).sort((a,b)=>b.dt-a.dt);
-    s.temps = []; s._detailLoaded = true;
-    if (data){ if (data.totalSize!=null) s._totalSize = data.totalSize; if (data.videoCount!=null) s._videoCount = data.videoCount; }
+    s.temps = []; s._detailLoaded = true; s._filesSig = sig;
     if (route.view==='detail' && route.id===s.id && !player.fileId && s.files[0]) setPlayerFile(s.files[0]);
     apiState.error = false; render();
   } catch(e){
@@ -343,8 +348,8 @@ async function loadHistory(){
         _idx: h.idx!=null ? h.idx : i,
         user, site: slug, url: h.url || '',
         avatarDataUrl: genAvatar(slug+'/'+user, user),
-        addedDate: parseTs(h.addedTs!=null ? h.addedTs : h.addedDate),
-        removedDate: parseTs(h.removedTs!=null ? h.removedTs : (h.deletedTs!=null ? h.deletedTs : h.removedDate)),
+        addedDate: (h.addedTs!=null || h.addedDate!=null) ? parseTs(h.addedTs!=null ? h.addedTs : h.addedDate) : null,
+        removedDate: parseTs(h.removedTs!=null ? h.removedTs : (h.deletedTs!=null ? h.deletedTs : (h.deletedAt!=null ? h.deletedAt : h.removedDate))),
       };
     });
     if (route.view==='history') render();
@@ -364,6 +369,39 @@ async function apiHistoryDelete(i){
   const idx = h && h._idx!=null ? h._idx : i;
   try { await apiSend('DELETE', '/history/'+idx); toast(t('histRemovedToast'), 'warn'); await loadHistory(); }
   catch(e){ toast(t('apiOpError'), 'err'); }
+}
+
+/* ---- video deletion (single + batch), with recording-file protection ---- */
+async function apiDeleteVideo(s, file){
+  try { await apiSend('DELETE', streamerPath(s)+'/videos/'+encodeURIComponent(file._filename||file.id)); return true; }
+  catch(e){ return false; }
+}
+async function apiDeleteFileFlow(s, file, idx){
+  confirmDelId = null;
+  if (file._recording){ toast(t('recDelBlocked'), 'warn'); render(); return; }   // backend rejects too (409)
+  const wasCurrent = player.fileId===file.id;
+  const ok = await apiDeleteVideo(s, file);
+  if (!ok){ toast(t('apiOpError'), 'err'); render(); return; }
+  toast(t('delToast')(fileName(s, file)), 'warn');
+  if (wasCurrent){
+    stopTick();
+    const next = s.files[idx+1] || s.files[idx-1] || null;   // prefer the next-older recording
+    if (next) setPlayerFile(next); else player = {fileId:null, playing:false, pos:0, timer:null};
+  }
+  await loadDetail(s.site, s.user);   // authoritative refresh from disk
+}
+async function apiBatchDeleteMarked(s){
+  const marked = s.files.filter(f=>f.marked);
+  if (!marked.length) return;
+  const deletable = marked.filter(f=>!f._recording);
+  const skipped = marked.length - deletable.length;
+  if (deletable.some(f=>f.id===player.fileId)){ stopTick(); player = {fileId:null, playing:false, pos:0, timer:null}; }
+  let okN = 0, failN = 0;
+  for (const f of deletable){ if (await apiDeleteVideo(s, f)) okN++; else failN++; }
+  if (okN) toast(t('batchDeletedToast')(okN), 'warn');
+  if (failN) toast(t('apiOpError'), 'err');
+  if (skipped) toast(t('recDelSkipped')(skipped), 'warn');
+  await loadDetail(s.site, s.user);
 }
 
 async function initDataSource(){
