@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreaMonitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/console.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="3.2" fill="#fff" stroke="none"/><path d="M5.5 5.5a9.2 9.2 0 0 0 0 13M18.5 5.5a9.2 9.2 0 0 1 0 13M8.4 8.4a5.1 5.1 0 0 0 0 7.2M15.6 8.4a5.1 5.1 0 0 1 0 7.2"/></svg>
+      </div>
+      <div class="brand-name">StreaMonitor<small data-i18n="tagline"></small></div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidebar-spacer"></div>
+    <div class="disk" id="diskWidget"></div>
+    <div class="proto-tag" data-i18n="protoTag"></div>
+  </aside>
+  <div class="main" id="main">
+    <!-- static fallback: replaced by the first render(); still visible = scripts blocked -->
+    <div style="margin:auto;max-width:420px;padding:40px;text-align:center;color:#8a96a8;font-size:13px;line-height:1.8">
+      <div style="font-size:15px;color:#d5dde8;margin-bottom:8px">界面未能初始化 / UI did not initialise</div>
+      当前查看器似乎禁止运行页面脚本（本原型完全由 JavaScript 渲染）。<br>
+      请在普通浏览器中打开：<br>
+      <code style="color:#4c9fe8">http://localhost:8901/console.html</code><br>
+      或运行 <code style="color:#4c9fe8">python3 -m http.server 8901 --directory docs/prototype</code> 后访问上述地址。
+    </div>
+  </div>
+</div>
+<div id="toasts"></div>
+<div id="modalRoot"></div>
+
+<script src="js/i18n.js"></script>
+<script src="js/data.js"></script>
+<script src="js/store.js"></script>
+<script src="js/views/dashboard.js"></script>
+<script src="js/views/detail.js"></script>
+<script src="js/views/settings.js"></script>
+<script src="js/views/modal.js"></script>
+<script src="js/player.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
