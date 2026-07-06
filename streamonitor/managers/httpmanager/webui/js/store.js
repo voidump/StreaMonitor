@@ -156,7 +156,7 @@ function normStatus(raw){
 function resolveStatus(item){
   const ms = String(item.monitorState||'active').toLowerCase();
   if (ms==='stopped') return 'stopped';
-  if (ms==='paused') return 'paused';
+  if (item.running===false && ms==='active') return 'paused';   // paused = monitored but worker stopped
   if (item.recording) return 'recording';
   return normStatus(item.status);
 }
