@@ -265,12 +265,17 @@ function updatePlayIcon(){
 }
 function bindRealVideo(s){
   const v = pvideo();
-  if (!v) return;
-  const cur = s.files.find(f=>f.id===player.fileId);
+  if (!v || v._smBound) return;   // node is preserved across re-renders (see grabPlayingVideo) — bind exactly once
+  v._smBound = true;
+  // resolve the current streamer/file live: list polls swap streamer objects, so a
+  // closure over `s`/`cur` would go stale on the long-lived <video>'s listeners.
+  const curStreamer = ()=> streamers.find(x=>x.id===route.id) || s;
+  const curFile = ()=>{ const st = curStreamer(); return st && st.files.find(f=>f.id===player.fileId); };
   v.playbackRate = playerPrefs.speed || 1;
   v.muted = !!playerPrefs.muted;
   v.volume = playerPrefs.muted ? 0 : playerPrefs.volume;
   v.addEventListener('loadedmetadata', ()=>{
+    const cur = curFile();
     if (cur && isFinite(v.duration) && v.duration>0){
       cur.dur = Math.floor(v.duration);
       const seek = document.getElementById('pseek'); if (seek) seek.max = cur.dur;
@@ -280,17 +285,19 @@ function bindRealVideo(s){
     if (player.playing) v.play().catch(()=>{});   // resume across re-renders (mark toggle, poll, etc.)
   });
   v.addEventListener('timeupdate', ()=>{
+    const cur = curFile();
     player.pos = v.currentTime;
     if (cur){ if (cur.dur) cur.watchPct = Math.max(cur.watchPct||0, Math.round(player.pos/cur.dur*100)); syncSeekUI(cur); }
   });
   v.addEventListener('play', ()=>{ player.playing = true; updatePlayIcon(); });
   v.addEventListener('pause', ()=>{ player.playing = false; updatePlayIcon(); });
   v.addEventListener('ended', ()=>{
-    const idx = s.files.findIndex(f=>f.id===player.fileId);
-    if (idx>=0 && idx < s.files.length-1) stepFile(s, idx, 1);   // auto-continue into the next (older) recording
+    const st = curStreamer();
+    const idx = st ? st.files.findIndex(f=>f.id===player.fileId) : -1;
+    if (st && idx>=0 && idx < st.files.length-1) stepFile(st, idx, 1);   // auto-continue into the next (older) recording
     else { player.playing = false; updatePlayIcon(); }
   });
-  v.addEventListener('click', e=>{ e.stopPropagation(); togglePlay(s); });
+  v.addEventListener('click', e=>{ e.stopPropagation(); togglePlay(curStreamer()); });
 }
 
 /* ---- hotkey engine: normalise the event, then resolve it against settings.hotkeys ---- */

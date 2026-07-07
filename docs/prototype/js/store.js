@@ -47,6 +47,9 @@ function loadHotkeys(){
 }
 function saveHotkeys(hk){ localStorage.setItem('sm_hotkeys', JSON.stringify(hk)); }
 let settings = {hotkeys: loadHotkeys()};
+/* server-side download directory (NB4). draft survives timer-driven re-renders,
+ * mirroring addDraft; render() preserves the input's focus + caret by id. */
+let downloadDir = {path:'', draft:'', loading:false, saving:false, error:null, loaded:false};
 
 /* ---- hotkey editing (read/write + conflict detection) ----
  * saveHotkeys(hk) needs the map passed explicitly (W1 note). */
@@ -89,6 +92,7 @@ function nav(to){
     if (s2 && !s2._detailLoaded) loadDetail(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
+  if (to.view==='settings') loadDownloadDir();   // read the current download dir (mock mode fills a demo path)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
 }
@@ -191,7 +195,7 @@ function mapStreamers(list){
       _totalSize: item.totalSize!=null ? item.totalSize : null,
       files: [], temps: [], schedule: EMPTY_SCHEDULE, _detailLoaded:false,
     };
-    if (prev && prev._detailLoaded){ s.files = prev.files; s.temps = prev.temps; s._detailLoaded = true; }
+    if (prev && prev._detailLoaded){ s.files = prev.files; s.temps = prev.temps; s._detailLoaded = true; s._filesSig = prev._filesSig; }   // carry the file signature so loadDetail's guard can early-return while a video plays
     return s;
   });
 }
@@ -372,6 +376,54 @@ async function apiHistoryDelete(i){
   const idx = h && h._idx!=null ? h._idx : i;
   try { await apiSend('DELETE', '/history/'+idx); toast(t('histRemovedToast'), 'warn'); await loadHistory(); }
   catch(e){ toast(t('apiOpError'), 'err'); }
+}
+
+/* ---- download directory (server-side, NB4): read + validate-and-save ---- */
+async function loadDownloadDir(){
+  if (apiState.mode!=='api'){   // mock: show a representative path, no backend call
+    if (!downloadDir.loaded){ downloadDir.path = MOCK_DOWNLOAD_DIR; downloadDir.draft = MOCK_DOWNLOAD_DIR; downloadDir.loaded = true; }
+    return;
+  }
+  downloadDir.loading = true; downloadDir.error = null; render();
+  try {
+    const d = await apiGet('/settings/download-dir');
+    downloadDir.path = (d && d.path) || '';
+    downloadDir.draft = downloadDir.path;
+    downloadDir.loaded = true; downloadDir.loading = false; downloadDir.error = null;
+    render();
+  } catch(e){
+    downloadDir.loading = false; downloadDir.error = t('dlDirLoadErr'); render();
+  }
+}
+function dlDirErrText(data){
+  const map = {empty:'dlDirErrEmpty', create_failed:'dlDirErrCreate', not_dir:'dlDirErrNotDir', not_writable:'dlDirErrNotWritable'};
+  const key = data && map[data.code];
+  if (key) return t(key);
+  return (data && data.error) || t('dlDirErrGeneric');
+}
+async function saveDownloadDir(){
+  const val = (downloadDir.draft||'').trim();
+  if (!val){ downloadDir.error = t('dlDirErrEmpty'); render(); return; }
+  if (apiState.mode!=='api'){   // mock: accept locally, show success toast
+    downloadDir.path = val; downloadDir.draft = val; downloadDir.error = null;
+    toast(t('dlDirSavedToast')); render(); return;
+  }
+  downloadDir.saving = true; downloadDir.error = null; render();
+  try {
+    const r = await fetch(apiUrl('/settings/download-dir'), {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Accept':'application/json','Content-Type':'application/json'},
+      body: JSON.stringify({path: val}),
+    });
+    const txt = await r.text();
+    const data = txt ? JSON.parse(txt) : {};
+    if (!r.ok){ downloadDir.saving = false; downloadDir.error = dlDirErrText(data); render(); return; }
+    downloadDir.path = data.path || val; downloadDir.draft = downloadDir.path;
+    downloadDir.saving = false; downloadDir.error = null;
+    toast(t('dlDirSavedToast')); render();
+  } catch(e){
+    downloadDir.saving = false; downloadDir.error = t('dlDirErrGeneric'); render();
+  }
 }
 
 /* ---- video deletion (single + batch), with recording-file protection ---- */

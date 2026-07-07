@@ -89,6 +89,24 @@ function renderChrome(){
 }
 
 
+/* ---- preserve a playing real <video> across full re-renders ----
+ * renderView() rebuilds #main via innerHTML, which would detach and (async) pause a
+ * playing <video>. We grab the live node before the rebuild and, when the fresh render
+ * targets the same file (same src), splice it back into the new placeholder within the
+ * same synchronous frame so the browser never runs its remove-and-pause step. A real
+ * file switch renders a fresh <video> (different src) and is left as-is; mock mode has
+ * no #pvideo so both helpers are no-ops. */
+function grabPlayingVideo(){
+  const v = document.getElementById('pvideo');
+  return (v && !v.paused) ? v : null;
+}
+function restorePlayingVideo(live){
+  const ph = document.getElementById('pvideo');
+  if (!ph || ph===live) return;
+  if ((ph.getAttribute('src')||'') !== (live.getAttribute('src')||'')) return;   // different file — keep the fresh <video>
+  ph.parentNode.replaceChild(live, ph);
+}
+
 /* ---------------- master render ---------------- */
 function render(){
   // preserve scroll offset and focused-input caret across full re-renders;
@@ -98,7 +116,9 @@ function render(){
   const selPos = focusId && ae.selectionStart!=null ? ae.selectionStart : 0;
   const scroller = document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   const scrollY = scroller ? scroller.scrollTop : 0;
+  const liveVideo = grabPlayingVideo();   // keep a playing real <video> alive across the rebuild
   renderView();
+  if (liveVideo) restorePlayingVideo(liveVideo);   // splice it back when the same file is still shown
   applyBatchbarClearance();   // reserve exact space so the floating batch bar never hides the last row
   syncApiBanner();            // show API loading/error state when running against a real backend
   const sc2 = document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
