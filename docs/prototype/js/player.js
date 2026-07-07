@@ -15,21 +15,30 @@ const PIC = {
 /* ---- player-local i18n (append-free: keeps strings out of shared i18n.js) ---- */
 const PLAYER_I18N = {
   zh:{ speed:'倍速', mute:'静音', unmute:'取消静音', prevVid:'上一个视频', nextVid:'下一个（更早）视频',
-    back30:'后退 30 秒', back5:'后退 5 秒', fwd5:'前进 5 秒', fwd30:'前进 30 秒', volTitle:'音量',
-    hints:'空格 播放/暂停 · ← → ±5秒 · Shift+← → ±30秒 · ↑ ↓ 音量 · [ ] 或 PgUp/PgDn 上/下一个 · M 标记' },
+    back30:'后退 30 秒', back5:'后退 5 秒', fwd5:'前进 5 秒', fwd30:'前进 30 秒', volTitle:'音量', tapSound:'点击开启声音',
+    hints:'空格 播放/暂停 · ← → ±5秒 · Shift+← → ±30秒 · ↑ ↓ 音量 · [ ] 或 PgUp/PgDn 上/下一个 · X 静音 · M 标记' },
   en:{ speed:'Speed', mute:'Mute', unmute:'Unmute', prevVid:'Previous video', nextVid:'Next (older) video',
-    back30:'Back 30s', back5:'Back 5s', fwd5:'Forward 5s', fwd30:'Forward 30s', volTitle:'Volume',
-    hints:'Space play/pause · ← → ±5s · Shift+← → ±30s · ↑ ↓ volume · [ ] or PgUp/PgDn prev/next · M mark' },
+    back30:'Back 30s', back5:'Back 5s', fwd5:'Forward 5s', fwd30:'Forward 30s', volTitle:'Volume', tapSound:'Tap for sound',
+    hints:'Space play/pause · ← → ±5s · Shift+← → ±30s · ↑ ↓ volume · [ ] or PgUp/PgDn prev/next · X mute · M mark' },
 };
 const pt = k => (PLAYER_I18N[lang] || PLAYER_I18N.en)[k] || k;
 
-/* ---- persistent playback prefs (speed / volume / muted) ---- */
+/* ---- playback prefs: speed/volume persist long-term (localStorage); the muted
+ * flag is session-scoped (NSFW default-muted) — a new tab/session starts muted, and
+ * only the *volume value* is remembered across sessions, never the "sound on" state. */
+function sessionUnmuted(){ try { return sessionStorage.getItem('sm_audio_on')==='1'; } catch(e){ return false; } }
 function loadPlayerPrefs(){
-  const d = {speed:1, volume:1, muted:false};
-  try { const raw = localStorage.getItem('sm_player'); return raw ? Object.assign(d, JSON.parse(raw)) : d; }
-  catch(e){ return d; }
+  const d = {speed:1, volume:0.5, muted:true};   // no history → medium 50% volume, muted start
+  let p = d;
+  try { const raw = localStorage.getItem('sm_player'); if (raw) p = Object.assign(d, JSON.parse(raw)); }
+  catch(e){ p = d; }
+  p.muted = !sessionUnmuted();   // sound stays on within a session once the user unmutes; new session = muted
+  return p;
 }
-function savePlayerPrefs(){ try { localStorage.setItem('sm_player', JSON.stringify(playerPrefs)); } catch(e){} }
+function savePlayerPrefs(){
+  try { localStorage.setItem('sm_player', JSON.stringify({speed:playerPrefs.speed, volume:playerPrefs.volume})); } catch(e){}
+  try { sessionStorage.setItem('sm_audio_on', playerPrefs.muted ? '0' : '1'); } catch(e){}
+}
 let playerPrefs = loadPlayerPrefs();
 const PLAYER_SPEEDS = [0.5, 1, 1.25, 1.5, 2];
 
@@ -54,6 +63,10 @@ const PLAYER_HOTKEY_DEFAULTS = {
   const css = `
 .player{position:relative}
 .pspeed-badge{position:absolute;top:8px;right:10px;background:rgba(13,17,23,.7);border:1px solid rgba(255,255,255,.15);color:#fff;font:600 11px/1 var(--mono);padding:3px 6px;border-radius:4px}
+.pmuted-hint{position:absolute;left:12px;bottom:14px;display:inline-flex;align-items:center;gap:6px;background:rgba(13,17,23,.82);border:1px solid rgba(255,255,255,.18);color:#fff;font:600 12px/1 var(--sans,inherit);padding:7px 11px;border-radius:20px;cursor:pointer;z-index:4;animation:pmutedhint 5s ease forwards}
+.pmuted-hint:hover{background:rgba(13,17,23,.96);opacity:1 !important;animation:none}
+.pmuted-hint svg{flex:none}
+@keyframes pmutedhint{0%{opacity:0;transform:translateY(4px)}10%{opacity:1;transform:none}72%{opacity:1}100%{opacity:0;transform:translateY(4px);pointer-events:none}}
 .pbar{background:var(--bg-raised);border-top:1px solid var(--border)}
 .pseek-wrap{position:relative;padding:9px 12px 3px}
 #pseek{display:block;width:100%;-webkit-appearance:none;appearance:none;height:5px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--pct,0%),#2a3546 var(--pct,0%));outline:none;cursor:pointer}
@@ -120,6 +133,14 @@ function syncVolUI(){
 /* ---- real <video> access (only present in API mode; null keeps mock path) ---- */
 function pvideo(){ return document.getElementById('pvideo'); }
 
+/* ---- default-muted hint: non-intrusive "tap for sound" badge, auto-fades via CSS ---- */
+function mutedHintHtml(){
+  return playerPrefs.muted
+    ? `<button class="pmuted-hint" id="pmutedHint" data-unmute="1" title="${pt('unmute')}">${PIC.mute}<span>${pt('tapSound')}</span></button>`
+    : '';
+}
+function updateMutedHint(){ if (!playerPrefs.muted){ const h=document.getElementById('pmutedHint'); if (h) h.remove(); } }
+
 /* ---- player actions (shared by control bar + hotkey engine) ---- */
 function seekBy(s, delta){
   const v = pvideo();
@@ -132,18 +153,22 @@ function seekBy(s, delta){
 }
 function setVolume(v){
   playerPrefs.volume = Math.max(0, Math.min(1, v));
-  if (playerPrefs.volume>0) playerPrefs.muted = false;
+  playerPrefs.muted = !(playerPrefs.volume>0);   // slider >0 unmutes, 0 mutes (two-way sync with the toggle)
   savePlayerPrefs();
   const vid = pvideo();
   if (vid){ vid.muted = !!playerPrefs.muted; vid.volume = playerPrefs.muted ? 0 : playerPrefs.volume; }
   syncVolUI();
+  updateMutedHint();
 }
 function adjustVolume(delta){ setVolume((playerPrefs.muted?0:playerPrefs.volume) + delta); }
 function toggleMute(){
-  playerPrefs.muted = !playerPrefs.muted; savePlayerPrefs();
+  playerPrefs.muted = !playerPrefs.muted;
+  if (!playerPrefs.muted && !(playerPrefs.volume>0)) playerPrefs.volume = 0.5;   // unmuting with no audible volume → medium 50%
+  savePlayerPrefs();
   const vid = pvideo();
   if (vid){ vid.muted = !!playerPrefs.muted; vid.volume = playerPrefs.muted ? 0 : playerPrefs.volume; }
   syncVolUI();
+  updateMutedHint();
 }
 function setSpeed(v){
   if (!PLAYER_SPEEDS.includes(v)) return;
@@ -276,6 +301,7 @@ function renderLivePlayer(s){
     <div class="player playing" id="playerBox">
       ${media}
       <div class="live-badge">${t('liveBadge')}</div>
+      ${mutedHintHtml()}
     </div>
     <div class="pbar live">
       <div class="pctrl">
@@ -314,6 +340,7 @@ function renderPlayer(s){
   return `
     <div class="player ${player.playing?'playing':''}" id="playerBox">
       ${media}
+      ${mutedHintHtml()}
       ${speed!==1?`<div class="pspeed-badge">${speed}×</div>`:''}
     </div>
     <div class="pbar">
@@ -373,6 +400,8 @@ function bindPlayer(s){
   if (vol) vol.addEventListener('input', ()=> setVolume(+vol.value));
   const mute = document.getElementById('pmute');
   if (mute) mute.addEventListener('click', e=>{ e.stopPropagation(); toggleMute(); });
+  const uh = document.querySelector('[data-unmute]');
+  if (uh) uh.addEventListener('click', e=>{ e.stopPropagation(); if (playerPrefs.muted) toggleMute(); });
   const sp = document.getElementById('pspeed');
   if (sp) sp.addEventListener('change', ()=> setSpeed(+sp.value));
   const full = document.querySelector('[data-pfull]');
