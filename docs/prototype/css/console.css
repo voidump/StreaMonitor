@@ -567,6 +567,28 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--bg-active);border:
 }
 @keyframes hkpulse{0%,100%{opacity:1}50%{opacity:.55}}
 
+/* ========== NB9: selection mode — selectors hidden until entered ========== */
+/* active toolbar toggle (token-only, no new color values) */
+.btn.sel-toggle.on{background:var(--bg-active);border-color:var(--accent-dim);color:var(--text)}
+/* default (not in selection mode): hide the "select all" control */
+.view:not(.selmode) .selall-toggle{display:none}
+/* list view: collapse the checkbox column so no empty gutter is left */
+.view:not(.selmode) .roster th.sel-cell,
+.view:not(.selmode) .roster td.sel-cell{width:0;min-width:0;padding:0;overflow:visible}
+.view:not(.selmode) .roster tbody tr{position:relative}
+/* reveal a row's checkbox on hover, floated into the table's left margin (clear of content) */
+.view:not(.selmode) .roster td.sel-cell .rowcheck{
+  position:absolute;left:-14px;top:50%;transform:translateY(-50%);
+  opacity:0;pointer-events:none;transition:opacity .12s;
+}
+.view:not(.selmode) .roster tbody tr:hover td.sel-cell .rowcheck{opacity:1;pointer-events:auto}
+/* keep the recording indicator visible once the first cell is collapsed */
+.view:not(.selmode) .roster tr.recording td.sel-cell{box-shadow:none}
+.view:not(.selmode) .roster tr.recording td.sel-cell+td{box-shadow:inset 3px 0 0 var(--rec)}
+/* card view: hide the checkbox until the card is hovered */
+.view:not(.selmode) .card .card-check{display:none}
+.view:not(.selmode) .card:hover .card-check{display:inline-block}
+
 /* narrow-screen overrides — must stay last to win the cascade */
 @media (max-width:760px){
   .detail-head{height:auto;min-height:52px;padding:8px 10px;gap:8px}

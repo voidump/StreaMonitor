@@ -75,6 +75,7 @@ function renderDashboard(){
   const allSel = list.length>0 && list.every(s=>selected.has(s.id));
   const selArr = streamers.filter(s=>selected.has(s.id));
   const selSize = fmtSize(selArr.reduce((a,s)=>a+sizeOf(s),0));
+  const inSel = selMode || selArr.length>0;   // NB9: selection mode active
 
   const th = (key,label,cls='')=>{
     const arr = sort.key===key ? `<span class="arrow">${sort.dir>0?'▲':'▼'}</span>`:'';
@@ -145,7 +146,7 @@ function renderDashboard(){
     <div class="add-toggle"><button data-addmode="url">${t('addUrlToggle')}</button></div>`;
 
   return `
-  <div class="view view-${viewMode}${selArr.length?' has-sel':''}">
+  <div class="view view-${viewMode}${selArr.length?' has-sel':''}${inSel?' selmode':''}">
     <div class="topbar">
       <h1>${t('navDashboard')}</h1>
       <div class="counts">
@@ -158,6 +159,7 @@ function renderDashboard(){
           <button class="vt ${viewMode==='list'?'on':''}" data-view="list" title="${t('viewList')}">${IC.list}<span>${t('viewList')}</span></button>
           <button class="vt ${viewMode==='card'?'on':''}" data-view="card" title="${t('viewCard')}">${IC.grid}<span>${t('viewCard')}</span></button>
         </div>
+        <button class="btn sel-toggle${inSel?' on':''}" id="selToggle" title="${inSel?t('selectDone'):t('selectMode')}">${IC.check}<span>${inSel?t('selectDone'):t('selectMode')}</span></button>
         <button class="btn" id="stopAll" title="${t('stopAll')}">${IC.pauseCirc}<span>${t('stopAll')}</span></button>
         <button class="btn" id="startAll" title="${t('startAll')}">${IC.playCirc}<span>${t('startAll')}</span></button>
       </div>
