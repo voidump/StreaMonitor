@@ -486,7 +486,7 @@ function syncApiBanner(){
     document.body.appendChild(el);
   }
   if (apiState.error){
-    el.style.cssText += ';background:#2a1517;border:1px solid #7c383d;color:#ff8589';
+    el.style.cssText += ';background:var(--danger-bg);border:1px solid var(--danger-border-strong);color:var(--danger-text)';
     el.innerHTML = IC.alert+'<span>'+t('apiError')+'</span> <a href="#" id="apiRetry" style="color:#ffb3b6;text-decoration:underline;cursor:pointer">'+t('apiRetry')+'</a>';
     const r = el.querySelector('#apiRetry');
     if (r) r.onclick = ev=>{ ev.preventDefault(); apiState.loading=true; apiState.error=false; syncApiBanner(); refreshStreamers(); };

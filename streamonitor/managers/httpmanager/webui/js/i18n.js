@@ -1,7 +1,7 @@
 'use strict';
 window.addEventListener('error', e=>{
   const box = document.createElement('div');
-  box.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:999;background:#2a1517;border:1px solid #7c383d;color:#ff8589;padding:10px 14px;border-radius:6px;font:12px monospace;max-width:70vw;white-space:pre-wrap';
+  box.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:999;background:var(--danger-bg);border:1px solid var(--danger-border-strong);color:var(--danger-text);padding:10px 14px;border-radius:6px;font:12px monospace;max-width:70vw;white-space:pre-wrap';
   box.textContent = 'JS error: ' + e.message + ' @ ' + (e.filename||'').split('/').pop() + ':' + e.lineno;
   document.body.appendChild(box);
 });
