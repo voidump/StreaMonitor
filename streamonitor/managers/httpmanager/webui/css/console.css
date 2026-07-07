@@ -267,16 +267,63 @@ tr:hover .row-actions{opacity:1}
 
 /* card layout — base card styles apply in both the explicit card view and the narrow-screen fallback */
 .cards{display:none}
+/* NB13: Stripchat-style preview card — cover image + dense info bar */
 .card{
   background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;
-  padding:10px 12px;cursor:pointer;
+  overflow:hidden;cursor:pointer;transition:border-color .12s;
+  display:flex;flex-direction:column;
 }
-.card.recording{box-shadow:inset 3px 0 0 var(--rec)}
-.card-top{display:flex;align-items:center;gap:10px}
-.card-top .grow{flex:1;min-width:0}
-.card-meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--text-dim)}
-.card-meta b{font-family:var(--mono);font-weight:500;color:var(--text)}
-.card-actions{display:flex;gap:4px;justify-content:flex-end;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.card:hover{border-color:var(--border-strong)}
+.card.recording{border-color:var(--rec)}
+/* cover */
+.card-cover{position:relative;aspect-ratio:16/9;background:#000;flex:none}
+.card-cover-img{width:100%;height:100%;object-fit:cover;display:block}
+.card-cover::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(180deg,rgba(5,8,12,.4) 0%,transparent 32%,transparent 58%,rgba(5,8,12,.6) 100%);
+}
+.card-status{
+  position:absolute;left:8px;top:8px;z-index:2;
+  display:inline-flex;align-items:center;gap:5px;white-space:nowrap;
+  background:rgba(5,8,12,.72);color:#fff;border-radius:20px;padding:3px 9px;
+  font-size:11px;font-weight:500;
+}
+.card-status .dot{width:7px;height:7px;border-radius:50%;flex:none}
+.card-status .dot.pulse{animation:pulse 1.6s ease-in-out infinite}
+.card-live{
+  position:absolute;left:8px;top:8px;z-index:2;
+  display:inline-flex;align-items:center;gap:5px;
+  background:var(--rec);color:#05130b;border-radius:4px;padding:2px 8px;
+  font-size:10.5px;font-weight:700;letter-spacing:.6px;
+}
+.card-live::before{content:'';width:6px;height:6px;border-radius:50%;background:#05130b;animation:pulse 1.6s ease-in-out infinite}
+.card-rec{
+  position:absolute;right:8px;bottom:8px;z-index:2;
+  background:rgba(5,8,12,.72);color:var(--rec);
+  font-family:var(--mono);font-size:10.5px;padding:1px 6px;border-radius:3px;
+}
+.card-site{position:absolute;left:8px;bottom:8px;z-index:2}
+.card .card-check{position:absolute;right:8px;top:8px;z-index:4;margin:0}
+/* hover: dim the cover and reveal quick actions */
+.card-hover{
+  position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;
+  background:rgba(5,8,12,.4);opacity:0;transition:opacity .12s;pointer-events:none;
+}
+.card:hover .card-hover{opacity:1}
+.card-hover .card-actions{display:flex;gap:8px;pointer-events:auto}
+.card-hover .icon-btn{
+  width:34px;height:34px;background:rgba(22,29,39,.92);
+  border:1px solid var(--border-strong);color:var(--text);
+}
+.card-hover .icon-btn:hover{background:var(--bg-hover);border-color:var(--border-hover)}
+.card-hover .icon-btn.danger:hover{background:var(--danger-bg);color:var(--danger-text);border-color:var(--danger-border-strong)}
+/* info bar */
+.card-body{display:flex;align-items:center;gap:10px;padding:10px 12px;min-width:0}
+.card-body .grow{flex:1;min-width:0}
+.card-body .spark{flex:none}
+.s-name .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.card-stats{display:flex;gap:10px;flex-wrap:wrap;margin-top:3px;font-size:11px;color:var(--text-dim)}
+.card-stats b{font-family:var(--mono);font-weight:500;color:var(--text)}
 /* explicit card view: hide the table, lay cards out as a responsive grid on any width */
 .view-card table.roster{display:none}
 .view-card .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
@@ -546,7 +593,6 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--bg-active);border:
 }
 .rowcheck{accent-color:var(--accent);cursor:pointer;width:15px;height:15px;flex:none}
 .roster tbody tr.selrow td{background:var(--bg-active)}
-.card .card-check{margin-right:2px}
 .card.selrow{border-color:var(--accent-dim);background:var(--bg-active)}
 .view.has-sel .list-scroll,.view.has-sel .detail-scroll{padding-bottom:96px}
 .hist-list{display:flex;flex-direction:column;gap:8px;padding-top:6px}

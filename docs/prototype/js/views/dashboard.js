@@ -58,6 +58,37 @@ function avatarEl(s, lg){
   }
   return `<span class="avatar ${lg?'lg':''}"><img src="${genAvatar(s.seed,s.user)}" ${dims} alt=""></span>`;
 }
+/* NB13: card cover with a three-level fallback — most recent recording
+ * thumbnail (NB6 /thumb) > model avatar (NB12) > generated placeholder. Mock
+ * mode uses the generated placeholder directly (zero network). */
+function cardCoverError(img){
+  if (img.dataset.coverStage==='thumb' && img.dataset.coverAvatar){
+    img.dataset.coverStage='avatar';
+    img.src = img.dataset.coverAvatar;
+    return;
+  }
+  img.onerror = null;
+  img.dataset.coverStage='placeholder';
+  img.src = genThumb(img.dataset.coverSeed);
+}
+function cardCover(s){
+  if (typeof apiState!=='undefined' && apiState.mode==='api'){
+    const av = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/avatar');
+    const recent = (s.files||[]).find(f=>f._filename);
+    if (recent){
+      const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(recent._filename)+'/thumb');
+      return `<img class="card-cover-img" src="${src}" alt="" loading="lazy" data-cover-stage="thumb" data-cover-avatar="${av}" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
+    }
+    return `<img class="card-cover-img" src="${av}" alt="" loading="lazy" data-cover-stage="avatar" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
+  }
+  return `<img class="card-cover-img" src="${genThumb(s.seed)}" alt="">`;
+}
+/* NB13: most recent recording time for the card meta row (files load in detail;
+ * the list carries none in API mode, so fall back to a dash there). */
+function lastRecAgo(s){
+  const f = (s.files||[])[0];
+  return f ? fmtAgo(Math.max(0, Math.floor((NOW - f.dt)/1000))) : '—';
+}
 
 /* ---------------- dashboard ---------------- */
 function statusRank(s){ return STATUS_ORDER.indexOf(s.status); }
@@ -117,7 +148,7 @@ function renderDashboard(){
       <td class="sel-cell"><input type="checkbox" class="rowcheck" data-sel="${s.id}" ${selected.has(s.id)?'checked':''}></td>
       <td style="width:130px">${statusChip(s)}</td>
       <td><div class="cell-streamer">${avatarEl(s)}<div style="min-width:0">
-        <div class="s-name">${esc(s.user)} <span class="flag">${s.flag}</span></div>
+        <div class="s-name"><span class="nm">${esc(s.user)}</span> <span class="flag">${s.flag}</span></div>
       </div></div></td>
       <td style="width:90px">${siteBadge(s.site)}</td>
       <td style="width:80px">${sparkline(s)}</td>
@@ -135,24 +166,36 @@ function renderDashboard(){
 
   const cards = list.map(s=>{
     const off = s.status==='paused'||s.status==='stopped';
-    return `<div class="card ${s.status==='recording'?'recording':''}${s.status==='stopped'?' stopped':''}${selected.has(s.id)?' selrow':''}" data-open="${s.id}">
-      <div class="card-top"><input type="checkbox" class="rowcheck card-check" data-sel="${s.id}" ${selected.has(s.id)?'checked':''}>${avatarEl(s)}
+    const rec = s.status==='recording';
+    const st = STATUS[s.status] || STATUS.offline;
+    const dot = st.ring ? `background:transparent;border:1.5px solid ${st.ring}` : `background:${st.color}`;
+    const corner = rec
+      ? `<span class="card-live">${t('liveBadge')}</span>
+        <span class="card-rec">${fmtSize(s.recBytes||0)}${s.recSince?` · ${fmtDur(Math.floor((NOW-s.recSince)/1000))}`:''}</span>`
+      : `<span class="card-status"><span class="dot ${st.pulse?'pulse':''}" style="${dot}"></span>${st.label()}</span>`;
+    return `<div class="card ${rec?'recording':''}${s.status==='stopped'?' stopped':''}${selected.has(s.id)?' selrow':''}" data-open="${s.id}">
+      <div class="card-cover">
+        ${cardCover(s)}
+        ${corner}
+        <span class="card-site">${siteBadge(s.site)}</span>
+        <input type="checkbox" class="rowcheck card-check" data-sel="${s.id}" ${selected.has(s.id)?'checked':''}>
+        <div class="card-hover"><div class="card-actions">
+          <button class="icon-btn" data-toggle="${s.id}" title="${off?t('resume'):t('pause')}">${off?IC.playCirc:IC.pauseCirc}</button>
+          <button class="icon-btn" data-ext="${s.id}" title="${t('openPage')}">${IC.ext}</button>
+          <button class="icon-btn danger" data-remove="${s.id}" title="${t('removeStreamer')}">${IC.trash}</button>
+        </div></div>
+      </div>
+      <div class="card-body">
+        ${avatarEl(s)}
         <div class="grow">
-          <div class="s-name">${esc(s.user)} <span class="flag">${s.flag}</span></div>
-          <div style="margin-top:2px">${siteBadge(s.site)}</div>
+          <div class="s-name"><span class="nm">${esc(s.user)}</span> <span class="flag">${s.flag}</span></div>
+          <div class="card-stats">
+            <span>${t('thFiles')} <b>${fileCount(s)}</b></span>
+            <span>${t('thSize')} <b>${fmtSize(sizeOf(s))}</b></span>
+            <span>${t('lastRec')} <b>${lastRecAgo(s)}</b></span>
+          </div>
         </div>
-        <div style="text-align:right">${statusChip(s)}</div>
-      </div>
-      <div class="card-meta">
-        <span>${t('thFiles')} <b>${fileCount(s)}</b></span>
-        <span>${t('thSize')} <b>${fmtSize(sizeOf(s))}</b></span>
-        <span>${t('thChecked')} <b>${fmtAgo(s.lastCheckSec)}</b></span>
-        <span style="margin-left:auto">${sparkline(s)}</span>
-      </div>
-      <div class="card-actions">
-        <button class="icon-btn" data-toggle="${s.id}" title="${off?t('resume'):t('pause')}">${off?IC.playCirc:IC.pauseCirc}</button>
-        <button class="icon-btn" data-ext="${s.id}" title="${t('openPage')}">${IC.ext}</button>
-        <button class="icon-btn danger" data-remove="${s.id}" title="${t('removeStreamer')}">${IC.trash}</button>
+        ${sparkline(s)}
       </div>
     </div>`;
   }).join('');
