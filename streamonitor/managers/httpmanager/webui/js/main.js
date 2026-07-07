@@ -103,7 +103,8 @@ function grabPlayingVideo(){
 function restorePlayingVideo(live){
   const ph = document.getElementById('pvideo');
   if (!ph || ph===live) return;
-  if ((ph.getAttribute('src')||'') !== (live.getAttribute('src')||'')) return;   // different file — keep the fresh <video>
+  const sameLive = ph.hasAttribute('data-live') && live.hasAttribute('data-live');   // live stream keeps its element (mpegts src is a blob)
+  if (!sameLive && (ph.getAttribute('src')||'') !== (live.getAttribute('src')||'')) return;   // different file — keep the fresh <video>
   ph.parentNode.replaceChild(live, ph);
 }
 
@@ -181,6 +182,7 @@ function startTick(s){
 function togglePlay(s){
   const v = document.getElementById('pvideo');
   if (v){ if (v.paused) v.play().catch(()=>{}); else v.pause(); return; }   // real media drives its own play/pause events
+  if (player.live) return;   // mock live has no seekable timeline
   const cur = s.files.find(f=>f.id===player.fileId);
   if (!cur) return;
   player.playing = !player.playing;
@@ -442,6 +444,10 @@ function bindDashboard(){
 
 function bindDetail(s){
   bindPlayer(s);   // control-bar interactions (seek jumps, skip, speed, volume, fullscreen)
+  document.querySelectorAll('[data-watchlive]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    startLive(s);   // L2: play the watch-while-recording stream in the player area
+  }));
   // list filter toggle (all / marked)
   document.querySelectorAll('[data-filefilter]').forEach(b=>b.addEventListener('click', ()=>{
     detailState.fileFilter = b.dataset.filefilter; render();
@@ -449,6 +455,7 @@ function bindDetail(s){
   const playFileById = id=>{
     const f = s.files.find(x=>x.id===id);
     if (!f) return;
+    stopLive();   // leaving the live stream: abort the connection / destroy mpegts
     stopTick();
     player = {fileId:null, playing:false, pos:0, timer:null};
     setPlayerFile(f);

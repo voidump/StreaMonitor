@@ -139,6 +139,8 @@ const I18N = {
     apiOpError:'操作失败，请重试',
     recInProgress:'录制中', recTag:'录制中', recDelBlocked:'录制中的文件不可删除',
     recDelSkipped:n=>`已跳过 ${n} 个录制中的文件`,
+    watchLive:'实时观看', liveBadge:'LIVE', liveConnecting:'连接中…', nowLive:'实时直播',
+    liveEnded:'直播已结束', liveUnsupported:'当前浏览器不支持该实时流格式', liveExit:'退出实时观看',
   },
   en: {
     tagline:'Recorder Console', protoTag:'UI prototype · mock data',
@@ -271,6 +273,8 @@ const I18N = {
     apiOpError:'Operation failed — please retry',
     recInProgress:'Recording', recTag:'REC', recDelBlocked:'Cannot delete a recording in progress',
     recDelSkipped:n=>`Skipped ${n} file(s) being recorded`,
+    watchLive:'Watch live', liveBadge:'LIVE', liveConnecting:'Connecting…', nowLive:'Live',
+    liveEnded:'Live stream ended', liveUnsupported:'This live stream format is not supported by your browser', liveExit:'Exit live',
   }
 };
 let lang = localStorage.getItem('sm_lang') || 'zh';

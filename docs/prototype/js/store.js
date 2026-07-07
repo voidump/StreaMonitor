@@ -72,6 +72,7 @@ function resetHotkeys(){
 }
 
 function nav(to){
+  if (typeof stopLive==='function') stopLive();   // abort any live stream before leaving/switching (no ghost connections)
   if (player.timer){clearInterval(player.timer); player.timer=null;}
   player = {fileId:null, playing:false, pos:0, timer:null};
   confirmDelId = null;
@@ -189,6 +190,7 @@ function mapStreamers(list){
       monitorState: ms==='stopped' ? 'unmonitored' : 'active',
       _monitorState: ms, _running: !!item.running, _statusText: item.statusText||'',
       recBytes: item.recordingBytes||0, recSince:null,
+      _liveAvailable: !!item.liveAvailable,   // watch-while-recording tail is readable (L2 live viewer)
       lastCheckSec: tsToSecAgo(item.lastCheckTs),
       addedDaysAgo: null,
       _videoCount: item.videoCount!=null ? item.videoCount : null,
