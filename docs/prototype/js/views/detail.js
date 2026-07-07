@@ -86,6 +86,7 @@ function renderDetail(s){
           </div>
         </div>
       </div>
+      ${liveWatchable(s)?`<button class="btn live-btn" data-watchlive="${s.id}"><span class="ldot"></span><span>${t('watchLive')}</span></button>`:''}
       <button class="btn" data-toggle="${s.id}">${off?IC.playCirc:IC.pauseCirc}<span>${off?t('resume'):t('pause')}</span></button>
       <button class="btn" data-ext="${s.id}">${IC.ext}<span>${t('openPage')}</span></button>
       <button class="btn danger" data-remove="${s.id}">${IC.userMinus}<span>${t('removeStreamer')}</span></button>

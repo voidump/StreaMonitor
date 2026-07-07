@@ -1,5 +1,6 @@
 import json
 import os
+from time import sleep
 
 from flask import Response, request
 
@@ -32,7 +33,77 @@ def _status_key(sc):
     return _STATUS_KEYS.get(sc, 'unknown')
 
 
+# Live view (watch-while-recording) tuning. We start the tail a bit before the
+# write head so latency stays low. For raw MPEG-TS the start is aligned to a
+# 188-byte packet boundary; for fragmented MP4 (what StripChat/CMAF actually
+# writes into the .tmp.ts) we prepend the init segment and start at a recent
+# fragment boundary. These are module-level so tests can shrink them.
+_TS_PACKET_SIZE = 188
+_LIVE_TAIL_BYTES = 1 << 20  # ~1 MB backoff from the write head
+_LIVE_READ_CHUNK = 64 * 1024
+_LIVE_POLL_INTERVAL = 0.5  # seconds between reads when caught up to the tail
+_LIVE_MAX_IDLE_ITERS = 60  # give up after this many empty reads (~30s)
+
+
+def _fmp4_init_end(f):
+    # Parse ISO-BMFF top-level boxes from the start and return the offset just
+    # past the 'moov' box (the init segment = ftyp + ... + moov). None if not
+    # found within a sane number of boxes.
+    f.seek(0)
+    offset = 0
+    for _ in range(64):
+        header = f.read(8)
+        if len(header) < 8:
+            return None
+        size = int.from_bytes(header[0:4], 'big')
+        box_type = header[4:8]
+        if size == 1:  # 64-bit largesize
+            ext = f.read(8)
+            if len(ext) < 8:
+                return None
+            size = int.from_bytes(ext, 'big')
+        if size < 8:
+            return None
+        if box_type == b'moov':
+            return offset + size
+        offset += size
+        f.seek(offset)
+    return None
+
+
+def _fmp4_last_moof(window, base):
+    # Find the absolute offset of the last 'moof' box in `window` that is
+    # immediately followed by an 'mdat' box (a self-contained CMAF fragment).
+    i = 0
+    last = None
+    while True:
+        j = window.find(b'moof', i)
+        if j < 0:
+            break
+        if j >= 4:
+            size = int.from_bytes(window[j - 4:j], 'big')
+            nxt = (j - 4) + size
+            if 8 <= size and nxt + 8 <= len(window) and window[nxt + 4:nxt + 8] == b'mdat':
+                last = base + (j - 4)
+        i = j + 4
+    return last
+
+
+def _live_tmp_path(streamer):
+    # Mirrors getVideoNativeHLS naming: final "<name>.<container>" is written to
+    # "<name>.tmp.ts" while recording. Returns None when not applicable.
+    if not getattr(streamer, 'recording', False):
+        return None
+    recording_name = getattr(streamer, 'recording_filename', None)
+    if not recording_name:
+        return None
+    base, _ext = os.path.splitext(recording_name)
+    tmp_name = base + '.tmp.ts'
+    return os.path.join(streamer.outputFolder, tmp_name)
+
+
 def _streamer_summary(streamer):
+    tmp_path = _live_tmp_path(streamer)
     return {
         'site': streamer.site,
         'siteslug': streamer.siteslug,
@@ -43,6 +114,7 @@ def _streamer_summary(streamer):
         'status': _status_key(streamer.sc),
         'statusText': streamer.status(),
         'recording': streamer.recording,
+        'liveAvailable': bool(tmp_path and os.path.exists(tmp_path)),
         'recordingFilename': getattr(streamer, 'recording_filename', None),
         'recordingBytes': getattr(streamer, 'recording_bytes', 0),
         'videoCount': len(streamer.video_files),
@@ -120,6 +192,79 @@ def register_api_v2(app, manager, login_required):
         detail = _streamer_summary(streamer)
         detail['videos'] = videos
         return _json(detail)
+
+    @app.route('/api/v2/streamers/<site>/<user>/live', methods=['GET'])
+    @login_required
+    def api_v2_streamer_live(site, user):
+        streamer = manager.getStreamer(user, site)
+        if streamer is None:
+            return _json({'error': 'Streamer not found'}, 404)
+        if not getattr(streamer, 'recording', False):
+            return _json({'error': 'Not recording'}, 404)
+        tmp_path = _live_tmp_path(streamer)
+        if not tmp_path or not os.path.exists(tmp_path):
+            return _json({'error': 'Live stream not available'}, 404)
+
+        # Detect the container actually on disk. StripChat/CMAF writes fragmented
+        # MP4 (ftyp/moov + moof/mdat) into the .tmp.ts; other sites write raw
+        # MPEG-TS. Serve each with the correct mimetype and start boundary.
+        try:
+            with open(tmp_path, 'rb') as f:
+                size = os.fstat(f.fileno()).st_size
+                header = f.read(12)
+                is_fmp4 = header[4:8] == b'ftyp'
+                init_bytes = b''
+                if is_fmp4:
+                    mimetype = 'video/mp4'
+                    init_end = _fmp4_init_end(f)
+                    if init_end:
+                        f.seek(0)
+                        init_bytes = f.read(init_end)
+                    win_base = max(init_end or 0, size - _LIVE_TAIL_BYTES)
+                    f.seek(win_base)
+                    window = f.read()
+                    start = _fmp4_last_moof(window, win_base)
+                    if start is None:
+                        start = init_end or 0
+                else:
+                    mimetype = 'video/mp2t'
+                    start = max(0, size - _LIVE_TAIL_BYTES)
+                    start -= start % _TS_PACKET_SIZE  # align to a TS packet
+        except OSError:
+            return _json({'error': 'Live stream not available'}, 404)
+
+        def generate():
+            try:
+                if init_bytes:
+                    yield init_bytes
+                with open(tmp_path, 'rb') as f:
+                    f.seek(start)
+                    idle = 0
+                    while True:
+                        chunk = f.read(_LIVE_READ_CHUNK)
+                        if chunk:
+                            idle = 0
+                            yield chunk
+                            continue
+                        # Caught up to the write head: stop if recording ended or
+                        # the temp file vanished (post-processing removed it).
+                        if not getattr(streamer, 'recording', False):
+                            break
+                        if not os.path.exists(tmp_path):
+                            break
+                        idle += 1
+                        if idle >= _LIVE_MAX_IDLE_ITERS:
+                            break
+                        sleep(_LIVE_POLL_INTERVAL)
+            except (GeneratorExit, OSError):
+                return
+
+        headers = {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+        return Response(generate(), mimetype=mimetype, headers=headers)
 
     @app.route('/api/v2/streamers/<site>/<user>/videos/<path:filename>', methods=['DELETE'])
     @login_required

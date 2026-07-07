@@ -428,6 +428,154 @@ def test_api_detail_flags_recording_video(tmp_path, monkeypatch):
     assert payload["videos"][0]["recording"] is True
 
 
+# --- live view (watch-while-recording) endpoint (L1) ---
+
+import streamonitor.managers.httpmanager.api_v2 as api_v2
+
+
+def _start_recording(streamer, recording_filename="alice-20260707-120000.mp4",
+                     ts_data=b"\x47" + b"\x00" * 187):
+    # Simulate an in-progress native-HLS recording by creating the .tmp.ts file
+    # that getVideoNativeHLS would be appending to.
+    streamer.recording = True
+    streamer.recording_filename = recording_filename
+    os.makedirs(streamer.outputFolder, exist_ok=True)
+    base, _ext = os.path.splitext(recording_filename)
+    tmp_path = os.path.join(streamer.outputFolder, base + ".tmp.ts")
+    with open(tmp_path, "wb") as f:
+        f.write(ts_data)
+    return tmp_path
+
+
+def test_live_available_true_when_recording_ts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    _start_recording(streamer)
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(response.data)["liveAvailable"] is True
+
+
+def test_live_available_false_when_not_recording(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(response.data)["liveAvailable"] is False
+
+
+def test_live_available_false_when_ffmpeg_mp4(tmp_path, monkeypatch):
+    # ffmpeg sites write the .mp4 directly with no .tmp.ts sidecar.
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    streamer.recording = True
+    streamer.recording_filename = "alice-20260707-120000.mp4"
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(response.data)["liveAvailable"] is False
+
+
+def test_live_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([make_streamer()])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice/live")
+    assert response.status_code == 401
+
+
+def test_live_unknown_streamer_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/ghost/live", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_live_not_recording_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([make_streamer()])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice/live", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_live_missing_tmp_file_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    streamer.recording = True
+    streamer.recording_filename = "alice-20260707-120000.mp4"
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice/live", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_live_streams_ts_aligned_to_packet(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # 100 whole TS packets; each begins with the 0x47 sync byte.
+    packets = 100
+    ts_data = b"".join(b"\x47" + bytes([i % 256]) * 187 for i in range(packets))
+    assert len(ts_data) == packets * 188
+
+    streamer = make_streamer()
+    _start_recording(streamer, ts_data=ts_data)
+    # Force a tail backoff that lands mid-packet so alignment is actually tested,
+    # and stop tailing after the first empty read.
+    monkeypatch.setattr(api_v2, "_LIVE_TAIL_BYTES", 1000)
+    monkeypatch.setattr(api_v2, "_LIVE_MAX_IDLE_ITERS", 1)
+    monkeypatch.setattr(api_v2, "_LIVE_POLL_INTERVAL", 0)
+
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice/live", headers=AUTH)
+    assert response.status_code == 200
+    assert response.mimetype == "video/mp2t"
+    assert response.headers["X-Accel-Buffering"] == "no"
+    body = response.data
+    assert len(body) > 0
+    assert len(body) % 188 == 0          # ends on a packet boundary
+    assert body[0:1] == b"\x47"          # starts aligned on the sync byte
+    # Start = (size - tail) rounded down to a packet boundary.
+    expected_start = (len(ts_data) - 1000)
+    expected_start -= expected_start % 188
+    assert body == ts_data[expected_start:]
+
+
+def _fmp4_box(box_type, payload=b""):
+    return (8 + len(payload)).to_bytes(4, "big") + box_type + payload
+
+
+def _make_fmp4(fragments=5, frag_payload=b"X" * 100):
+    # Minimal fragmented-MP4: init (ftyp + moov) followed by moof/mdat pairs.
+    init = _fmp4_box(b"ftyp", b"iso5" + b"\x00" * 4) + _fmp4_box(b"moov", b"\x00" * 40)
+    body = b""
+    for i in range(fragments):
+        body += _fmp4_box(b"moof", bytes([i]) * 16) + _fmp4_box(b"mdat", frag_payload + bytes([i]))
+    return init, body
+
+
+def test_live_streams_fmp4_prepends_init_and_tails(tmp_path, monkeypatch):
+    # StripChat/CMAF writes fMP4 into the .tmp.ts; the endpoint must serve
+    # video/mp4, prepend the init segment, and tail from a recent moof boundary.
+    monkeypatch.chdir(tmp_path)
+    init, body = _make_fmp4(fragments=5)
+    data = init + body
+
+    streamer = make_streamer()
+    _start_recording(streamer, ts_data=data)
+    # Small tail so early fragments are trimmed and backoff is exercised.
+    monkeypatch.setattr(api_v2, "_LIVE_TAIL_BYTES", 200)
+    monkeypatch.setattr(api_v2, "_LIVE_MAX_IDLE_ITERS", 1)
+    monkeypatch.setattr(api_v2, "_LIVE_POLL_INTERVAL", 0)
+
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice/live", headers=AUTH)
+    assert response.status_code == 200
+    assert response.mimetype == "video/mp4"
+    assert response.headers["X-Accel-Buffering"] == "no"
+    out = response.data
+    assert out.startswith(init)                       # init segment prepended
+    tail = out[len(init):]
+    assert tail[4:8] == b"moof"                        # tail starts at a fragment
+    assert out.endswith(data[-8:])                     # includes the newest bytes
+    assert len(out) < len(init) + len(data)           # backoff trimmed early frags
+
+
 # --- settings: server-side download directory (NB4) ---
 
 @pytest.fixture

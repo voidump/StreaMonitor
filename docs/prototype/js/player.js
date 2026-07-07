@@ -77,6 +77,14 @@ const PLAYER_HOTKEY_DEFAULTS = {
 .vthumb .rec-badge{position:absolute;left:6px;top:6px;background:var(--rec,#e0455a);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:600;display:inline-flex;align-items:center;gap:4px;z-index:2}
 .vthumb .rec-badge::before{content:'';width:6px;height:6px;border-radius:50%;background:#fff;animation:recpulse 1.2s infinite}
 @keyframes recpulse{50%{opacity:.3}}
+.live-btn{color:var(--rec,#e0455a) !important;border-color:var(--rec,#e0455a) !important}
+.live-btn .ldot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--rec,#e0455a);margin-right:6px;animation:recpulse 1.2s infinite;vertical-align:middle}
+.player .live-badge{position:absolute;top:8px;left:10px;display:inline-flex;align-items:center;gap:6px;background:var(--rec,#e0455a);color:#fff;font:700 11px/1 var(--mono);padding:4px 8px;border-radius:4px;letter-spacing:.5px;z-index:3}
+.player .live-badge::before{content:'';width:7px;height:7px;border-radius:50%;background:#fff;animation:recpulse 1.2s infinite}
+.player .live-connecting{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;color:#c6d2e0;font-size:12.5px;background:#000;z-index:2}
+.player .live-connecting .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:lspin .8s linear infinite}
+@keyframes lspin{to{transform:rotate(360deg)}}
+.now-file .live-note{color:var(--rec,#e0455a);font-weight:600}
 @media (max-width:560px){
   .pjump{order:6}
   .pvol .volrange{width:56px}
@@ -158,8 +166,137 @@ function togglePlayerFullscreen(){
   else box.requestFullscreen && box.requestFullscreen();
 }
 
+/* ================= L2 live viewer =================
+ * Watch-while-recording: streams the growing recording tail into the existing
+ * player area. Format-aware — the backend serves video/mp4 (fMP4/CMAF, played
+ * natively) or video/mp2t (raw TS, played via the vendored mpegts.js). Mock mode
+ * (no backend) shows a simulated live frame and issues no network requests. */
+let liveSession = null;   // {mode:'connecting'|'native'|'mpegts'|'mock', url, controller, mp, sid}
+
+function liveWatchable(s){
+  return apiState.mode==='api' ? !!s._liveAvailable : s.status==='recording';
+}
+function liveUrl(s){
+  return apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/live');
+}
+function startLive(s){
+  stopLive();
+  player.live = true; player.playing = false;
+  liveSession = {mode: apiState.mode==='api' ? 'connecting' : 'mock', url: liveUrl(s), controller:null, mp:null, sid:s.id};
+  render();
+  if (apiState.mode==='api') probeLive(s);
+}
+async function probeLive(s){
+  const ctrl = new AbortController();
+  liveSession.controller = ctrl;
+  let ct = '';
+  try {
+    const r = await fetch(liveSession.url, {credentials:'same-origin', signal:ctrl.signal});
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    ct = (r.headers.get('Content-Type')||'').toLowerCase();
+  } catch(e){
+    if (ctrl.signal.aborted) return;   // superseded by stopLive() / another start
+    liveEndedState(); return;
+  }
+  if (!player.live || !liveSession || liveSession.controller!==ctrl) return;   // superseded while awaiting
+  ctrl.abort(); liveSession.controller = null;   // headers are all we needed; playback opens its own connection
+  if (ct.indexOf('mp2t')>=0 || ct.indexOf('mpegts')>=0){
+    if (window.mpegts && mpegts.isSupported()) liveSession.mode = 'mpegts';
+    else { toast(t('liveUnsupported'), 'warn'); liveEndedState(); return; }
+  } else {
+    liveSession.mode = 'native';   // video/mp4 (fMP4/CMAF) → native <video src>
+  }
+  render();
+}
+function bindLive(s){
+  if (!player.live || !liveSession || apiState.mode!=='api') return;
+  if (liveSession.mode!=='native' && liveSession.mode!=='mpegts') return;   // 'connecting': nothing to wire yet
+  const v = pvideo();
+  if (!v || v._smLiveBound) return;   // node is preserved across re-renders (restorePlayingVideo) — bind once
+  v._smLiveBound = true;
+  v.muted = !!playerPrefs.muted;
+  v.volume = playerPrefs.muted ? 0 : playerPrefs.volume;
+  if (liveSession.mode==='mpegts'){
+    try {
+      const mp = mpegts.createPlayer({type:'mse', isLive:true, url:liveSession.url}, {enableWorker:false, liveBufferLatencyChasing:true});
+      mp.attachMediaElement(v);
+      mp.on(mpegts.Events.ERROR, ()=>{ if (player.live) liveEndedState(); });
+      mp.load();
+      mp.play().catch(()=>{});
+      liveSession.mp = mp;
+    } catch(e){ liveEndedState(); return; }
+  } else {
+    v.play().catch(()=>{});   // native: src is in the markup, just start it
+  }
+  v.addEventListener('play', ()=>{ player.playing = true; updatePlayIcon(); });
+  v.addEventListener('pause', ()=>{ player.playing = false; updatePlayIcon(); });
+  v.addEventListener('ended', ()=>{ if (player.live) liveEndedState(); });   // generator finished → recording ended
+  v.addEventListener('error', ()=>{ if (player.live) liveEndedState(); });
+  v.addEventListener('click', e=>{ e.stopPropagation(); togglePlay(s); });
+  player.playing = !v.paused; updatePlayIcon();   // autoplay may have started before the listeners attached
+}
+function teardownLiveConn(){
+  if (liveSession){
+    if (liveSession.controller){ try{ liveSession.controller.abort(); }catch(e){} liveSession.controller = null; }
+    if (liveSession.mp){ try{ liveSession.mp.destroy(); }catch(e){} liveSession.mp = null; }
+  }
+  const v = document.getElementById('pvideo');
+  if (v && v.hasAttribute('data-live')){ try{ v.pause(); v.removeAttribute('src'); v.load(); }catch(e){} }   // close the native connection
+}
+function stopLive(){
+  if (!liveSession && !player.live) return;
+  teardownLiveConn();
+  liveSession = null;
+  player.live = false;
+}
+function liveEndedState(){   // stream ended naturally / unavailable: gentle notice, back to normal
+  teardownLiveConn();
+  liveSession = null;
+  player.live = false;
+  player.playing = false;
+  toast(t('liveEnded'));
+  render();
+}
+function renderLivePlayer(s){
+  const mode = liveSession ? liveSession.mode : 'connecting';
+  const eff = playerPrefs.muted ? 0 : playerPrefs.volume;
+  let media;
+  if (apiState.mode==='api' && (mode==='native' || mode==='mpegts')){
+    const srcAttr = mode==='native' ? ` src="${esc(liveSession.url)}"` : '';
+    media = `<video id="pvideo" class="frame" data-live="1"${srcAttr} playsinline autoplay${playerPrefs.muted?' muted':''}></video>`;
+  } else if (apiState.mode==='api' && mode==='connecting'){
+    media = `<video id="pvideo" class="frame" data-live="1" playsinline></video><div class="live-connecting"><span class="spin"></span>${t('liveConnecting')}</div>`;
+  } else {
+    media = `<img class="frame" src="${genThumb(s.seed, 704, 396)}" alt=""><div class="veil"></div>`;   // mock: simulated live frame, no network
+  }
+  return `
+    <div class="player playing" id="playerBox">
+      ${media}
+      <div class="live-badge">${t('liveBadge')}</div>
+    </div>
+    <div class="pbar live">
+      <div class="pctrl">
+        <button class="icon-btn" data-pp="1" title="${t('player')}">${player.playing?IC.pause:IC.play}</button>
+        <span class="time live-note">${t('nowLive')}</span>
+        <span class="pspacer"></span>
+        <div class="pvol" title="${pt('volTitle')}">
+          <button class="icon-btn ${playerPrefs.muted?'muted':''}" id="pmute" title="${playerPrefs.muted?pt('unmute'):pt('mute')}">${(playerPrefs.muted||eff===0)?PIC.mute:IC.volume}</button>
+          <input type="range" class="volrange" id="pvolr" min="0" max="1" step="0.05" value="${eff}" style="--vol:${eff*100}%">
+        </div>
+        <button class="icon-btn" data-pfull="1" title="${t('fullscreen')}">${IC.full}</button>
+        <button class="icon-btn" data-liveexit="1" title="${t('liveExit')}">${IC.back}</button>
+      </div>
+    </div>
+    <div class="now-file">
+      <span style="color:var(--text-faint)">${t('nowPlaying')}</span>
+      <span class="live-note">${t('nowLive')}</span>
+      <span>·</span><span class="fname">${esc(s.user)}</span>
+    </div>`;
+}
+
 /* ---- render: video frame + mature control bar + now-playing strip ---- */
 function renderPlayer(s){
+  if (player.live) return renderLivePlayer(s);
   const cur = s.files.find(f=>f.id===player.fileId) || null;
   if (!cur) return `<div class="player-empty">${s.files.length?t('noFileSelected'):t('noRecordings')}</div>`;
   const idx = s.files.findIndex(f=>f.id===cur.id);
@@ -237,6 +374,8 @@ function bindPlayer(s){
   if (sp) sp.addEventListener('change', ()=> setSpeed(+sp.value));
   const full = document.querySelector('[data-pfull]');
   if (full) full.addEventListener('click', e=>{ e.stopPropagation(); togglePlayerFullscreen(); });
+  const lx = document.querySelector('[data-liveexit]');
+  if (lx) lx.addEventListener('click', e=>{ e.stopPropagation(); stopLive(); render(); });
   // hover-scrub tooltip over the seek bar
   const seek = document.getElementById('pseek'), tip = document.getElementById('pseekTip');
   if (seek && tip){
@@ -250,6 +389,7 @@ function bindPlayer(s){
     });
     seek.addEventListener('mouseleave', ()=>{ tip.style.opacity='0'; });
   }
+  bindLive(s);        // L2: wire the live <video>/mpegts.js element when in live mode
   bindRealVideo(s);   // API mode only: hook the real <video> element to the control bar
 }
 
@@ -264,6 +404,7 @@ function updatePlayIcon(){
   if (box) box.classList.toggle('playing', player.playing);
 }
 function bindRealVideo(s){
+  if (player.live) return;   // live playback is wired by bindLive, not the file-oriented control bar
   const v = pvideo();
   if (!v || v._smBound) return;   // node is preserved across re-renders (see grabPlayingVideo) — bind exactly once
   v._smBound = true;
@@ -314,6 +455,13 @@ function handlePlayerHotkey(e, s){
   const ALT = { prevVideo:['['], nextVideo:[']'] };   // bracket alternates, always available
   const hit = act => hk[act]===token || (ALT[act] && ALT[act].includes(token));
   const idx = s.files.findIndex(f=>f.id===player.fileId);
+  if (player.live){   // live has no seekable timeline / file list — only play/pause + volume apply
+    if (hit('playPause')){ e.preventDefault(); togglePlay(s); return true; }
+    if (hit('volumeUp')){ e.preventDefault(); adjustVolume(0.1); return true; }
+    if (hit('volumeDown')){ e.preventDefault(); adjustVolume(-0.1); return true; }
+    if (hit('mute')){ e.preventDefault(); toggleMute(); return true; }
+    return false;
+  }
   if (hit('playPause')){ e.preventDefault(); togglePlay(s); return true; }
   if (hit('jumpBack')){ e.preventDefault(); seekBy(s,-30); return true; }
   if (hit('jumpFwd')){ e.preventDefault(); seekBy(s,30); return true; }
