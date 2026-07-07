@@ -462,6 +462,17 @@ tr:hover .row-actions{opacity:1}
 .seg button.on{background:var(--bg-active);color:var(--text)}
 .seg button+button{border-left:1px solid var(--border-strong)}
 .set-row .soon{font-size:11px;color:var(--text-faint);border:1px solid var(--border);padding:1px 8px;border-radius:9px}
+.dldir-row{align-items:flex-start}
+.dldir-edit{display:flex;gap:8px;align-items:stretch;margin-top:10px}
+.dldir-input{
+  flex:1;min-width:0;height:32px;padding:0 10px;
+  background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius);
+  font-family:var(--mono);font-size:12px;transition:border-color .12s;
+}
+.dldir-input:focus{border-color:var(--accent)}
+.dldir-input::placeholder{color:var(--text-faint);font-family:var(--font)}
+.dldir-edit .btn{flex:none}
+.dldir-err{margin-top:8px;font-size:11.5px;color:#ff8589}
 
 /* ========== Modal / toast ========== */
 .modal-backdrop{

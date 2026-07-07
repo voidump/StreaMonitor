@@ -145,6 +145,7 @@ const ORPHANS = {
 };
 
 const DISK = {total: 2*1024*1024*1024*1024, used: 1.37*1024*1024*1024*1024};
+const MOCK_DOWNLOAD_DIR = '/srv/streamonitor/downloads';   // shown by the settings panel in mock mode (no backend)
 
 /* ---------------- formatting ---------------- */
 function fmtSize(b){
