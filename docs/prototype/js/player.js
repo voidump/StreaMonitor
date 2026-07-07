@@ -60,6 +60,7 @@ const PLAYER_HOTKEY_DEFAULTS = {
 #pseek::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:#dfe9f5;box-shadow:0 0 0 3px rgba(76,159,232,.25)}
 .pseek-tip{position:absolute;top:-20px;transform:translateX(-50%);background:#0b0f15;border:1px solid var(--border-strong);color:var(--text);font:11px/1 var(--mono);padding:3px 6px;border-radius:4px;pointer-events:none;opacity:0;transition:opacity .12s;white-space:nowrap;z-index:5}
 .pctrl{flex-wrap:wrap}
+.pctrl .time{font-variant-numeric:tabular-nums}
 .pctrl .icon-btn:disabled{opacity:.35;cursor:not-allowed}
 .pjump{display:inline-flex;gap:3px}
 .pjump .jbtn{font-family:var(--mono);font-size:11px;color:var(--text-dim);border:1px solid var(--border-strong);border-radius:5px;padding:2px 7px;background:var(--bg-panel);transition:background .12s,color .12s}
@@ -97,7 +98,9 @@ const PLAYER_HOTKEY_DEFAULTS = {
 })();
 
 /* ---- lightweight DOM sync (avoids full re-render during scrub / volume / autoplay tick) ---- */
+let pScrub = false;   // user is dragging #pseek: pause timeupdate write-back so the thumb/time don't jitter
 function syncSeekUI(cur){
+  if (pScrub) return;   // scrubbing owns the UI; the seek input handler drives value/--pct/time live
   const seek=document.getElementById('pseek'), tEl=document.getElementById('ptime');
   if (seek){ seek.value=player.pos; seek.style.setProperty('--pct',(player.pos/cur.dur*100)+'%'); }
   if (tEl) tEl.textContent=fmtDur(player.pos);
@@ -315,7 +318,7 @@ function renderPlayer(s){
     </div>
     <div class="pbar">
       <div class="pseek-wrap">
-        <input type="range" id="pseek" min="0" max="${cur.dur}" step="1" value="${player.pos}" style="--pct:${pct}%">
+        <input type="range" id="pseek" min="0" max="${cur.dur}" step="any" value="${player.pos}" style="--pct:${pct}%">
         <div class="pseek-tip" id="pseekTip"></div>
       </div>
       <div class="pctrl">
@@ -376,8 +379,16 @@ function bindPlayer(s){
   if (full) full.addEventListener('click', e=>{ e.stopPropagation(); togglePlayerFullscreen(); });
   const lx = document.querySelector('[data-liveexit]');
   if (lx) lx.addEventListener('click', e=>{ e.stopPropagation(); stopLive(); render(); });
-  // hover-scrub tooltip over the seek bar
+  // hover-scrub tooltip + drag guard over the seek bar
   const seek = document.getElementById('pseek'), tip = document.getElementById('pseekTip');
+  pScrub = false;   // clear any stale scrub state on (re)bind
+  if (seek){
+    const endScrub = ()=>{ pScrub = false; };
+    seek.addEventListener('pointerdown', ()=>{ pScrub = true; });
+    seek.addEventListener('pointerup', endScrub);
+    seek.addEventListener('pointercancel', endScrub);
+    seek.addEventListener('change', endScrub);
+  }
   if (seek && tip){
     const cur = s.files.find(f=>f.id===player.fileId);
     seek.addEventListener('mousemove', e=>{
