@@ -1,9 +1,25 @@
 'use strict';
 /* ---------------- shared renderers ---------------- */
+/* NB11: in API mode show the site's real favicon (fetched + disk-cached by the
+ * backend); onerror falls back to the colored dot. Mock mode keeps the colored
+ * dot and makes zero network calls. */
+function siteBadgeIconError(img){
+  img.onerror = null;
+  const span = document.createElement('span');
+  span.innerHTML = img.dataset.dot;
+  const dot = span.firstElementChild;
+  if (dot) img.replaceWith(dot);
+}
 function siteBadge(siteKey){
   const s = SITES[siteKey];
+  const dot = `<svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="${s.color}"/></svg>`;
+  let icon = dot;
+  if (typeof apiState!=='undefined' && apiState.mode==='api'){
+    const src = apiUrl('/sites/'+encodeURIComponent(siteKey)+'/favicon');
+    icon = `<img src="${src}" width="12" height="12" style="width:12px;height:12px;border-radius:2px;object-fit:contain" alt="" data-dot="${dot.replace(/"/g,'&quot;')}" onerror="siteBadgeIconError(this)">`;
+  }
   return `<span class="sitebadge" style="color:${s.color};background:${s.color}1a;border-color:${s.color}33" title="${s.name}">
-    <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="${s.color}"/></svg>${s.abbr}</span>`;
+    ${icon}${s.abbr}</span>`;
 }
 function statusChip(s){
   const st = STATUS[s.status] || STATUS.offline;   // guard unexpected status values
@@ -26,8 +42,21 @@ function sparkline(s){
     }).join('')
   }</span>`;
 }
+/* NB12: in API mode show the model's real on-site avatar (proxied + disk-cached
+ * by the backend); onerror falls back to the generated placeholder. Mock mode
+ * keeps the generated avatar and makes zero network calls. */
+function avatarImgError(img){
+  img.onerror = null;
+  img.src = genAvatar(img.dataset.seed, img.dataset.user);
+}
 function avatarEl(s, lg){
-  return `<span class="avatar ${lg?'lg':''}"><img src="${genAvatar(s.seed,s.user)}" width="${lg?40:30}" height="${lg?40:30}" style="width:100%;height:100%;object-fit:cover" alt=""></span>`;
+  const px = lg?40:30;
+  const dims = `width="${px}" height="${px}" style="width:100%;height:100%;object-fit:cover"`;
+  if (typeof apiState!=='undefined' && apiState.mode==='api'){
+    const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/avatar');
+    return `<span class="avatar ${lg?'lg':''}"><img src="${src}" data-seed="${s.seed}" data-user="${s.user}" ${dims} alt="" onerror="avatarImgError(this)"></span>`;
+  }
+  return `<span class="avatar ${lg?'lg':''}"><img src="${genAvatar(s.seed,s.user)}" ${dims} alt=""></span>`;
 }
 
 /* ---------------- dashboard ---------------- */

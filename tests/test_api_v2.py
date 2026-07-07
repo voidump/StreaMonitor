@@ -805,3 +805,99 @@ def test_detail_duration_real_video(tmp_path, monkeypatch):
     video = json.loads(response.data)["videos"][0]
     assert video["duration"] is not None
     assert 1.0 < video["duration"] < 4.0
+
+
+# --- model avatar: real on-site avatar with proxy download + cache (NB12) ---
+
+class _FakeResp:
+    def __init__(self, content=b"", status_code=200, content_type="image/png"):
+        self.content = content
+        self.status_code = status_code
+        self.headers = {"Content-Type": content_type}
+
+
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+
+
+def test_avatar_extractor_stripchat():
+    assert api_v2._avatar_from_stripchat({"model": {"avatarUrl": "u1"}}) == "u1"
+    assert api_v2._avatar_from_stripchat({"model": {"previewUrl": "u2"}}) == "u2"
+    assert api_v2._avatar_from_stripchat({"model": {}}) is None
+
+
+def test_avatar_extractor_chaturbate():
+    assert api_v2._avatar_from_chaturbate({"img": "cb"}) == "cb"
+    assert api_v2._avatar_from_chaturbate({}) is None
+
+
+def test_avatar_source_url_unknown_site_returns_none():
+    streamer = make_streamer()  # FakeSite, siteslug "FS" — no extractor registered
+    streamer.lastInfo = {"avatarUrl": "whatever"}
+    assert api_v2._avatar_source_url(streamer) is None
+
+
+def test_avatar_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([make_streamer()])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice/avatar")
+    assert response.status_code == 401
+
+
+def test_avatar_unknown_streamer_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/ghost/avatar", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_avatar_no_channel_404(tmp_path, monkeypatch):
+    # Unknown site (no extractor) and no prior cache -> 404 so the frontend falls
+    # back to its generated placeholder.
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([make_streamer()])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/avatar", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_avatar_downloads_then_serves_from_cache(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    streamer.lastInfo = {"avatarUrl": "https://example/av.png"}
+    calls = []
+    streamer.session.get = lambda url, **kw: (calls.append(url) or _FakeResp(_PNG_BYTES))
+    # Register a temporary extractor for the fake site's slug.
+    monkeypatch.setitem(api_v2._AVATAR_EXTRACTORS, "FS", lambda info: info.get("avatarUrl"))
+    manager = HTTPManager([streamer])
+    client = _client(manager)
+
+    first = client.get("/api/v2/streamers/FakeSite/alice/avatar", headers=AUTH)
+    assert first.status_code == 200
+    assert first.mimetype == "image/png"
+    assert first.data == _PNG_BYTES
+    assert len(calls) == 1
+    cache_path = api_v2._avatar_cache_path(streamer.site, streamer.username)
+    assert os.path.exists(cache_path)
+
+    # Second request within TTL serves the cached file without re-downloading.
+    second = client.get("/api/v2/streamers/FakeSite/alice/avatar", headers=AUTH)
+    assert second.status_code == 200
+    assert second.data == _PNG_BYTES
+    assert len(calls) == 1
+
+
+def test_avatar_offline_serves_stale_cache(tmp_path, monkeypatch):
+    # lastInfo empty (offline) but a cached avatar exists -> serve the cache.
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    streamer.lastInfo = {}
+    cache_path = api_v2._avatar_cache_path(streamer.site, streamer.username)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as f:
+        f.write(_PNG_BYTES)
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/avatar", headers=AUTH)
+    assert response.status_code == 200
+    assert response.data == _PNG_BYTES
