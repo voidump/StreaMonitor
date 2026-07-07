@@ -1,6 +1,8 @@
 import base64
 import json
 import os
+import shutil
+import subprocess
 
 import pytest
 
@@ -670,3 +672,136 @@ def test_set_download_dir_unwritable_400(tmp_path, monkeypatch, preserve_downloa
         assert json.loads(response.data)["code"] == "not_writable"
     finally:
         os.chmod(readonly, 0o700)   # let pytest clean up tmp_path
+
+
+# --- video thumbnails + duration (NB6) ---
+
+FFMPEG_AVAILABLE = (
+    shutil.which(parameters.FFMPEG_PATH) is not None and shutil.which("ffprobe") is not None
+)
+
+
+def _make_real_video(streamer, filename="alice-20260706-130000.mp4", seconds=2):
+    os.makedirs(streamer.outputFolder, exist_ok=True)
+    path = os.path.join(streamer.outputFolder, filename)
+    subprocess.run(
+        [parameters.FFMPEG_PATH, "-y", "-f", "lavfi",
+         "-i", f"testsrc=duration={seconds}:size=320x240:rate=10",
+         "-pix_fmt", "yuv420p", path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    streamer.cache_file_list()
+    return path
+
+
+def test_video_thumb_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-120000.mp4/thumb")
+    assert response.status_code == 401
+
+
+def test_video_thumb_unknown_streamer_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/ghost/videos/x.mp4/thumb", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_video_thumb_missing_file_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/videos/nope.mp4/thumb", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_video_thumb_broken_file_404(tmp_path, monkeypatch):
+    # A file that ffmpeg cannot decode returns 404 so the frontend falls back to
+    # its generated placeholder image.
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-120000.mp4/thumb",
+        headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_video_thumb_recording_in_progress_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    streamer.recording = True
+    streamer.recording_filename = "alice-20260706-120000.mp4"
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-120000.mp4/thumb",
+        headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_detail_includes_duration_field(tmp_path, monkeypatch):
+    # The duration key is always present; unparseable files report null.
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert response.status_code == 200
+    video = json.loads(response.data)["videos"][0]
+    assert "duration" in video
+    assert video["duration"] is None
+
+
+def test_detail_recording_video_has_null_duration(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    streamer.recording = True
+    streamer.recording_filename = "alice-20260706-120000.mp4"
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    video = json.loads(response.data)["videos"][0]
+    assert video["recording"] is True
+    assert video["duration"] is None
+
+
+@pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg/ffprobe not installed")
+def test_video_thumb_real_video_generates_and_caches(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    _make_real_video(streamer)
+    manager = HTTPManager([streamer])
+    client = _client(manager)
+
+    response = client.get(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-130000.mp4/thumb",
+        headers=AUTH)
+    assert response.status_code == 200
+    assert response.mimetype == "image/jpeg"
+    assert len(response.data) > 0
+
+    video = streamer.video_files[0]
+    thumb_path = api_v2._thumb_cache_path(video.abs_path, int(video._stat.st_mtime))
+    assert os.path.exists(thumb_path)
+    first_mtime = os.path.getmtime(thumb_path)
+
+    # Second request must serve the cached file without regenerating it.
+    again = client.get(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-130000.mp4/thumb",
+        headers=AUTH)
+    assert again.status_code == 200
+    assert os.path.getmtime(thumb_path) == first_mtime
+
+
+@pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg/ffprobe not installed")
+def test_detail_duration_real_video(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    _make_real_video(streamer, seconds=2)
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    video = json.loads(response.data)["videos"][0]
+    assert video["duration"] is not None
+    assert 1.0 < video["duration"] < 4.0

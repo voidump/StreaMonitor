@@ -25,9 +25,13 @@ function renderDetail(s){
     const isCur = cur && cur.id===f.id;
     const confirm = confirmDelId===f.id && !f._recording;
     const watchedLabel = f.watchPct>=100?t('watched'):f.watchPct>0?`${f.watchPct}%`:t('neverWatched');
+    const useApiThumb = apiState.mode==='api' && f._filename;   // real ffmpeg frame when backed by the API; else the generated placeholder
+    const thumbSrc = useApiThumb
+      ? apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(f._filename)+'/thumb')
+      : genThumb(f.id);
     return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}" data-playfile="${f.id}">
       <div class="imgwrap">
-        <img src="${genThumb(f.id)}" alt="" loading="lazy">
+        <img src="${thumbSrc}" alt="" loading="lazy"${useApiThumb?` data-thumb-fallback="${esc(f.id)}"`:''}>
         ${f._recording?`<span class="rec-badge">${t('recTag')}</span>`:''}
         ${f.marked?`<span class="mark-badge">${IC.markFill}${t('markedTag')}</span>`:''}
         <span class="dur">${fmtDur(f.dur)}</span>

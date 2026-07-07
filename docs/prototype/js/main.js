@@ -444,6 +444,8 @@ function bindDashboard(){
 
 function bindDetail(s){
   bindPlayer(s);   // control-bar interactions (seek jumps, skip, speed, volume, fullscreen)
+  // real thumbnails: if the ffmpeg frame 404s (broken/unparseable file), fall back to the generated placeholder
+  document.querySelectorAll('[data-thumb-fallback]').forEach(img=>img.addEventListener('error', ()=>{ img.src = genThumb(img.dataset.thumbFallback); }, {once:true}));
   document.querySelectorAll('[data-watchlive]').forEach(b=>b.addEventListener('click', e=>{
     e.stopPropagation();
     startLive(s);   // L2: play the watch-while-recording stream in the player area

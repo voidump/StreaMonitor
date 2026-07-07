@@ -230,7 +230,7 @@ async function loadDetail(site, user){
     const oldById = {}; s.files.forEach(f=>{ oldById[f.id]=f; });   // preserve marks/progress
     s.files = vids.map(v=>{
       const id = v.filename; const old = oldById[id];
-      return { id, dt: parseTs(v.mtime), dur: old?old.dur:0, size: v.size||0,
+      return { id, dt: parseTs(v.mtime), dur: v.duration!=null ? v.duration : (old?old.dur:0), size: v.size||0,
         watchPct: old?old.watchPct:0, marked: old?!!old.marked:false,
         lastWatched: old?old.lastWatched:null, _filename: v.filename, _url: v.url||'', _recording: !!v.recording };
     }).sort((a,b)=>b.dt-a.dt);

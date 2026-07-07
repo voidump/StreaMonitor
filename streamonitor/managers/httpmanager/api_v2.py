@@ -1,12 +1,14 @@
+import hashlib
 import json
 import os
+import subprocess
 from time import sleep
 
-from flask import Response, request
+from flask import Response, request, send_file
 
 import parameters
 import streamonitor.config as config
-from parameters import WEB_LIST_FREQUENCY
+from parameters import WEB_LIST_FREQUENCY, FFMPEG_PATH
 from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.enums import Status
 from streamonitor.managers.outofspace_detector import OOSDetector
@@ -165,6 +167,108 @@ def _validate_download_dir(raw):
     return candidate, None
 
 
+# Video thumbnail + duration extraction (NB6). Frames and durations are cached
+# under "<download dir>/.thumbs/" keyed by absolute source path + mtime, so a
+# changed/re-recorded file regenerates automatically and status polls never
+# re-run ffprobe on the whole library. The cache dir lives next to the streamer
+# folders but is never scanned as a recording (cache_file_list only reads a
+# streamer's own folder and skips subdirectories).
+_THUMB_WIDTH = 480
+_THUMB_TIMEOUT = 30  # seconds; a broken file fails ffmpeg fast, well under this
+_FFPROBE_TIMEOUT = 20
+
+
+def _ffprobe_bin():
+    # Derive the ffprobe binary from the configured ffmpeg path so a custom
+    # install location keeps working; default ('ffmpeg' on PATH) -> 'ffprobe'.
+    directory = os.path.dirname(FFMPEG_PATH)
+    base = os.path.basename(FFMPEG_PATH)
+    base = 'ffprobe' + base[len('ffmpeg'):] if base.startswith('ffmpeg') else 'ffprobe'
+    return os.path.join(directory, base) if directory else base
+
+
+def _thumbs_dir():
+    # Absolute so send_file (which resolves relative paths against the Flask app
+    # root, not the CWD) reads the cached frame correctly.
+    return os.path.abspath(os.path.join(parameters.get_download_dir(), '.thumbs'))
+
+
+def _cache_key(abs_path, mtime):
+    return hashlib.sha1(f'{abs_path}:{mtime}'.encode('utf-8')).hexdigest()
+
+
+def _thumb_cache_path(abs_path, mtime):
+    return os.path.join(_thumbs_dir(), _cache_key(abs_path, mtime) + '.jpg')
+
+
+def _meta_cache_path(abs_path, mtime):
+    return os.path.join(_thumbs_dir(), _cache_key(abs_path, mtime) + '.json')
+
+
+def _probe_duration(abs_path):
+    # Returns duration in seconds (float) or None when the file is unreadable.
+    try:
+        result = subprocess.run(
+            [_ffprobe_bin(), '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', abs_path],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=_FFPROBE_TIMEOUT)
+        duration = float(result.stdout.decode('utf-8', 'ignore').strip())
+        if duration > 0:
+            return duration
+    except Exception:
+        pass
+    return None
+
+
+def _get_duration_cached(abs_path, mtime):
+    meta_path = _meta_cache_path(abs_path, mtime)
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path) as f:
+                return json.load(f).get('duration')
+        except Exception:
+            pass
+    duration = _probe_duration(abs_path)
+    try:  # cache failures too (duration=None) to avoid re-probing broken files
+        os.makedirs(_thumbs_dir(), exist_ok=True)
+        tmp = meta_path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'duration': duration}, f)
+        os.replace(tmp, meta_path)
+    except Exception:
+        pass
+    return duration
+
+
+def _generate_thumb(abs_path, out_path, duration=None):
+    # Extract one frame ~10% into the video (fallback 5s) scaled to _THUMB_WIDTH.
+    # Writes atomically via a temp file; returns True on success.
+    if duration is None:
+        duration = _probe_duration(abs_path)
+    seek = 5.0
+    if duration and duration > 0:
+        seek = min(max(duration * 0.1, 1.0), max(duration - 0.5, 0.0))
+    tmp = out_path + '.tmp.jpg'
+    try:
+        os.makedirs(_thumbs_dir(), exist_ok=True)
+        result = subprocess.run(
+            [FFMPEG_PATH, '-y', '-ss', str(seek), '-i', abs_path,
+             '-frames:v', '1', '-an', '-vf', f'scale={_THUMB_WIDTH}:-2',
+             '-q:v', '3', tmp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=_THUMB_TIMEOUT)
+        if result.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+            os.replace(tmp, out_path)
+            return True
+    except Exception:
+        pass
+    try:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    except Exception:
+        pass
+    return False
+
+
 def register_api_v2(app, manager, login_required):
     @app.route('/api/v2/streamers', methods=['GET'])
     @login_required
@@ -181,12 +285,17 @@ def register_api_v2(app, manager, login_required):
         recording_name = getattr(streamer, 'recording_filename', None)
         videos = []
         for video in streamer.video_files:
+            is_recording = bool(streamer.recording and video.filename == recording_name)
+            mtime = int(video._stat.st_mtime)
+            # Skip probing the file the recorder is still writing.
+            duration = None if is_recording else _get_duration_cached(video.abs_path, mtime)
             videos.append({
                 'filename': video.filename,
                 'size': video.filesize,
-                'mtime': int(video._stat.st_mtime),
+                'mtime': mtime,
+                'duration': duration,
                 'url': f'/video/{streamer.username}/{streamer.siteslug}/{video.filename}',
-                'recording': bool(streamer.recording and video.filename == recording_name),
+                'recording': is_recording,
             })
         videos.sort(key=lambda v: v['mtime'], reverse=True)
         detail = _streamer_summary(streamer)
@@ -286,6 +395,29 @@ def register_api_v2(app, manager, login_required):
             return _json({'error': 'Failed to delete video'}, 500)
         streamer.cache_file_list()
         return _json({'ok': True})
+
+    @app.route('/api/v2/streamers/<site>/<user>/videos/<path:filename>/thumb', methods=['GET'])
+    @login_required
+    def api_v2_video_thumb(site, user, filename):
+        streamer = manager.getStreamer(user, site)
+        if streamer is None:
+            return _json({'error': 'Streamer not found'}, 404)
+        # No thumbnail for the file the recorder is still writing.
+        if streamer.recording and filename == getattr(streamer, 'recording_filename', None):
+            return _json({'error': 'Recording in progress'}, 404)
+        streamer.cache_file_list()
+        match = next((v for v in streamer.video_files if v.filename == filename), None)
+        if match is None:
+            return _json({'error': 'Video not found'}, 404)
+        mtime = int(match._stat.st_mtime)
+        thumb_path = _thumb_cache_path(match.abs_path, mtime)
+        if not os.path.exists(thumb_path):
+            duration = _get_duration_cached(match.abs_path, mtime)
+            if not _generate_thumb(match.abs_path, thumb_path, duration):
+                # Broken/unparseable file: 404 so the frontend falls back to its
+                # generated placeholder image.
+                return _json({'error': 'Thumbnail unavailable'}, 404)
+        return send_file(thumb_path, mimetype='image/jpeg')
 
     @app.route('/api/v2/basesettings', methods=['GET'])
     @login_required
