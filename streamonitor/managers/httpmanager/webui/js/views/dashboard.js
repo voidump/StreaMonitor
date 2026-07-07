@@ -145,7 +145,7 @@ function renderDashboard(){
     <div class="add-toggle"><button data-addmode="url">${t('addUrlToggle')}</button></div>`;
 
   return `
-  <div class="view${selArr.length?' has-sel':''}">
+  <div class="view view-${viewMode}${selArr.length?' has-sel':''}">
     <div class="topbar">
       <h1>${t('navDashboard')}</h1>
       <div class="counts">
@@ -154,6 +154,10 @@ function renderDashboard(){
         <span>${t('total')} <b>${streamers.length}</b> ${t('streamers')}</span>
       </div>
       <div class="topbar-right">
+        <div class="view-toggle" role="group" aria-label="${t('viewToggle')}">
+          <button class="vt ${viewMode==='list'?'on':''}" data-view="list" title="${t('viewList')}">${IC.list}<span>${t('viewList')}</span></button>
+          <button class="vt ${viewMode==='card'?'on':''}" data-view="card" title="${t('viewCard')}">${IC.grid}<span>${t('viewCard')}</span></button>
+        </div>
         <button class="btn" id="stopAll" title="${t('stopAll')}">${IC.pauseCirc}<span>${t('stopAll')}</span></button>
         <button class="btn" id="startAll" title="${t('startAll')}">${IC.playCirc}<span>${t('startAll')}</span></button>
       </div>

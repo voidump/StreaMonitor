@@ -93,6 +93,15 @@ input,select{font-family:inherit;font-size:inherit;color:var(--text)}
 .topbar .counts .c-rec b{color:var(--rec)}
 .topbar .counts .c-on b{color:var(--online)}
 .topbar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.view-toggle{display:inline-flex;border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden}
+.view-toggle .vt{
+  display:inline-flex;align-items:center;gap:6px;padding:5px 11px;
+  background:var(--bg-panel);color:var(--text-dim);font-weight:500;white-space:nowrap;
+  transition:background .12s,color .12s;
+}
+.view-toggle .vt+.vt{border-left:1px solid var(--border-strong)}
+.view-toggle .vt:hover{background:var(--bg-hover);color:var(--text)}
+.view-toggle .vt.on{background:var(--accent-dim);color:#eaf4fd}
 
 /* ========== Buttons ========== */
 .btn{
@@ -238,21 +247,25 @@ tr:hover .row-actions{opacity:1}
 }
 .empty .big{font-size:14px;margin-bottom:8px;color:var(--text)}
 
-/* card view for narrow screens */
+/* card layout — base card styles apply in both the explicit card view and the narrow-screen fallback */
 .cards{display:none}
+.card{
+  background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;
+  padding:10px 12px;cursor:pointer;
+}
+.card.recording{box-shadow:inset 3px 0 0 var(--rec)}
+.card-top{display:flex;align-items:center;gap:10px}
+.card-top .grow{flex:1;min-width:0}
+.card-meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--text-dim)}
+.card-meta b{font-family:var(--mono);font-weight:500;color:var(--text)}
+.card-actions{display:flex;gap:4px;justify-content:flex-end;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+/* explicit card view: hide the table, lay cards out as a responsive grid on any width */
+.view-card table.roster{display:none}
+.view-card .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
+/* narrow screens fall back to stacked cards regardless of the chosen view */
 @media (max-width:920px){
   table.roster{display:none}
   .cards{display:flex;flex-direction:column;gap:8px}
-  .card{
-    background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;
-    padding:10px 12px;cursor:pointer;
-  }
-  .card.recording{box-shadow:inset 3px 0 0 var(--rec)}
-  .card-top{display:flex;align-items:center;gap:10px}
-  .card-top .grow{flex:1;min-width:0}
-  .card-meta{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--text-dim)}
-  .card-meta b{font-family:var(--mono);font-weight:500;color:var(--text)}
-  .card-actions{display:flex;gap:4px;justify-content:flex-end;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
 }
 @media (max-width:860px){
   .sidebar{width:52px}
@@ -262,7 +275,7 @@ tr:hover .row-actions{opacity:1}
   :root{--sidebar-w:52px}
   .topbar{padding:0 12px}
   .topbar .counts{display:none}
-  .topbar-right .btn span{display:none}
+  .topbar-right .btn span,.view-toggle .vt span{display:none}
   .filters .sep{display:none}
   .addbar-wrap,.filters{padding-left:12px;padding-right:12px}
   .list-scroll{padding:0 12px 20px}

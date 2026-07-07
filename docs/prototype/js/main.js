@@ -330,6 +330,10 @@ function bindDashboard(){
   document.querySelectorAll('[data-site]').forEach(b=>b.addEventListener('click', ()=>{
     filters.site = b.dataset.site; render();
   }));
+  document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click', ()=>{
+    if (viewMode===b.dataset.view) return;
+    viewMode = b.dataset.view; saveViewMode(viewMode); render();
+  }));
   // multiselect
   const selAll = document.getElementById('selAll');
   if (selAll){

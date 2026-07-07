@@ -10,6 +10,9 @@ let player = {fileId:null, playing:false, pos:0, timer:null};
 let modalState = null;
 let confirmDelId = null;
 let selected = new Set();   // dashboard multiselect — streamer ids
+function loadViewMode(){ try { return localStorage.getItem('sm_viewmode')==='card' ? 'card' : 'list'; } catch(e){ return 'list'; } }
+function saveViewMode(v){ try { localStorage.setItem('sm_viewmode', v); } catch(e){} }
+let viewMode = loadViewMode();   // dashboard 'list'|'card' view preference (persisted)
 
 /* ---------------- extended state (v2 scaffolding — data only, no UI yet) ---------------- */
 let history = [];   // {user, site, url, avatarDataUrl, addedDate, removedDate}

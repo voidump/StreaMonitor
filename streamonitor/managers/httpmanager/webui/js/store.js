@@ -10,6 +10,9 @@ let player = {fileId:null, playing:false, pos:0, timer:null};
 let modalState = null;
 let confirmDelId = null;
 let selected = new Set();   // dashboard multiselect — streamer ids
+function loadViewMode(){ try { return localStorage.getItem('sm_viewmode')==='card' ? 'card' : 'list'; } catch(e){ return 'list'; } }
+function saveViewMode(v){ try { localStorage.setItem('sm_viewmode', v); } catch(e){} }
+let viewMode = loadViewMode();   // dashboard 'list'|'card' view preference (persisted)
 
 /* ---------------- extended state (v2 scaffolding — data only, no UI yet) ---------------- */
 let history = [];   // {user, site, url, avatarDataUrl, addedDate, removedDate}
@@ -44,6 +47,9 @@ function loadHotkeys(){
 }
 function saveHotkeys(hk){ localStorage.setItem('sm_hotkeys', JSON.stringify(hk)); }
 let settings = {hotkeys: loadHotkeys()};
+/* server-side download directory (NB4). draft survives timer-driven re-renders,
+ * mirroring addDraft; render() preserves the input's focus + caret by id. */
+let downloadDir = {path:'', draft:'', loading:false, saving:false, error:null, loaded:false};
 
 /* ---- hotkey editing (read/write + conflict detection) ----
  * saveHotkeys(hk) needs the map passed explicitly (W1 note). */
@@ -86,6 +92,7 @@ function nav(to){
     if (s2 && !s2._detailLoaded) loadDetail(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
+  if (to.view==='settings') loadDownloadDir();   // read the current download dir (mock mode fills a demo path)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
 }
