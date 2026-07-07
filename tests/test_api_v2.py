@@ -901,3 +901,57 @@ def test_avatar_offline_serves_stale_cache(tmp_path, monkeypatch):
         "/api/v2/streamers/FakeSite/alice/avatar", headers=AUTH)
     assert response.status_code == 200
     assert response.data == _PNG_BYTES
+
+
+# --- site favicon: real site icon with fetch + cache (NB11) ---
+
+def test_site_favicon_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/sites/FS/favicon")
+    assert response.status_code == 401
+
+
+def test_site_favicon_unknown_site_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/sites/ZZ/favicon", headers=AUTH)
+    assert response.status_code == 404
+    assert json.loads(response.data)["error"] == "Unknown site"
+
+
+def test_site_favicon_fetch_failure_404(tmp_path, monkeypatch, fake_site):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(api_v2, "_fetch_favicon", lambda domain: None)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/sites/FS/favicon", headers=AUTH)
+    assert response.status_code == 404
+    assert json.loads(response.data)["error"] == "Favicon unavailable"
+
+
+def test_site_favicon_fetches_and_caches(tmp_path, monkeypatch, fake_site):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def fake_fetch(domain):
+        calls.append(domain)
+        return _PNG_BYTES
+
+    monkeypatch.setattr(api_v2, "_fetch_favicon", fake_fetch)
+    manager = HTTPManager([])
+    client = _client(manager)
+
+    response = client.get("/api/v2/sites/FS/favicon", headers=AUTH)
+    assert response.status_code == 200
+    assert response.mimetype == "image/png"
+    assert response.data == _PNG_BYTES
+    assert calls == ["fake"]
+
+    cache_path = api_v2._favicon_cache_path("FS")
+    assert os.path.exists(cache_path)
+
+    # Second request must serve the cached file without fetching again.
+    again = client.get("/api/v2/sites/FS/favicon", headers=AUTH)
+    assert again.status_code == 200
+    assert again.data == _PNG_BYTES
+    assert calls == ["fake"]
