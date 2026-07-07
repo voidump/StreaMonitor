@@ -332,6 +332,7 @@ document.addEventListener('keydown', e=>{
   if (e.key==='Escape'){
     if (modalState){ modalState=null; renderModal(); }
     else if (confirmDelId && route.view==='detail'){ confirmDelId=null; render(); }
+    else if (route.view==='dashboard' && (selMode || selected.size>0)){ selMode=false; selected.clear(); render(); }   // NB9: Esc leaves selection mode
     return;
   }
   if (route.view!=='detail' || modalState) return;
@@ -356,6 +357,12 @@ function bindDashboard(){
     if (viewMode===b.dataset.view) return;
     viewMode = b.dataset.view; saveViewMode(viewMode); render();
   }));
+  // NB9: selection mode toggle — exit clears the current selection for a clean interface
+  const selToggle = document.getElementById('selToggle');
+  if (selToggle) selToggle.addEventListener('click', ()=>{
+    if (selMode || selected.size>0){ selMode=false; selected.clear(); } else { selMode=true; }
+    render();
+  });
   // multiselect
   const selAll = document.getElementById('selAll');
   if (selAll){
@@ -381,7 +388,7 @@ function bindDashboard(){
   const bPurge = document.getElementById('batchPurge');
   if (bPurge) bPurge.addEventListener('click', ()=>{ modalState={type:'batchPurge'}; renderModal(); });
   const bClear = document.getElementById('batchClear');
-  if (bClear) bClear.addEventListener('click', ()=>{ selected.clear(); render(); });
+  if (bClear) bClear.addEventListener('click', ()=>{ selected.clear(); selMode=false; render(); });
   const q = document.getElementById('qFilter');
   if (q) q.addEventListener('input', ()=>{
     filters.q=q.value; render();   // render() preserves focus/caret generically

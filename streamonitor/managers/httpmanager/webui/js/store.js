@@ -10,6 +10,7 @@ let player = {fileId:null, playing:false, pos:0, timer:null};
 let modalState = null;
 let confirmDelId = null;
 let selected = new Set();   // dashboard multiselect — streamer ids
+let selMode = false;   // NB9: selection mode — checkboxes stay hidden until explicitly entered or an item is checked
 function loadViewMode(){ try { return localStorage.getItem('sm_viewmode')==='card' ? 'card' : 'list'; } catch(e){ return 'list'; } }
 function saveViewMode(v){ try { localStorage.setItem('sm_viewmode', v); } catch(e){} }
 let viewMode = loadViewMode();   // dashboard 'list'|'card' view preference (persisted)
