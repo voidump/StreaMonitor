@@ -28,6 +28,24 @@ function renderHotkeyPanel(){
       </div>`;
 }
 
+function renderDownloadDirPanel(){
+  const d = downloadDir;
+  return `
+      <div class="panel settings-panel dldir-panel">
+        <div class="set-row dldir-row">
+          <div class="grow">
+            <div class="k">${t('dlDir')}</div>
+            <div class="desc">${t('dlDirDesc')}</div>
+            <div class="dldir-edit">
+              <input type="text" id="dlDirInput" class="dldir-input" value="${esc(d.draft)}" placeholder="${t('dlDirPh')}" autocomplete="off" spellcheck="false" ${d.loading?'disabled':''}>
+              <button class="btn primary" data-dldir-save ${(d.saving||d.loading)?'disabled':''}>${d.saving?t('dlDirSaving'):t('dlDirSave')}</button>
+            </div>
+            ${d.error?`<div class="dldir-err">${d.error}</div>`:''}
+          </div>
+        </div>
+      </div>`;
+}
+
 function renderSettings(){
   return `
   <div class="view">
@@ -50,6 +68,7 @@ function renderSettings(){
           <span class="soon">${t('soon')}</span>
         </div>
       </div>
+      ${renderDownloadDirPanel()}
       ${renderHotkeyPanel()}
     </div>
   </div>`;
@@ -58,6 +77,14 @@ function renderSettings(){
 /* ---- hotkey editor interactions (settings.js owns its own delegated listeners) ---- */
 document.addEventListener('click', e=>{
   if (route.view!=='settings') return;
+  const dlSave = e.target.closest('[data-dldir-save]');
+  if (dlSave){
+    e.stopPropagation();
+    const inp = document.getElementById('dlDirInput');
+    if (inp) downloadDir.draft = inp.value;
+    saveDownloadDir();
+    return;
+  }
   const bind = e.target.closest('[data-hkbind]');
   if (bind){
     e.stopPropagation();
@@ -75,6 +102,24 @@ document.addEventListener('click', e=>{
     return;
   }
   if (hotkeyCapture){ hotkeyCapture = null; render(); }   // any other click cancels capture
+});
+
+/* download-dir input: keep the draft in sync (survives poll re-renders) and
+ * save on Enter. Runs in bubble phase, after the capture-phase hotkey handler. */
+document.addEventListener('input', e=>{
+  if (route.view!=='settings') return;
+  if (e.target && e.target.id==='dlDirInput'){
+    downloadDir.draft = e.target.value;
+    if (downloadDir.error){ downloadDir.error = null; render(); }
+  }
+});
+document.addEventListener('keydown', e=>{
+  if (route.view!=='settings') return;
+  if (e.target && e.target.id==='dlDirInput' && e.key==='Enter'){
+    e.preventDefault();
+    downloadDir.draft = e.target.value;
+    saveDownloadDir();
+  }
 });
 
 /* capture-phase so it resolves the key before the player's global keydown handler */

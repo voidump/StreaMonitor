@@ -15,7 +15,8 @@ import requests.cookies
 from streamonitor.enums import Status, COUNTRIES, Gender, GENDER_DATA
 from streamonitor.http_session import TimeoutSession
 import streamonitor.log as log
-from parameters import DOWNLOADS_DIR, DEBUG, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE, CONTAINER, HTTP_USER_AGENT
+import parameters
+from parameters import DEBUG, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE, CONTAINER, HTTP_USER_AGENT
 from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
 from streamonitor.models import VideoData
 
@@ -377,7 +378,7 @@ class Bot(Thread):
 
     @property
     def outputFolder(self):
-        return str(os.path.join(DOWNLOADS_DIR, self.username + ' [' + self.siteslug + ']'))
+        return str(os.path.join(parameters.get_download_dir(), self.username + ' [' + self.siteslug + ']'))
 
     def genOutFilename(self, create_dir=True):
         folder = self.outputFolder

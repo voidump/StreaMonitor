@@ -3,6 +3,7 @@ import os
 
 from flask import Response, request
 
+import parameters
 import streamonitor.config as config
 from parameters import WEB_LIST_FREQUENCY
 from streamonitor.bot import Bot, LOADED_SITES
@@ -52,6 +53,44 @@ def _streamer_summary(streamer):
 
 def _json(payload, status_code=200):
     return Response(json.dumps(payload), status=status_code, mimetype='application/json')
+
+
+def _download_dir_payload():
+    raw = parameters.get_download_dir()
+    abspath = os.path.abspath(os.path.expanduser(raw))
+    usage = OOSDetector.space_usage()
+    return {
+        'path': abspath,
+        'raw': raw,
+        'diskSpace': {
+            'total': usage.total,
+            'free': usage.free,
+            'used': usage.total - usage.free,
+            'freeHuman': human_file_size(usage.free),
+            'totalHuman': human_file_size(usage.total),
+        },
+    }
+
+
+def _validate_download_dir(raw):
+    # Returns (abspath, None) on success or (None, (code, message)) on failure.
+    if not isinstance(raw, str) or not raw.strip():
+        return None, ('empty', 'Path must not be empty')
+    candidate = os.path.abspath(os.path.expanduser(raw.strip()))
+    try:
+        os.makedirs(candidate, exist_ok=True)
+    except Exception as e:
+        return None, ('create_failed', f'Cannot create directory: {e}')
+    if not os.path.isdir(candidate):
+        return None, ('not_dir', 'Path is not a directory')
+    probe = os.path.join(candidate, '.strmntr_write_test')
+    try:
+        with open(probe, 'w') as f:
+            f.write('')
+        os.remove(probe)
+    except Exception:
+        return None, ('not_writable', 'Directory is not writable')
+    return candidate, None
 
 
 def register_api_v2(app, manager, login_required):
@@ -239,3 +278,22 @@ def register_api_v2(app, manager, login_required):
         history.pop(idx)
         config.save_history(history)
         return _json({'ok': True})
+
+    @app.route('/api/v2/settings/download-dir', methods=['GET'])
+    @login_required
+    def api_v2_get_download_dir():
+        return _json(_download_dir_payload())
+
+    @app.route('/api/v2/settings/download-dir', methods=['PUT', 'POST'])
+    @login_required
+    def api_v2_set_download_dir():
+        data = request.get_json(silent=True) or {}
+        candidate, err = _validate_download_dir(data.get('path', ''))
+        if err:
+            code, message = err
+            return _json({'error': message, 'code': code}, 400)
+        # New recordings pick up the change immediately (bot.py reads the dir at
+        # write time); existing files in the old directory are not migrated.
+        parameters.set_download_dir(candidate)
+        parameters.persist_download_dir(candidate)
+        return _json(_download_dir_payload())

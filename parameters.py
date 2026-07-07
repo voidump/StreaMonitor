@@ -8,6 +8,43 @@ if os.path.exists('.env'):
 
 
 DOWNLOADS_DIR = env.str("STRMNTR_DOWNLOAD_DIR", "downloads")
+
+
+def get_download_dir():
+    # Read the current download directory at call time so runtime changes made
+    # via the settings API take effect without restarting. Do not `from
+    # parameters import DOWNLOADS_DIR` in long-lived modules; use this instead.
+    return DOWNLOADS_DIR
+
+
+def set_download_dir(path):
+    global DOWNLOADS_DIR
+    DOWNLOADS_DIR = path
+
+
+def persist_download_dir(path):
+    # Write STRMNTR_DOWNLOAD_DIR into the project .env, preserving other keys,
+    # using the same atomic write-then-rename strategy as the config store.
+    env_path = '.env'
+    key = 'STRMNTR_DOWNLOAD_DIR'
+    new_line = f'{key}={path}'
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            lines = f.read().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
+            lines[i] = new_line
+            found = True
+            break
+    if not found:
+        lines.append(new_line)
+    tmp_path = env_path + '.tmp'
+    with open(tmp_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    os.replace(tmp_path, env_path)
 MIN_FREE_DISK_PERCENT = env.float("STRMNTR_MIN_FREE_SPACE", 5.0)  # in %
 DEBUG = env.bool("STRMNTR_DEBUG", False)
 

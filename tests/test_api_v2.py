@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+import parameters
 import streamonitor.config as config
 from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.managers.httpmanager import HTTPManager
@@ -425,3 +426,99 @@ def test_api_detail_flags_recording_video(tmp_path, monkeypatch):
     payload = json.loads(response.data)
     assert payload["recordingFilename"] == "alice-20260706-120000.mp4"
     assert payload["videos"][0]["recording"] is True
+
+
+# --- settings: server-side download directory (NB4) ---
+
+@pytest.fixture
+def preserve_download_dir(monkeypatch):
+    # set_download_dir mutates the module global; snapshot so tests never leak
+    # a changed directory into the rest of the suite or the real process.
+    monkeypatch.setattr(parameters, "DOWNLOADS_DIR", parameters.DOWNLOADS_DIR)
+    yield
+
+
+def test_get_download_dir_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/download-dir")
+    assert response.status_code == 401
+
+
+def test_get_download_dir_returns_abspath(tmp_path, monkeypatch, preserve_download_dir):
+    monkeypatch.chdir(tmp_path)
+    parameters.set_download_dir(str(tmp_path / "dls"))
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/download-dir", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["path"] == str(tmp_path / "dls")
+    assert os.path.isabs(payload["path"])
+    for key in ("total", "free", "used", "freeHuman", "totalHuman"):
+        assert key in payload["diskSpace"]
+
+
+def test_set_download_dir_valid_persists(tmp_path, monkeypatch, preserve_download_dir):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "new-downloads"
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/download-dir", json={"path": str(target)}, headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["path"] == str(target)
+    assert target.is_dir()                      # created on demand
+    assert parameters.get_download_dir() == str(target)   # runtime effect
+    env_text = (tmp_path / ".env").read_text()   # persisted for restart
+    assert f"STRMNTR_DOWNLOAD_DIR={target}" in env_text
+
+
+def test_set_download_dir_accepts_post(tmp_path, monkeypatch, preserve_download_dir):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "via-post"
+    manager = HTTPManager([])
+    response = _client(manager).post(
+        "/api/v2/settings/download-dir", json={"path": str(target)}, headers=AUTH)
+    assert response.status_code == 200
+    assert parameters.get_download_dir() == str(target)
+
+
+def test_set_download_dir_empty_400(tmp_path, monkeypatch, preserve_download_dir):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/download-dir", json={"path": "   "}, headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "empty"
+
+
+def test_set_download_dir_illegal_path_400(tmp_path, monkeypatch, preserve_download_dir):
+    monkeypatch.chdir(tmp_path)
+    blocker = tmp_path / "afile"
+    blocker.write_text("x")
+    target = blocker / "sub"   # child of a regular file — cannot be created
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/download-dir", json={"path": str(target)}, headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "create_failed"
+    assert parameters.get_download_dir() != str(target)   # rejected, no change
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses filesystem write permissions",
+)
+def test_set_download_dir_unwritable_400(tmp_path, monkeypatch, preserve_download_dir):
+    monkeypatch.chdir(tmp_path)
+    readonly = tmp_path / "readonly"
+    readonly.mkdir()
+    os.chmod(readonly, 0o500)
+    manager = HTTPManager([])
+    try:
+        response = _client(manager).put(
+            "/api/v2/settings/download-dir", json={"path": str(readonly)}, headers=AUTH)
+        assert response.status_code == 400
+        assert json.loads(response.data)["code"] == "not_writable"
+    finally:
+        os.chmod(readonly, 0o700)   # let pytest clean up tmp_path

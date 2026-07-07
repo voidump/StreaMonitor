@@ -378,6 +378,54 @@ async function apiHistoryDelete(i){
   catch(e){ toast(t('apiOpError'), 'err'); }
 }
 
+/* ---- download directory (server-side, NB4): read + validate-and-save ---- */
+async function loadDownloadDir(){
+  if (apiState.mode!=='api'){   // mock: show a representative path, no backend call
+    if (!downloadDir.loaded){ downloadDir.path = MOCK_DOWNLOAD_DIR; downloadDir.draft = MOCK_DOWNLOAD_DIR; downloadDir.loaded = true; }
+    return;
+  }
+  downloadDir.loading = true; downloadDir.error = null; render();
+  try {
+    const d = await apiGet('/settings/download-dir');
+    downloadDir.path = (d && d.path) || '';
+    downloadDir.draft = downloadDir.path;
+    downloadDir.loaded = true; downloadDir.loading = false; downloadDir.error = null;
+    render();
+  } catch(e){
+    downloadDir.loading = false; downloadDir.error = t('dlDirLoadErr'); render();
+  }
+}
+function dlDirErrText(data){
+  const map = {empty:'dlDirErrEmpty', create_failed:'dlDirErrCreate', not_dir:'dlDirErrNotDir', not_writable:'dlDirErrNotWritable'};
+  const key = data && map[data.code];
+  if (key) return t(key);
+  return (data && data.error) || t('dlDirErrGeneric');
+}
+async function saveDownloadDir(){
+  const val = (downloadDir.draft||'').trim();
+  if (!val){ downloadDir.error = t('dlDirErrEmpty'); render(); return; }
+  if (apiState.mode!=='api'){   // mock: accept locally, show success toast
+    downloadDir.path = val; downloadDir.draft = val; downloadDir.error = null;
+    toast(t('dlDirSavedToast')); render(); return;
+  }
+  downloadDir.saving = true; downloadDir.error = null; render();
+  try {
+    const r = await fetch(apiUrl('/settings/download-dir'), {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Accept':'application/json','Content-Type':'application/json'},
+      body: JSON.stringify({path: val}),
+    });
+    const txt = await r.text();
+    const data = txt ? JSON.parse(txt) : {};
+    if (!r.ok){ downloadDir.saving = false; downloadDir.error = dlDirErrText(data); render(); return; }
+    downloadDir.path = data.path || val; downloadDir.draft = downloadDir.path;
+    downloadDir.saving = false; downloadDir.error = null;
+    toast(t('dlDirSavedToast')); render();
+  } catch(e){
+    downloadDir.saving = false; downloadDir.error = t('dlDirErrGeneric'); render();
+  }
+}
+
 /* ---- video deletion (single + batch), with recording-file protection ---- */
 async function apiDeleteVideo(s, file){
   try { await apiSend('DELETE', streamerPath(s)+'/videos/'+encodeURIComponent(file._filename||file.id)); return true; }
