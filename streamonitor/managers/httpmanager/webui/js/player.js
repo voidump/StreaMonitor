@@ -263,10 +263,10 @@ function bindLive(s){
   } else {
     v.play().catch(()=>{});   // native: src is in the markup, just start it
   }
-  v.addEventListener('play', ()=>{ player.playing = true; updatePlayIcon(); });
-  v.addEventListener('pause', ()=>{ player.playing = false; updatePlayIcon(); });
-  v.addEventListener('ended', ()=>{ if (player.live) liveEndedState(); });   // generator finished → recording ended
-  v.addEventListener('error', ()=>{ if (player.live) liveEndedState(); });
+  v.addEventListener('play', ()=>{ if (!v.isConnected) return; player.playing = true; updatePlayIcon(); });
+  v.addEventListener('pause', ()=>{ if (!v.isConnected) return; player.playing = false; updatePlayIcon(); });
+  v.addEventListener('ended', ()=>{ if (!v.isConnected) return; if (player.live) liveEndedState(); });   // generator finished → recording ended
+  v.addEventListener('error', ()=>{ if (!v.isConnected) return; if (player.live) liveEndedState(); });
   v.addEventListener('click', e=>{ e.stopPropagation(); togglePlay(s); });
   player.playing = !v.paused; updatePlayIcon();   // autoplay may have started before the listeners attached
 }
@@ -464,6 +464,7 @@ function bindRealVideo(s){
   v.muted = !!playerPrefs.muted;
   v.volume = playerPrefs.muted ? 0 : playerPrefs.volume;
   v.addEventListener('loadedmetadata', ()=>{
+    if (!v.isConnected) return;   // NB14: a detached orphan <video> must never touch the shared control bar
     const cur = curFile();
     if (cur && isFinite(v.duration) && v.duration>0){
       cur.dur = Math.floor(v.duration);
@@ -474,14 +475,16 @@ function bindRealVideo(s){
     if (player.playing) v.play().catch(()=>{});   // resume across re-renders (mark toggle, poll, etc.)
   });
   v.addEventListener('timeupdate', ()=>{
+    if (!v.isConnected) return;   // NB14: a detached orphan <video> keeps firing timeupdate — ignore it so it can never write #pseek
     if (v.seeking) return;   // NB14: a seek is in flight — don't write the interim/pre-seek position back to the slider
     const cur = curFile();
     player.pos = v.currentTime;
     if (cur){ if (cur.dur) cur.watchPct = Math.max(cur.watchPct||0, Math.round(player.pos/cur.dur*100)); syncSeekUI(cur); }
   });
-  v.addEventListener('play', ()=>{ player.playing = true; updatePlayIcon(); });
-  v.addEventListener('pause', ()=>{ player.playing = false; updatePlayIcon(); });
+  v.addEventListener('play', ()=>{ if (!v.isConnected) return; player.playing = true; updatePlayIcon(); });
+  v.addEventListener('pause', ()=>{ if (!v.isConnected) return; player.playing = false; updatePlayIcon(); });
   v.addEventListener('ended', ()=>{
+    if (!v.isConnected) return;   // NB14: ignore an orphaned node's ended so it can't drive auto-continue
     const st = curStreamer();
     const idx = st ? st.files.findIndex(f=>f.id===player.fileId) : -1;
     if (st && idx>=0 && idx < st.files.length-1) stepFile(st, idx, 1);   // auto-continue into the next (older) recording

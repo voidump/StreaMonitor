@@ -96,15 +96,26 @@ function renderChrome(){
  * same synchronous frame so the browser never runs its remove-and-pause step. A real
  * file switch renders a fresh <video> (different src) and is left as-is; mock mode has
  * no #pvideo so both helpers are no-ops. */
+function neutralizeVideo(v){
+  if (!v) return;   // NB14: fully stop a detached <video> so it can't keep buffering/playing and writing shared UI from its listeners
+  try { v.pause(); } catch(e){}
+  try { v.removeAttribute('src'); v.load(); } catch(e){}
+}
 function grabPlayingVideo(){
-  const v = document.getElementById('pvideo');
-  return (v && !v.paused) ? v : null;
+  // NB14: preserve the node across re-render even when it is momentarily paused/seeking — a big +30 seek can briefly
+  // stall it, and the old `!v.paused` gate then abandoned the node, leaking an orphan that kept writing #pseek.
+  return document.getElementById('pvideo') || null;
 }
 function restorePlayingVideo(live){
   const ph = document.getElementById('pvideo');
-  if (!ph || ph===live) return;
+  if (ph===live) return;
+  if (!ph){ neutralizeVideo(live); return; }   // navigated away — no placeholder to splice into; stop the detached node
   const sameLive = ph.hasAttribute('data-live') && live.hasAttribute('data-live');   // live stream keeps its element (mpegts src is a blob)
-  if (!sameLive && (ph.getAttribute('src')||'') !== (live.getAttribute('src')||'')) return;   // different file — keep the fresh <video>
+  if (!sameLive && (ph.getAttribute('src')||'') !== (live.getAttribute('src')||'')){
+    neutralizeVideo(live);   // different file — discard the old node, but stop it first so it can't keep playing/writing UI
+    return;
+  }
+  neutralizeVideo(ph);   // discard the fresh placeholder; splice the still-live node into its slot
   ph.parentNode.replaceChild(live, ph);
 }
 
