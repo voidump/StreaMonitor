@@ -164,6 +164,7 @@ function setPlayerFile(f){
 }
 function startTick(s){
   stopTick();
+  if (apiState.mode==='api' || document.getElementById('pvideo')) return;   // NB14: real <video> owns its own timeline; never run the mock ticker alongside it (would race timeupdate on #pseek)
   const cur = s.files.find(f=>f.id===player.fileId);
   if (!cur){ player.playing=false; return; }
   player.timer = setInterval(()=>{

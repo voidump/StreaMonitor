@@ -144,7 +144,14 @@ function updateMutedHint(){ if (!playerPrefs.muted){ const h=document.getElement
 /* ---- player actions (shared by control bar + hotkey engine) ---- */
 function seekBy(s, delta){
   const v = pvideo();
-  if (v){ v.currentTime = Math.max(0, Math.min(v.duration || 0, (v.currentTime || 0) + delta)); return; }
+  if (v){
+    const nt = Math.max(0, Math.min(v.duration || 0, (v.currentTime || 0) + delta));
+    v.currentTime = nt;
+    player.pos = nt;   // NB14: keep the model in step with the seek so no writer pulls the slider back to the pre-seek position
+    const cf = s.files.find(f=>f.id===player.fileId);
+    if (cf) syncSeekUI(cf);
+    return;
+  }
   const cur = s.files.find(f=>f.id===player.fileId);
   if (!cur) return;
   player.pos = Math.max(0, Math.min(cur.dur, player.pos + delta));
@@ -448,6 +455,7 @@ function bindRealVideo(s){
   const v = pvideo();
   if (!v || v._smBound) return;   // node is preserved across re-renders (see grabPlayingVideo) — bind exactly once
   v._smBound = true;
+  stopTick();   // NB14: kill any residual mock ticker so it can never race timeupdate writing #pseek
   // resolve the current streamer/file live: list polls swap streamer objects, so a
   // closure over `s`/`cur` would go stale on the long-lived <video>'s listeners.
   const curStreamer = ()=> streamers.find(x=>x.id===route.id) || s;
@@ -466,6 +474,7 @@ function bindRealVideo(s){
     if (player.playing) v.play().catch(()=>{});   // resume across re-renders (mark toggle, poll, etc.)
   });
   v.addEventListener('timeupdate', ()=>{
+    if (v.seeking) return;   // NB14: a seek is in flight — don't write the interim/pre-seek position back to the slider
     const cur = curFile();
     player.pos = v.currentTime;
     if (cur){ if (cur.dur) cur.watchPct = Math.max(cur.watchPct||0, Math.round(player.pos/cur.dur*100)); syncSeekUI(cur); }
