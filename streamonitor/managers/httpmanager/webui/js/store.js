@@ -196,6 +196,7 @@ function mapStreamers(list){
       addedDaysAgo: null,
       _videoCount: item.videoCount!=null ? item.videoCount : null,
       _totalSize: item.totalSize!=null ? item.totalSize : null,
+      _lastRecordedTs: item.lastRecordedTs!=null ? item.lastRecordedTs : null,
       files: [], temps: [], schedule: EMPTY_SCHEDULE, _detailLoaded:false,
     };
     if (prev && prev._detailLoaded){ s.files = prev.files; s.temps = prev.temps; s._detailLoaded = true; s._filesSig = prev._filesSig; }   // carry the file signature so loadDetail's guard can early-return while a video plays

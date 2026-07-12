@@ -110,6 +110,11 @@ def _live_tmp_path(streamer):
 
 def _streamer_summary(streamer):
     tmp_path = _live_tmp_path(streamer)
+    # Most recent recording time for the list card (NB15). Reuse the already
+    # cached video_files enumeration (same as videoCount/totalSize) so the status
+    # poll never adds a fresh directory scan; epoch seconds, or None when empty.
+    video_files = streamer.video_files
+    last_recorded_ts = int(max(v._stat.st_mtime for v in video_files)) if video_files else None
     return {
         'site': streamer.site,
         'siteslug': streamer.siteslug,
@@ -126,6 +131,7 @@ def _streamer_summary(streamer):
         'videoCount': len(streamer.video_files),
         'totalSize': streamer.video_files_total_size,
         'lastCheckTs': getattr(streamer, 'lastCheckTs', None),
+        'lastRecordedTs': last_recorded_ts,
     }
 
 

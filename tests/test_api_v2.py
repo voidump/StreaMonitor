@@ -430,6 +430,34 @@ def test_api_detail_flags_recording_video(tmp_path, monkeypatch):
     assert payload["videos"][0]["recording"] is True
 
 
+# --- last recorded timestamp on the list card (NB15) ---
+
+def test_streamers_list_last_recorded_ts_is_max_mtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, path = _make_streamer_with_video()
+    os.utime(path, (1_700_000_000, 1_700_000_000))
+    newer = os.path.join(streamer.outputFolder, "alice-20260707-120000.mp4")
+    with open(newer, "wb") as f:
+        f.write(b"0" * 10)
+    os.utime(newer, (1_700_000_500, 1_700_000_500))
+    streamer.cache_file_list()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers", headers=AUTH)
+    assert response.status_code == 200
+    item = json.loads(response.data)[0]
+    assert item["lastRecordedTs"] == 1_700_000_500
+
+
+def test_streamers_list_last_recorded_ts_null_when_no_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers", headers=AUTH)
+    assert response.status_code == 200
+    item = json.loads(response.data)[0]
+    assert item["lastRecordedTs"] is None
+
+
 # --- live view (watch-while-recording) endpoint (L1) ---
 
 import streamonitor.managers.httpmanager.api_v2 as api_v2

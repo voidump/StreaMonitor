@@ -83,9 +83,11 @@ function cardCover(s){
   }
   return `<img class="card-cover-img" src="${genThumb(s.seed)}" alt="">`;
 }
-/* NB13: most recent recording time for the card meta row (files load in detail;
- * the list carries none in API mode, so fall back to a dash there). */
+/* NB13/NB15: most recent recording time for the card meta row. API mode carries
+ * lastRecordedTs on the list item (epoch seconds/ms, tsToSecAgo adapts); the mock
+ * prototype has none, so fall back to the loaded files[0], then a dash. */
 function lastRecAgo(s){
+  if (s._lastRecordedTs!=null) return fmtAgo(tsToSecAgo(s._lastRecordedTs));
   const f = (s.files||[])[0];
   return f ? fmtAgo(Math.max(0, Math.floor((NOW - f.dt)/1000))) : '—';
 }
