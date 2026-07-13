@@ -54,10 +54,10 @@ function renderSettings(){
       <div class="panel settings-panel">
         <div class="set-row">
           <div class="grow"><div class="k">${t('language')}</div><div class="desc">${t('languageDesc')}</div></div>
-          <div class="seg">
-            <button class="${lang==='zh'?'on':''}" data-lang="zh">中文</button>
-            <button class="${lang==='en'?'on':''}" data-lang="en">English</button>
-          </div>
+          <select class="site-select on" data-lang-select>
+            <option value="zh" ${lang==='zh'?'selected':''}>${t('langZh')}</option>
+            <option value="en" ${lang==='en'?'selected':''}>${t('langEn')}</option>
+          </select>
         </div>
         <div class="set-row" style="opacity:.55">
           <div class="grow"><div class="k">${t('setAutoClean')}</div><div class="desc">${t('setAutoCleanDesc')}</div></div>
@@ -112,6 +112,11 @@ document.addEventListener('input', e=>{
     downloadDir.draft = e.target.value;
     if (downloadDir.error){ downloadDir.error = null; render(); }
   }
+});
+document.addEventListener('change', e=>{
+  if (route.view!=='settings') return;
+  const sel = e.target.closest('[data-lang-select]');
+  if (sel){ lang=sel.value; localStorage.setItem('sm_lang',lang); render(); }
 });
 document.addEventListener('keydown', e=>{
   if (route.view!=='settings') return;

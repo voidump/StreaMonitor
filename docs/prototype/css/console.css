@@ -515,6 +515,7 @@ tr:hover .row-actions{opacity:1}
 /* ========== Settings ========== */
 .settings-wrap{flex:1;overflow-y:auto;padding:20px}
 .settings-panel{max-width:560px}
+.settings-panel+.settings-panel{margin-top:14px}
 .set-row{
   display:flex;align-items:center;gap:16px;padding:13px 16px;border-bottom:1px solid var(--border);
 }
@@ -609,7 +610,6 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--bg-active);border:
 }
 
 /* ========== Settings · hotkeys ========== */
-.hk-panel{margin-top:14px}
 .hk-body{padding:6px 16px 10px}
 .hk-desc{font-size:11.5px;color:var(--text-faint);padding:8px 0 4px;line-height:1.6}
 .hk-row{
