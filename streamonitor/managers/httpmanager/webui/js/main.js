@@ -186,6 +186,11 @@ function restorePlayingVideo(live){
   if (ph===live) return;
   if (!ph){ neutralizeVideo(live); return; }   // navigated away — no placeholder to splice into; stop the detached node
   const sameLive = ph.hasAttribute('data-live') && live.hasAttribute('data-live');   // live stream keeps its element (mpegts src is a blob)
+  // Live connecting→native/mpegts transition: the grabbed node is the empty
+  // 'connecting' placeholder (never wired by bindLive, no stream attached). Keep
+  // the freshly rendered node — it carries the native src / was just bound — rather
+  // than splicing the src-less placeholder back over it (that left a black screen).
+  if (sameLive && !live._smLiveBound){ neutralizeVideo(live); return; }
   if (!sameLive && (ph.getAttribute('src')||'') !== (live.getAttribute('src')||'')){
     neutralizeVideo(live);   // different file — discard the old node, but stop it first so it can't keep playing/writing UI
     return;
