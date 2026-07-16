@@ -21,6 +21,81 @@ function parseStreamerUrl(raw){
   return {site:siteKey, user};
 }
 
+/* ---------------- hash routing ----------------
+ * Each view gets a stable URL hash so views are linkable and survive refresh:
+ *   #/ → dashboard, #/streamer/{site}/{user} → detail, #/settings, #/history
+ * nav() writes the hash (view-level only — switching video files never touches it,
+ * so within-detail playback creates no history entries). onHashChange handles
+ * back/forward + manual edits; sameRoute() de-dupes nav's own writes to avoid loops. */
+function routeToHash(r){
+  if (r && r.view==='detail' && r.id){
+    const i = r.id.indexOf('/');
+    const site = i>=0 ? r.id.slice(0,i) : r.id;
+    const user = i>=0 ? r.id.slice(i+1) : '';
+    return '#/streamer/'+encodeURIComponent(site)+'/'+encodeURIComponent(user);
+  }
+  if (r && r.view==='settings') return '#/settings';
+  if (r && r.view==='history') return '#/history';
+  return '#/';
+}
+function parseHash(h){
+  let s = (h||'').replace(/^#/,'');
+  if (s.charAt(0)==='/') s = s.slice(1);
+  if (s==='') return {view:'dashboard'};
+  const parts = s.split('/');
+  if (parts[0]==='settings') return {view:'settings'};
+  if (parts[0]==='history') return {view:'history'};
+  if (parts[0]==='streamer' && parts.length>=3){
+    const site = decodeURIComponent(parts[1]);
+    const user = decodeURIComponent(parts.slice(2).join('/'));
+    if (site && user) return {view:'detail', id:site+'/'+user};
+  }
+  return {view:'dashboard'};
+}
+function sameRoute(a,b){
+  if (!a || !b || a.view!==b.view) return false;
+  return a.view==='detail' ? a.id===b.id : true;
+}
+function writeRouteHash(r){
+  const h = routeToHash(r);
+  if (location.hash!==h) location.hash = h;   // identical assignment is a no-op (no history entry, no event)
+}
+function resolvePendingRoute(){
+  const r = pendingRoute;
+  pendingRoute = null;
+  if (!r){ render(); return; }
+  if (r.view==='detail' && !streamers.find(x=>x.id===r.id)){
+    toast(t('streamerNotFound'), 'err');
+    nav({view:'dashboard'});
+    return;
+  }
+  nav(r);
+}
+function onHashChange(){
+  const r = parseHash(location.hash);
+  if (sameRoute(r, route)) return;   // nav() wrote this hash itself, or we're already there
+  if (r.view==='detail' && !streamers.find(x=>x.id===r.id)){
+    if (apiState.mode==='api' && apiState.loading){ pendingRoute = r; return; }   // data still loading — resolve when it arrives
+    toast(t('streamerNotFound'), 'err');
+    nav({view:'dashboard'});
+    return;
+  }
+  nav(r);   // full switch (stopLive / player cleanup runs inside nav)
+}
+function bootFromHash(){
+  const r = parseHash(location.hash);
+  if (r.view==='detail' && !streamers.find(x=>x.id===r.id)){
+    if (apiState.mode==='api'){   // deep-link before API data loaded — keep the URL, wait for refreshStreamers
+      pendingRoute = r; route = {view:'dashboard'}; render();
+      return;
+    }
+    toast(t('streamerNotFound'), 'err');
+    nav({view:'dashboard'});
+    return;
+  }
+  nav(r);
+}
+
 /* ---------------- add streamer ---------------- */
 function doAdd(siteKey, user){
   if (apiState.mode==='api'){ apiAddStreamer(siteKey, user); return; }
@@ -572,5 +647,6 @@ function bindDetail(s){
   });
 }
 
-render();
+window.addEventListener('hashchange', onHashChange);   // browser back/forward + manual hash edits
 initDataSource();   // switch to real /api/v2 data when SM_CONFIG.useApi is set; otherwise stays on mock
+bootFromHash();     // parse the initial URL hash and land on the right view (detail deep-links wait for API data)

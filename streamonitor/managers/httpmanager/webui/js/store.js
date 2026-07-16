@@ -1,6 +1,7 @@
 'use strict';
 /* ---------------- state ---------------- */
 let route = {view:'dashboard'};   // {view:'dashboard'|'detail'|'settings', id}
+let pendingRoute = null;   // deep-linked detail route awaiting API data; resolved once streamers load
 let filters = {site:'all', status:'all', q:''};
 let sort = {key:'status', dir:1};
 let addMode = 'url';
@@ -88,6 +89,7 @@ function nav(to){
     }
   }
   route = to;
+  if (typeof writeRouteHash==='function') writeRouteHash(to);   // keep the URL hash in sync so views are linkable / refresh-safe
   render();
   if (apiState.mode==='api' && to.view==='detail'){   // pull real videos on entering a detail
     const s2 = streamers.find(x=>x.id===to.id);
@@ -210,6 +212,7 @@ async function refreshStreamers(){
     const data = await apiGet('/streamers');
     streamers = mapStreamers(Array.isArray(data) ? data : (data && data.streamers) || []);
     apiState.error = false; apiState.loading = false;
+    if (pendingRoute && typeof resolvePendingRoute==='function'){ resolvePendingRoute(); return; }   // land a deep-linked view now that data is in
     render();
     if (route.view==='detail'){ const s = streamers.find(x=>x.id===route.id); if (s) loadDetail(s.site, s.user); }
   } catch(e){
