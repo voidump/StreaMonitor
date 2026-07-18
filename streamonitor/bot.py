@@ -1,5 +1,6 @@
 from __future__ import unicode_literals
 import os
+import time
 import traceback
 from enum import Enum
 from urllib.parse import urljoin
@@ -21,6 +22,9 @@ from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
 from streamonitor.models import VideoData
 
 LOADED_SITES = set()
+
+# Rolling window (seconds) used to derive live recording speed from byte samples.
+RECORDING_SPEED_WINDOW = 15
 
 
 class Bot(Thread):
@@ -83,6 +87,9 @@ class Bot(Thread):
         self.recording_filename = None  # Basename of the file currently being written
         self.recording_bytes = 0  # Live recording size in bytes
         self.recording_segments = 0  # Live recording segment count
+        self.recording_resolution = None  # Short side (px) of the selected stream
+        self.recording_speed_bps = None  # Live recording speed in bytes/sec
+        self._recording_speed_samples = []  # (timestamp, bytes) rolling samples
         self.lastCheckTs = None  # Epoch timestamp of last status check
         self.monitorState = 'active'  # active | paused | stopped (v3 web UI)
         self.video_files = []
@@ -166,6 +173,31 @@ class Bot(Thread):
         self.video_files = _videos
         self.video_files_total_size = _total_size
 
+    def update_recording_progress(self, total_bytes):
+        # Record the live size and derive a rolling speed over RECORDING_SPEED_WINDOW.
+        # Shared by every downloader so speed works uniformly across sites.
+        self.recording_bytes = total_bytes
+        now = time.time()
+        samples = self._recording_speed_samples
+        samples.append((now, total_bytes))
+        cutoff = now - RECORDING_SPEED_WINDOW
+        while len(samples) > 2 and samples[0][0] < cutoff:
+            samples.pop(0)
+        if len(samples) >= 2:
+            dt = samples[-1][0] - samples[0][0]
+            db = samples[-1][1] - samples[0][1]
+            if dt > 0 and db >= 0:
+                self.recording_speed_bps = db / dt
+
+    def reset_recording_progress(self):
+        # Clear all live recording metrics once a recording ends so the next one
+        # starts clean and the UI degrades gracefully to no values.
+        self.recording_bytes = 0
+        self.recording_segments = 0
+        self.recording_resolution = None
+        self.recording_speed_bps = None
+        self._recording_speed_samples = []
+
     def _sleep(self, time):
         while time > 0:
             sleep(1)
@@ -238,6 +270,7 @@ class Bot(Thread):
                                 self.logger.exception(e)
                                 ret = False
                             if not ret:
+                                self.reset_recording_progress()
                                 self.log('Recording ended with error')
                                 self.sc = Status.ERROR
                                 self.log(self.status())
@@ -245,6 +278,7 @@ class Bot(Thread):
                                 continue
                             self.recording = False
                             self.recording_filename = None
+                            self.reset_recording_progress()
                             self.log('Recording ended')
                             try:
                                 self.cache_file_list()
@@ -259,6 +293,7 @@ class Bot(Thread):
                     self.log(self.status())
                     self.recording = False
                     self.recording_filename = None
+                    self.reset_recording_progress()
                     self._sleep(self.sleep_on_error)
                     continue
 
@@ -360,6 +395,8 @@ class Bot(Thread):
                 if selected_source['frame_rate'] is not None and selected_source['frame_rate'] != 0:
                     frame_rate = f" {selected_source['frame_rate']}fps"
                 self.logger.info(f"Selected {selected_source['resolution'][0]}x{selected_source['resolution'][1]}{frame_rate} resolution")
+                width, height = selected_source['resolution']
+                self.recording_resolution = min(width, height) if width and height else (height or width or None)
             selected_source_url = selected_source['url']
             return urljoin(url, selected_source_url)
         except BaseException as e:

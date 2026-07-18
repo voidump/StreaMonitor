@@ -122,7 +122,10 @@ const apiState = { mode:'mock', loading:false, error:false, pollMs:30000, timer:
 
 function apiUrl(path){
   const base = (window.SM_CONFIG && window.SM_CONFIG.apiBase) || '/api/v2';
-  return base + path;
+  // Resolve against location.origin (never carries credentials) so that opening
+  // the console via http://user:pass@host/ doesn't make fetch() throw
+  // "Request cannot be constructed from a URL that includes credentials".
+  return new URL(base + path, location.origin).toString();
 }
 async function apiGet(path){
   const r = await fetch(apiUrl(path), {headers:{'Accept':'application/json'}, credentials:'same-origin'});
@@ -193,6 +196,8 @@ function mapStreamers(list){
       monitorState: ms==='stopped' ? 'unmonitored' : 'active',
       _monitorState: ms, _running: !!item.running, _statusText: item.statusText||'',
       recBytes: item.recordingBytes||0, recSince:null,
+      recSpeedBps: item.recordingSpeedBps!=null ? item.recordingSpeedBps : null,   // live speed (bytes/s), null when unavailable
+      recResolution: item.recordingResolution!=null ? item.recordingResolution : null,   // short side px, null when unknown
       _liveAvailable: !!item.liveAvailable,   // watch-while-recording tail is readable (L2 live viewer)
       lastCheckSec: tsToSecAgo(item.lastCheckTs),
       addedDaysAgo: null,
@@ -464,6 +469,19 @@ async function apiBatchDeleteMarked(s){
   if (failN) toast(t('apiOpError'), 'err');
   if (skipped) toast(t('recDelSkipped')(skipped), 'warn');
   await loadDetail(s.site, s.user);
+}
+/* purge: delete every recorded video for one streamer (recording-file protected server-side) */
+async function apiPurgeStreamerVideos(s){
+  const onDetail = route.view==='detail' && route.id===s.id;
+  try {
+    const res = await apiSend('DELETE', streamerPath(s)+'/videos');
+    const deleted = res && res.deleted!=null ? res.deleted : 0;
+    const skipped = res && res.skipped!=null ? res.skipped : 0;
+    if (onDetail && player.fileId){ stopTick(); player = {fileId:null, playing:false, pos:0, timer:null}; }
+    if (deleted) toast(t('purgeVideosToast')(deleted), 'warn'); else toast(t('purgeVideosNoneToast'), 'warn');
+    if (skipped) toast(t('recDelSkipped')(skipped), 'warn');
+    if (onDetail) await loadDetail(s.site, s.user); else await refreshStreamers();
+  } catch(e){ toast(t('apiOpError'), 'err'); render(); }
 }
 
 async function initDataSource(){

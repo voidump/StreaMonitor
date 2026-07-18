@@ -53,6 +53,22 @@ function renderModal(){
   }
   const s = streamers.find(x=>x.id===modalState.id);
   if (!s){ modalState=null; root.innerHTML=''; return; }
+  if (modalState.type==='purgeVideos'){
+    const n = fileCount(s);
+    const sz = fmtSize(sizeOf(s));
+    root.innerHTML = `
+    <div class="modal-backdrop" id="modalBk">
+      <div class="modal">
+        <div class="modal-h">${t('purgeVideosTitle')(s.user)}</div>
+        <div class="modal-b" style="padding-bottom:14px">${t('purgeVideosDesc')(n, sz)}</div>
+        <div class="modal-f">
+          <button class="btn" id="modalCancel">${t('cancel')}</button>
+          <button class="btn danger-solid" id="modalConfirm">${t('purgeVideosBtn')}</button>
+        </div>
+      </div>
+    </div>`;
+    return;
+  }
   if (modalState.type==='batch'){
     const marked = s.files.filter(f=>f.marked);
     const msz = fmtSize(marked.reduce((a,f)=>a+f.size,0));

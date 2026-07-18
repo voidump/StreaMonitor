@@ -154,6 +154,12 @@ function fmtSize(b){
   if (b>=1024**2) return (b/1024**2).toFixed(0)+' MB';
   return (b/1024).toFixed(0)+' KB';
 }
+function fmtSpeed(bps){
+  if (bps==null || !(bps>0)) return '';   // unknown / first poll — degrade to nothing
+  if (bps>=1024**2) return (bps/1024**2).toFixed(1)+' MB/s';
+  if (bps>=1024) return (bps/1024).toFixed(0)+' KB/s';
+  return Math.round(bps)+' B/s';
+}
 function fmtDur(s){
   const h=Math.floor(s/3600), m=Math.floor(s%3600/60), sec=Math.floor(s%60);
   return h>0 ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` : `${m}:${String(sec).padStart(2,'0')}`;
@@ -276,4 +282,5 @@ const IC = {
   userMinus:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="4"/><path d="M1 21c0-4 3.6-6 8-6 1.5 0 2.9.23 4.1.66"/><path d="M17 11h6"/></svg>',
   mark:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.2L6 21z"/></svg>',
   markFill:'<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M6 3h12v18l-6-4.2L6 21z"/></svg>',
+  filmX:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="12" height="14" rx="2"/><path d="M2.5 8.5h3M2.5 13.5h3M11.5 8.5h3M11.5 13.5h3M8.5 4v14"/><path d="m15.5 15.5 5 5M20.5 15.5l-5 5"/></svg>',
 };

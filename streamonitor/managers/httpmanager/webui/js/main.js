@@ -60,11 +60,33 @@ function writeRouteHash(r){
   const h = routeToHash(r);
   if (location.hash!==h) location.hash = h;   // identical assignment is a no-op (no history entry, no event)
 }
+/* Resolve a detail deep-link to a loaded streamer. The site segment is accepted as
+ * either the canonical slug/abbr (exact id, e.g. SC) or the full site name
+ * (case-insensitive, e.g. StripChat / stripchat). On a non-exact match, rewrite
+ * r.id to the canonical slug/user so the URL and render() both settle on the app's
+ * own form. Returns the streamer, or null when nothing matches. */
+function resolveDetailStreamer(r){
+  if (!r || r.view!=='detail' || !r.id) return null;
+  let s = streamers.find(x=>x.id===r.id);
+  if (s) return s;
+  const i = r.id.indexOf('/');
+  if (i<0) return null;
+  const siteLc = r.id.slice(0,i).toLowerCase();
+  const user = r.id.slice(i+1);
+  s = streamers.find(x=>{
+    if (x.user!==user) return false;
+    if (x.site.toLowerCase()===siteLc) return true;   // slug/abbr, case-insensitive
+    const meta = SITES[x.site];
+    return !!(meta && meta.name && meta.name.toLowerCase()===siteLc);   // full site name
+  });
+  if (s) r.id = s.id;   // normalize to the canonical id
+  return s || null;
+}
 function resolvePendingRoute(){
   const r = pendingRoute;
   pendingRoute = null;
   if (!r){ render(); return; }
-  if (r.view==='detail' && !streamers.find(x=>x.id===r.id)){
+  if (r.view==='detail' && !resolveDetailStreamer(r)){
     toast(t('streamerNotFound'), 'err');
     nav({view:'dashboard'});
     return;
@@ -74,7 +96,7 @@ function resolvePendingRoute(){
 function onHashChange(){
   const r = parseHash(location.hash);
   if (sameRoute(r, route)) return;   // nav() wrote this hash itself, or we're already there
-  if (r.view==='detail' && !streamers.find(x=>x.id===r.id)){
+  if (r.view==='detail' && !resolveDetailStreamer(r)){
     if (apiState.mode==='api' && apiState.loading){ pendingRoute = r; return; }   // data still loading — resolve when it arrives
     toast(t('streamerNotFound'), 'err');
     nav({view:'dashboard'});
@@ -84,7 +106,7 @@ function onHashChange(){
 }
 function bootFromHash(){
   const r = parseHash(location.hash);
-  if (r.view==='detail' && !streamers.find(x=>x.id===r.id)){
+  if (r.view==='detail' && !resolveDetailStreamer(r)){
     if (apiState.mode==='api'){   // deep-link before API data loaded — keep the URL, wait for refreshStreamers
       pendingRoute = r; route = {view:'dashboard'}; render();
       return;
@@ -344,6 +366,19 @@ function batchDeleteMarked(s){
   render();
   if (player.playing) startTick(s);
 }
+function purgeStreamerVideos(s){
+  if (apiState.mode==='api'){ apiPurgeStreamerVideos(s); return; }   // real purge + authoritative refresh
+  const deletable = s.files.filter(f=>!f._recording);
+  const skipped = s.files.length - deletable.length;
+  if (!deletable.length){ toast(t('purgeVideosNoneToast'), 'warn'); render(); return; }
+  const delIds = new Set(deletable.map(f=>f.id));
+  if (delIds.has(player.fileId)){ stopTick(); player = {fileId:null, playing:false, pos:0, timer:null}; }
+  s.files = s.files.filter(f=>!delIds.has(f.id));
+  if (confirmDelId && delIds.has(confirmDelId)) confirmDelId = null;
+  toast(t('purgeVideosToast')(deletable.length), 'warn');
+  if (skipped) toast(t('recDelSkipped')(skipped), 'warn');
+  render();
+}
 
 /* ---------------- event wiring ---------------- */
 document.addEventListener('click', e=>{
@@ -381,6 +416,12 @@ document.addEventListener('click', e=>{
     modalState={type:'remove', id:rm.dataset.remove, delFiles: !!s && s.status==='stopped'};
     renderModal(); return;
   }
+  const pv = e.target.closest('[data-purgevids]');
+  if (pv){
+    e.stopPropagation();
+    modalState={type:'purgeVideos', id:pv.dataset.purgevids};
+    renderModal(); return;
+  }
 
   // modal interactions
   if (e.target.closest('#modalCancel') || e.target.id==='modalBk'){ modalState=null; renderModal(); return; }
@@ -393,6 +434,12 @@ document.addEventListener('click', e=>{
       const i=modalState.idx; modalState=null; renderModal();
       if (apiState.mode==='api'){ apiHistoryDelete(i); return; }
       removeHistoryAt(i); toast(t('histRemovedToast'), 'warn'); render();
+      return;
+    }
+    if (modalState.type==='purgeVideos'){
+      const sp = streamers.find(x=>x.id===modalState.id);
+      modalState=null; renderModal();
+      if (sp) purgeStreamerVideos(sp);
       return;
     }
     const s = streamers.find(x=>x.id===modalState.id);
@@ -546,6 +593,7 @@ function bindDetail(s){
   // real thumbnails: if the ffmpeg frame 404s (broken/unparseable file), fall back to the generated placeholder
   document.querySelectorAll('[data-thumb-fallback]').forEach(img=>img.addEventListener('error', ()=>{ img.src = genThumb(img.dataset.thumbFallback); }, {once:true}));
   document.querySelectorAll('[data-watchlive]').forEach(b=>b.addEventListener('click', e=>{
+    if (e.target.closest('.acts')||e.target.closest('.confirm-del')) return;   // recording tile: let its action buttons keep working
     e.stopPropagation();
     startLive(s);   // L2: play the watch-while-recording stream in the player area
   }));

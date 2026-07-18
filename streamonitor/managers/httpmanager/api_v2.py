@@ -128,6 +128,10 @@ def _streamer_summary(streamer):
         'liveAvailable': bool(tmp_path and os.path.exists(tmp_path)),
         'recordingFilename': getattr(streamer, 'recording_filename', None),
         'recordingBytes': getattr(streamer, 'recording_bytes', 0),
+        # Live speed/resolution only while recording; null otherwise and for
+        # sites that never resolve a resolution (frontend degrades gracefully).
+        'recordingSpeedBps': getattr(streamer, 'recording_speed_bps', None) if streamer.recording else None,
+        'recordingResolution': getattr(streamer, 'recording_resolution', None) if streamer.recording else None,
         'videoCount': len(streamer.video_files),
         'totalSize': streamer.video_files_total_size,
         'lastCheckTs': getattr(streamer, 'lastCheckTs', None),
@@ -643,6 +647,34 @@ def register_api_v2(app, manager, login_required):
             return _json({'error': 'Failed to delete video'}, 500)
         streamer.cache_file_list()
         return _json({'ok': True})
+
+    @app.route('/api/v2/streamers/<site>/<user>/videos', methods=['DELETE'])
+    @login_required
+    def api_v2_delete_all_videos(site, user):
+        # Delete every recorded video file for this streamer, keeping the entry
+        # and its monitor state intact. The file currently being written by the
+        # recorder is skipped (never interrupt an in-progress recording).
+        streamer = manager.getStreamer(user, site)
+        if streamer is None:
+            return _json({'error': 'Streamer not found'}, 404)
+        streamer.cache_file_list()
+        recording_name = getattr(streamer, 'recording_filename', None)
+        deleted = 0
+        skipped = 0
+        freed = 0
+        for video in list(streamer.video_files):
+            if streamer.recording and video.filename == recording_name:
+                skipped += 1
+                continue
+            try:
+                size = video.filesize
+                os.remove(video.abs_path)
+                deleted += 1
+                freed += size
+            except Exception:
+                skipped += 1
+        streamer.cache_file_list()
+        return _json({'ok': True, 'deleted': deleted, 'skipped': skipped, 'freed': freed})
 
     @app.route('/api/v2/streamers/<site>/<user>/videos/<path:filename>/thumb', methods=['GET'])
     @login_required

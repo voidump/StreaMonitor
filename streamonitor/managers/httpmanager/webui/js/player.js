@@ -15,10 +15,10 @@ const PIC = {
 /* ---- player-local i18n (append-free: keeps strings out of shared i18n.js) ---- */
 const PLAYER_I18N = {
   zh:{ speed:'倍速', mute:'静音', unmute:'取消静音', prevVid:'上一个视频', nextVid:'下一个（更早）视频',
-    back30:'后退 30 秒', back5:'后退 5 秒', fwd5:'前进 5 秒', fwd30:'前进 30 秒', volTitle:'音量', tapSound:'点击开启声音',
+    back30:'后退 30 秒', back5:'后退 5 秒', fwd5:'前进 5 秒', fwd30:'前进 30 秒', volTitle:'音量',
     hints:'空格 播放/暂停 · ← → ±5秒 · Shift+← → ±30秒 · ↑ ↓ 音量 · [ ] 或 PgUp/PgDn 上/下一个 · X 静音 · M 标记' },
   en:{ speed:'Speed', mute:'Mute', unmute:'Unmute', prevVid:'Previous video', nextVid:'Next (older) video',
-    back30:'Back 30s', back5:'Back 5s', fwd5:'Forward 5s', fwd30:'Forward 30s', volTitle:'Volume', tapSound:'Tap for sound',
+    back30:'Back 30s', back5:'Back 5s', fwd5:'Forward 5s', fwd30:'Forward 30s', volTitle:'Volume',
     hints:'Space play/pause · ← → ±5s · Shift+← → ±30s · ↑ ↓ volume · [ ] or PgUp/PgDn prev/next · X mute · M mark' },
 };
 const pt = k => (PLAYER_I18N[lang] || PLAYER_I18N.en)[k] || k;
@@ -63,10 +63,6 @@ const PLAYER_HOTKEY_DEFAULTS = {
   const css = `
 .player{position:relative}
 .pspeed-badge{position:absolute;top:8px;right:10px;background:rgba(13,17,23,.7);border:1px solid rgba(255,255,255,.15);color:#fff;font:600 11px/1 var(--mono);padding:3px 6px;border-radius:4px}
-.pmuted-hint{position:absolute;left:12px;bottom:14px;display:inline-flex;align-items:center;gap:6px;background:rgba(13,17,23,.82);border:1px solid rgba(255,255,255,.18);color:#fff;font:600 12px/1 var(--sans,inherit);padding:7px 11px;border-radius:20px;cursor:pointer;z-index:4;animation:pmutedhint 5s ease forwards}
-.pmuted-hint:hover{background:rgba(13,17,23,.96);opacity:1 !important;animation:none}
-.pmuted-hint svg{flex:none}
-@keyframes pmutedhint{0%{opacity:0;transform:translateY(4px)}10%{opacity:1;transform:none}72%{opacity:1}100%{opacity:0;transform:translateY(4px);pointer-events:none}}
 .pbar{background:var(--bg-raised);border-top:1px solid var(--border)}
 .pseek-wrap{position:relative;padding:9px 12px 3px}
 #pseek{display:block;width:100%;-webkit-appearance:none;appearance:none;height:5px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--pct,0%),var(--track) var(--pct,0%));outline:none;cursor:pointer}
@@ -91,14 +87,20 @@ const PLAYER_HOTKEY_DEFAULTS = {
 .vthumb .rec-badge{position:absolute;left:6px;top:6px;background:var(--rec,#26d07c);color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:600;display:inline-flex;align-items:center;gap:4px;z-index:2}
 .vthumb .rec-badge::before{content:'';width:6px;height:6px;border-radius:50%;background:#fff;animation:recpulse 1.2s infinite}
 @keyframes recpulse{50%{opacity:.3}}
-.live-btn{color:var(--rec,#26d07c) !important;border-color:var(--rec,#26d07c) !important}
-.live-btn .ldot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--rec,#26d07c);margin-right:6px;animation:recpulse 1.2s infinite;vertical-align:middle}
+.plive-chip{position:absolute;top:10px;left:10px;display:inline-flex;align-items:center;gap:7px;background:var(--rec,#26d07c);color:#fff;font:700 12px/1 var(--sans,inherit);padding:7px 12px;border-radius:20px;cursor:pointer;z-index:4;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+.plive-chip:hover{filter:brightness(1.08)}
+.plive-chip .ldot{width:8px;height:8px;border-radius:50%;background:#fff;animation:recpulse 1.2s infinite}
 .player .live-badge{position:absolute;top:8px;left:10px;display:inline-flex;align-items:center;gap:6px;background:var(--rec,#26d07c);color:#fff;font:700 11px/1 var(--mono);padding:4px 8px;border-radius:4px;letter-spacing:.5px;z-index:3}
 .player .live-badge::before{content:'';width:7px;height:7px;border-radius:50%;background:#fff;animation:recpulse 1.2s infinite}
 .player .live-connecting{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;color:#c6d2e0;font-size:12.5px;background:#000;z-index:2}
 .player .live-connecting .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:lspin .8s linear infinite}
 @keyframes lspin{to{transform:rotate(360deg)}}
 .now-file .live-note{color:var(--rec,#26d07c);font-weight:600}
+.player-empty.live-empty{grid-auto-flow:row;gap:14px;cursor:pointer}
+.plive-cta{display:inline-flex;align-items:center;gap:8px;background:var(--rec,#26d07c);color:#fff;font:700 13px/1 var(--sans,inherit);padding:10px 18px;border-radius:22px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+.plive-cta:hover{filter:brightness(1.08)}
+.plive-cta .ldot{width:8px;height:8px;border-radius:50%;background:#fff;animation:recpulse 1.2s infinite}
+.live-empty-sub{color:var(--text-faint);font-size:12px}
 @media (max-width:560px){
   .pjump{order:6}
   .pvol .volrange{width:56px}
@@ -133,14 +135,6 @@ function syncVolUI(){
 /* ---- real <video> access (only present in API mode; null keeps mock path) ---- */
 function pvideo(){ return document.getElementById('pvideo'); }
 
-/* ---- default-muted hint: non-intrusive "tap for sound" badge, auto-fades via CSS ---- */
-function mutedHintHtml(){
-  return playerPrefs.muted
-    ? `<button class="pmuted-hint" id="pmutedHint" data-unmute="1" title="${pt('unmute')}">${PIC.mute}<span>${pt('tapSound')}</span></button>`
-    : '';
-}
-function updateMutedHint(){ if (!playerPrefs.muted){ const h=document.getElementById('pmutedHint'); if (h) h.remove(); } }
-
 /* ---- player actions (shared by control bar + hotkey engine) ---- */
 function seekBy(s, delta){
   const v = pvideo();
@@ -165,7 +159,6 @@ function setVolume(v){
   const vid = pvideo();
   if (vid){ vid.muted = !!playerPrefs.muted; vid.volume = playerPrefs.muted ? 0 : playerPrefs.volume; }
   syncVolUI();
-  updateMutedHint();
 }
 function adjustVolume(delta){ setVolume((playerPrefs.muted?0:playerPrefs.volume) + delta); }
 function toggleMute(){
@@ -175,7 +168,6 @@ function toggleMute(){
   const vid = pvideo();
   if (vid){ vid.muted = !!playerPrefs.muted; vid.volume = playerPrefs.muted ? 0 : playerPrefs.volume; }
   syncVolUI();
-  updateMutedHint();
 }
 function setSpeed(v){
   if (!PLAYER_SPEEDS.includes(v)) return;
@@ -308,7 +300,6 @@ function renderLivePlayer(s){
     <div class="player playing" id="playerBox">
       ${media}
       <div class="live-badge">${t('liveBadge')}</div>
-      ${mutedHintHtml()}
     </div>
     <div class="pbar live">
       <div class="pctrl">
@@ -334,7 +325,15 @@ function renderLivePlayer(s){
 function renderPlayer(s){
   if (player.live) return renderLivePlayer(s);
   const cur = s.files.find(f=>f.id===player.fileId) || null;
-  if (!cur) return `<div class="player-empty">${s.files.length?t('noFileSelected'):t('noRecordings')}</div>`;
+  if (!cur){
+    if (!s.files.length && liveWatchable(s)){   // recording with no finished files yet: still offer a live entry
+      return `<div class="player-empty live-empty" data-watchlive="${s.id}">
+        <button class="plive-cta"><span class="ldot"></span><span>${t('liveWatchNow')}</span></button>
+        <span class="live-empty-sub">${t('noRecordings')}</span>
+      </div>`;
+    }
+    return `<div class="player-empty">${s.files.length?t('noFileSelected'):t('noRecordings')}</div>`;
+  }
   const idx = s.files.findIndex(f=>f.id===cur.id);
   const hasPrev = idx>0, hasNext = idx>=0 && idx<s.files.length-1;   // newest-first: next = older
   const pct = cur.dur ? (player.pos/cur.dur*100).toFixed(1) : 0;
@@ -347,7 +346,7 @@ function renderPlayer(s){
   return `
     <div class="player ${player.playing?'playing':''}" id="playerBox">
       ${media}
-      ${mutedHintHtml()}
+      ${liveWatchable(s)?`<button class="plive-chip" data-watchlive="${s.id}"><span class="ldot"></span><span>${t('liveChip')}</span></button>`:''}
       ${speed!==1?`<div class="pspeed-badge">${speed}×</div>`:''}
     </div>
     <div class="pbar">
@@ -407,8 +406,6 @@ function bindPlayer(s){
   if (vol) vol.addEventListener('input', ()=> setVolume(+vol.value));
   const mute = document.getElementById('pmute');
   if (mute) mute.addEventListener('click', e=>{ e.stopPropagation(); toggleMute(); });
-  const uh = document.querySelector('[data-unmute]');
-  if (uh) uh.addEventListener('click', e=>{ e.stopPropagation(); if (playerPrefs.muted) toggleMute(); });
   const sp = document.getElementById('pspeed');
   if (sp) sp.addEventListener('change', ()=> setSpeed(+sp.value));
   const full = document.querySelector('[data-pfull]');

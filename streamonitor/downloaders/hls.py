@@ -101,8 +101,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         outfile.flush()
                         total_bytes += seg_bytes
                         segment_count += 1
-                        self.recording_bytes = total_bytes
                         self.recording_segments = segment_count
+                        self.update_recording_progress(total_bytes)
                         # Progress log every 30 segments (~1 minute)
                         if segment_count % 30 == 0:
                             self.logger.info(f'Recording progress: {total_bytes/1024/1024:.1f} MB, {segment_count} segments')
@@ -116,8 +116,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             self.logger.error(f'HLS download error: {e}')
             error = True
         finally:
-            self.recording_bytes = 0
-            self.recording_segments = 0
+            self.reset_recording_progress()
 
     def terminate():
         self.stopDownloadFlag = True

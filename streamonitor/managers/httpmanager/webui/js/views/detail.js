@@ -29,7 +29,8 @@ function renderDetail(s){
     const thumbSrc = useApiThumb
       ? apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(f._filename)+'/thumb')
       : genThumb(f.id);
-    return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}" data-playfile="${f.id}">
+    const liveThumb = f._recording && liveWatchable(s);   // recording tile enters live view instead of playing the growing tmp file
+    return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}" ${liveThumb?`data-watchlive="${s.id}"`:`data-playfile="${f.id}"`}>
       <div class="imgwrap">
         <img src="${thumbSrc}" alt="" loading="lazy"${useApiThumb?` data-thumb-fallback="${esc(f.id)}"`:''}>
         ${f._recording?`<span class="rec-badge">${t('recTag')}</span>`:''}
@@ -90,9 +91,9 @@ function renderDetail(s){
           </div>
         </div>
       </div>
-      ${liveWatchable(s)?`<button class="btn live-btn" data-watchlive="${s.id}"><span class="ldot"></span><span>${t('watchLive')}</span></button>`:''}
       <button class="btn" data-toggle="${s.id}">${off?IC.playCirc:IC.pauseCirc}<span>${off?t('resume'):t('pause')}</span></button>
       <button class="btn" data-ext="${s.id}">${IC.ext}<span>${t('openPage')}</span></button>
+      <button class="btn danger" data-purgevids="${s.id}"${s.files.length?'':' disabled'} title="${s.files.length?t('purgeVideosTip'):t('purgeVideosNone')}">${IC.filmX}<span>${t('purgeVideos')}</span></button>
       <button class="btn danger" data-remove="${s.id}">${IC.userMinus}<span>${t('removeStreamer')}</span></button>
     </div>
     <div class="detail-scroll">
@@ -134,7 +135,19 @@ function renderDetail(s){
           ? (displayFiles.length
               ? `<div class="thumb-grid">${thumbs}</div>`
               : `<div class="empty" style="padding:30px">${t('noMarked')}</div>`)
-          : `<div class="empty" style="padding:30px">${t('noRecordings')}</div>`}
+          : (liveWatchable(s)
+              ? `<div class="thumb-grid"><div class="vthumb recording" data-watchlive="${s.id}">
+                  <div class="imgwrap">
+                    <img src="${genThumb(s.seed||s.id)}" alt="" loading="lazy">
+                    <span class="rec-badge">${t('recTag')}</span>
+                    <span class="hover-play">${IC.playLg}</span>
+                  </div>
+                  <div class="meta">
+                    <div class="l1"><span class="fdate">${t('recInProgress')}</span></div>
+                    <div class="l2"><span>${t('liveChip')}</span></div>
+                  </div>
+                </div></div>`
+              : `<div class="empty" style="padding:30px">${t('noRecordings')}</div>`)}
         ${s.temps.length?`
         <div class="rec-section-h" style="margin-top:22px">
           <h3>${t('tempTitle')}</h3><span class="n">${s.temps.length} · ${fmtSize(tempSize)}</span>

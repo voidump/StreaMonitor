@@ -417,6 +417,68 @@ def test_api_delete_video_protects_recording(tmp_path, monkeypatch):
     assert os.path.exists(path)
 
 
+def _add_video(streamer, filename, data=b"0" * 1000):
+    path = os.path.join(streamer.outputFolder, filename)
+    with open(path, "wb") as f:
+        f.write(data)
+    streamer.cache_file_list()
+    return path
+
+
+def test_api_delete_all_videos_removes_all(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, p1 = _make_streamer_with_video("alice-20260706-120000.mp4")
+    p2 = _add_video(streamer, "alice-20260707-120000.mp4")
+    manager = HTTPManager([streamer])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/alice/videos", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["ok"] is True
+    assert payload["deleted"] == 2
+    assert payload["skipped"] == 0
+    assert not os.path.exists(p1)
+    assert not os.path.exists(p2)
+
+
+def test_api_delete_all_videos_skips_recording(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, old = _make_streamer_with_video("alice-20260706-120000.mp4")
+    rec = _add_video(streamer, "alice-20260707-120000.mp4")
+    streamer.recording = True
+    streamer.recording_filename = "alice-20260707-120000.mp4"
+    manager = HTTPManager([streamer])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/alice/videos", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["deleted"] == 1
+    assert payload["skipped"] == 1
+    assert not os.path.exists(old)
+    assert os.path.exists(rec)
+
+
+def test_api_delete_all_videos_empty_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    manager = HTTPManager([streamer])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/alice/videos", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["ok"] is True
+    assert payload["deleted"] == 0
+    assert payload["skipped"] == 0
+
+
+def test_api_delete_all_videos_unknown_streamer_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).delete(
+        "/api/v2/streamers/FakeSite/ghost/videos", headers=AUTH)
+    assert response.status_code == 404
+
+
 def test_api_detail_flags_recording_video(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     streamer, _ = _make_streamer_with_video()
@@ -983,3 +1045,79 @@ def test_site_favicon_fetches_and_caches(tmp_path, monkeypatch, fake_site):
     assert again.status_code == 200
     assert again.data == _PNG_BYTES
     assert calls == ["fake"]
+
+
+# --- live recording speed + resolution on the list card (V31D) ---
+
+def test_streamers_list_recording_metrics_null_when_not_recording(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()   # recording defaults to False
+    streamer.recording_resolution = 1080
+    streamer.recording_speed_bps = 2.5 * 1024 * 1024
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers", headers=AUTH)
+    assert response.status_code == 200
+    item = json.loads(response.data)[0]
+    assert item["recordingSpeedBps"] is None
+    assert item["recordingResolution"] is None
+
+
+def test_detail_recording_metrics_exposed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    streamer.recording = True
+    streamer.recording_resolution = 1080
+    streamer.recording_speed_bps = 2.5 * 1024 * 1024
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["recordingResolution"] == 1080
+    assert payload["recordingSpeedBps"] == 2.5 * 1024 * 1024
+
+
+def test_recording_resolution_null_when_unknown(tmp_path, monkeypatch):
+    # Sites that never resolve a resolution (e.g. non-HLS) report null even while
+    # recording, so the frontend degrades to showing nothing.
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    streamer.recording = True
+    streamer.recording_resolution = None
+    streamer.recording_speed_bps = None
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    payload = json.loads(response.data)
+    assert payload["recordingResolution"] is None
+    assert payload["recordingSpeedBps"] is None
+
+
+def test_update_recording_progress_computes_rolling_speed(monkeypatch):
+    streamer = make_streamer()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr("streamonitor.bot.time.time", lambda: clock["t"])
+
+    streamer.update_recording_progress(0)
+    assert streamer.recording_speed_bps is None   # single sample — not enough
+
+    clock["t"] = 1002.0
+    streamer.update_recording_progress(2 * 1024 * 1024)   # +2 MB over 2 s
+    assert streamer.recording_bytes == 2 * 1024 * 1024
+    assert streamer.recording_speed_bps == pytest.approx(1024 * 1024)
+
+
+def test_reset_recording_progress_clears_metrics(monkeypatch):
+    streamer = make_streamer()
+    clock = {"t": 5000.0}
+    monkeypatch.setattr("streamonitor.bot.time.time", lambda: clock["t"])
+    streamer.update_recording_progress(1000)
+    clock["t"] = 5001.0
+    streamer.update_recording_progress(5000)
+    streamer.recording_resolution = 720
+    assert streamer.recording_speed_bps is not None
+
+    streamer.reset_recording_progress()
+    assert streamer.recording_bytes == 0
+    assert streamer.recording_segments == 0
+    assert streamer.recording_resolution is None
+    assert streamer.recording_speed_bps is None
+    assert streamer._recording_speed_samples == []

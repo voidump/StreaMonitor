@@ -2,10 +2,13 @@ import errno
 import os
 import subprocess
 import sys
+import time
 
 import requests.cookies
 from threading import Thread
 from parameters import DEBUG, SEGMENT_TIME, CONTAINER, FFMPEG_PATH, FFMPEG_READRATE
+
+_PROGRESS_POLL_INTERVAL = 2  # seconds between live recording-size samples
 
 
 def getVideoFfmpeg(self, url, filename):
@@ -101,6 +104,45 @@ def getVideoFfmpeg(self, url, filename):
     thread = Thread(target=execute)
     thread.start()
     self.stopDownload = lambda: stopping.pls_stop()
+
+    # Poll the output file(s) on disk so the list/card UI can show a live
+    # recording speed. ffmpeg writes the container directly (single file, or
+    # timestamped segments sharing the username prefix), so summing the sizes of
+    # freshly-written matching files tracks the growth without parsing progress.
+    folder = os.path.dirname(filename)
+    username_prefix = os.path.basename(filename).rsplit('-', maxsplit=2)[0]
+    start_ts = time.time() - _PROGRESS_POLL_INTERVAL
+
+    def current_size():
+        total = 0
+        try:
+            for entry in os.scandir(folder):
+                if not entry.is_file():
+                    continue
+                if not entry.name.startswith(username_prefix):
+                    continue
+                if not entry.name.endswith('.' + CONTAINER):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                if st.st_mtime >= start_ts:
+                    total += st.st_size
+        except OSError:
+            return None
+        return total
+
+    def monitor():
+        while thread.is_alive():
+            size = current_size()
+            if size is not None:
+                self.update_recording_progress(size)
+            time.sleep(_PROGRESS_POLL_INTERVAL)
+
+    monitor_thread = Thread(target=monitor)
+    monitor_thread.start()
     thread.join()
+    monitor_thread.join()
     self.stopDownload = None
     return not error

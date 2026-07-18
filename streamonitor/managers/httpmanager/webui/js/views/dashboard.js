@@ -21,13 +21,22 @@ function siteBadge(siteKey){
   return `<span class="sitebadge" style="color:${s.color};background:${s.color}1a;border-color:${s.color}33" title="${s.name}">
     ${icon}${s.abbr}</span>`;
 }
+/* Recording extras appended after the size: " · 速度 · 清晰度". Each piece is
+ * omitted individually when unavailable so there is never a NaN/undefined gap. */
+function recMeta(s){
+  const parts = [];
+  const speed = fmtSpeed(s.recSpeedBps);
+  if (speed) parts.push(speed);
+  if (s.recResolution) parts.push(s.recResolution+'p');
+  return parts.map(x=>' · '+x).join('');
+}
 function statusChip(s){
   const st = STATUS[s.status] || STATUS.offline;   // guard unexpected status values
   const dotStyle = st.ring
     ? `background:transparent;border:1.5px solid ${st.ring}`
     : `background:${st.color}`;
   const bytes = s.status==='recording'
-    ? `<span class="rec-bytes">${fmtSize(s.recBytes||0)}${s.recSince?` · ${fmtDur(Math.floor((NOW-s.recSince)/1000))}`:''}</span>` : '';
+    ? `<span class="rec-bytes" title="${t('recInfoTitle')}">${fmtSize(s.recBytes||0)}${s.recSince?` · ${fmtDur(Math.floor((NOW-s.recSince)/1000))}`:''}${recMeta(s)}</span>` : '';
   return `<span class="status-chip"><span class="dot ${st.pulse?'pulse':''}" style="${dotStyle}"></span>${st.label()}</span>${bytes}`;
 }
 function sparkline(s){
@@ -161,6 +170,7 @@ function renderDashboard(){
       <td style="width:116px"><div class="row-actions">
         <button class="icon-btn" data-toggle="${s.id}" title="${off?t('resume'):t('pause')}">${off?IC.playCirc:IC.pauseCirc}</button>
         <button class="icon-btn" data-ext="${s.id}" title="${t('openPage')}">${IC.ext}</button>
+        <button class="icon-btn danger" data-purgevids="${s.id}" title="${fileCount(s)?t('purgeVideosTip'):t('purgeVideosNone')}"${fileCount(s)?'':' disabled'}>${IC.filmX}</button>
         <button class="icon-btn danger" data-remove="${s.id}" title="${t('removeStreamer')}">${IC.trash}</button>
       </div></td>
     </tr>`;
@@ -173,7 +183,7 @@ function renderDashboard(){
     const dot = st.ring ? `background:transparent;border:1.5px solid ${st.ring}` : `background:${st.color}`;
     const corner = rec
       ? `<span class="card-live">${t('liveBadge')}</span>
-        <span class="card-rec">${fmtSize(s.recBytes||0)}${s.recSince?` · ${fmtDur(Math.floor((NOW-s.recSince)/1000))}`:''}</span>`
+        <span class="card-rec" title="${t('recInfoTitle')}">${fmtSize(s.recBytes||0)}${s.recSince?` · ${fmtDur(Math.floor((NOW-s.recSince)/1000))}`:''}${recMeta(s)}</span>`
       : `<span class="card-status"><span class="dot ${st.pulse?'pulse':''}" style="${dot}"></span>${st.label()}</span>`;
     return `<div class="card ${rec?'recording':''}${s.status==='stopped'?' stopped':''}${selected.has(s.id)?' selrow':''}" data-open="${s.id}">
       <div class="card-cover">
@@ -184,6 +194,7 @@ function renderDashboard(){
         <div class="card-hover"><div class="card-actions">
           <button class="icon-btn" data-toggle="${s.id}" title="${off?t('resume'):t('pause')}">${off?IC.playCirc:IC.pauseCirc}</button>
           <button class="icon-btn" data-ext="${s.id}" title="${t('openPage')}">${IC.ext}</button>
+          <button class="icon-btn danger" data-purgevids="${s.id}" title="${fileCount(s)?t('purgeVideosTip'):t('purgeVideosNone')}"${fileCount(s)?'':' disabled'}>${IC.filmX}</button>
           <button class="icon-btn danger" data-remove="${s.id}" title="${t('removeStreamer')}">${IC.trash}</button>
         </div></div>
       </div>
