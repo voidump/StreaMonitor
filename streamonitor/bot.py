@@ -217,7 +217,7 @@ class Bot(Thread):
                 try:
                     self.recording = False
                     self.recording_filename = None
-                    if not self.bulk_update or self.sc == Status.NOTRUNNING:
+                    if not self.bulk_update or self.sc in (Status.NOTRUNNING, Status.UNKNOWN):
                         try:
                             self.sc = self.getStatus()
                         except Exception as e:

@@ -9,6 +9,7 @@ import base64
 import hashlib
 import urllib.parse
 
+from datetime import datetime
 from functools import lru_cache
 from typing import Optional, Tuple
 
@@ -497,12 +498,15 @@ class StripChat(RoomIdBot):
 
     @classmethod
     def getStatusBulk(cls, streamers):
+        # Keys are normalized to str so they always match data_map keys, which
+        # are built from str(model['id']); room_id may be int or str depending
+        # on where it originated (config, API, numeric username).
         model_ids = {}
         for streamer in streamers:
             if not isinstance(streamer, StripChat):
                 continue
             if streamer.room_id:
-                model_ids[streamer.room_id] = streamer
+                model_ids[str(streamer.room_id)] = streamer
 
         base_url = 'https://hu.stripchat.com/api/front/models/list?'
         batch_num = 100
@@ -524,14 +528,23 @@ class StripChat(RoomIdBot):
             try:
                 data = r.json()
             except requests.exceptions.JSONDecodeError:
-                print('Failed to parse JSON response')
-                return
+                # Only skip this batch instead of discarding the whole run, so
+                # streamers covered by other (successful) batches still update.
+                for _mid in _batch_ids:
+                    model_ids[_mid].logger.warning('Bulk status: failed to parse JSON response, skipping batch')
+                continue
             data_map |= {str(model['id']): model for model in data.get('models', [])}
 
+        now = datetime.now().timestamp()
         for model_id, streamer in model_ids.items():
             model_data = data_map.get(model_id)
             if not model_data:
-                streamer.setStatus(Status.UNKNOWN)
+                # Model absent from the bulk response is an anomaly (offline
+                # models are returned with an 'off'/'idle' status). Keep the
+                # previous status instead of forcing UNKNOWN, which otherwise
+                # strands the streamer in the "checking" dead-end. bot.py runs a
+                # single getStatus fallback while sc is UNKNOWN/NOTRUNNING.
+                streamer.logger.warning('Bulk status: model not present in response, keeping previous status')
                 continue
             if model_data.get('gender'):
                 streamer.gender = cls._GENDER_MAP.get(model_data.get('gender'))
@@ -545,5 +558,6 @@ class StripChat(RoomIdBot):
             elif status in cls._OFFLINE_STATUSES:
                 streamer.setStatus(Status.OFFLINE)
             else:
-                print(f'[{streamer.siteslug}] {streamer.username}: Bulk update got unknown status: {status}')
+                streamer.logger.warning(f'Bulk update got unknown status: {status}')
                 streamer.setStatus(Status.UNKNOWN)
+            streamer.lastCheckTs = now
