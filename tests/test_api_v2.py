@@ -346,6 +346,60 @@ def test_api_history_readd_out_of_range_404(tmp_path, monkeypatch):
     assert response.status_code == 404
 
 
+def test_api_history_avatar_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config.save_history([{"username": "alice", "site": "FakeSite", "deletedAt": 1}])
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/history/0/avatar")
+    assert response.status_code == 401
+
+
+def test_api_history_avatar_out_of_range_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config.save_history([])
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/history/5/avatar", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_api_history_avatar_no_cache_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config.save_history([{"username": "alice", "site": "FakeSite", "deletedAt": 1}])
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/history/0/avatar", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_api_history_avatar_serves_cached_image(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config.save_history([{"username": "alice", "site": "FakeSite", "deletedAt": 1}])
+    cache_path = api_v2._avatar_cache_path("FakeSite", "alice")
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as f:
+        f.write(_PNG_BYTES)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/history/0/avatar", headers=AUTH)
+    assert response.status_code == 200
+    assert response.data == _PNG_BYTES
+    assert response.mimetype == "image/png"
+    assert response.headers["Cache-Control"] == "private, max-age=3600"
+
+
+def test_purge_delete_files_preserves_avatar_cache(tmp_path, monkeypatch):
+    # V33C: permanently deleting a streamer (even with delete_files) must not
+    # remove its cached avatar, so the history page can still show the real face.
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    cache_path = api_v2._avatar_cache_path(streamer.site, streamer.username)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as f:
+        f.write(_PNG_BYTES)
+    manager = HTTPManager([streamer])
+
+    assert manager.do_purge(streamer, "alice", "FakeSite", delete_files=True) == "OK"
+    assert os.path.exists(cache_path)
+
+
 # --- video streaming (Range) + deletion ---
 
 def _make_streamer_with_video(filename="alice-20260706-120000.mp4", data=b"0" * 1000):

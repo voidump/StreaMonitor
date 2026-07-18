@@ -893,6 +893,23 @@ def register_api_v2(app, manager, login_required):
         config.save_history(history)
         return _json({'ok': True})
 
+    @app.route('/api/v2/history/<int:idx>/avatar', methods=['GET'])
+    @login_required
+    def api_v2_history_avatar(idx):
+        # Purged streamers leave their cached avatar in .thumbs/avatars/ (do_purge
+        # only removes the streamer's own folder), so the history page can still
+        # show the real face. There is no live bot to refetch through, so we only
+        # serve an existing cache; anything missing 404s and the frontend falls
+        # back to its generated placeholder.
+        history = config.load_history()
+        if idx < 0 or idx >= len(history):
+            return _json({'error': 'History entry not found'}, 404)
+        entry = history[idx]
+        cache_path = _avatar_cache_path(entry.get('site', ''), entry.get('username', ''))
+        if not os.path.exists(cache_path):
+            return _json({'error': 'Avatar unavailable'}, 404)
+        return _send_image(cache_path, _sniff_image_mime(cache_path), _AVATAR_CACHE_CONTROL)
+
     @app.route('/api/v2/settings/download-dir', methods=['GET'])
     @login_required
     def api_v2_get_download_dir():

@@ -301,10 +301,25 @@ function renderDashboard(){
 }
 
 /* ---------------- history view ---------------- */
+/* V33C: in API mode show the purged model's real avatar if it's still cached on
+ * disk (do_purge keeps .thumbs/avatars/); onerror falls back to the generated
+ * placeholder. Mock mode uses the generated avatar directly (zero network). */
+function histAvatarError(img){
+  img.onerror = null;
+  img.src = img.dataset.fallback;
+}
+function histAvatarImg(h){
+  const dims = `width="30" height="30" style="width:100%;height:100%;object-fit:cover"`;
+  if (typeof apiState!=='undefined' && apiState.mode==='api' && h._idx!=null){
+    const src = apiUrl('/history/'+h._idx+'/avatar');
+    return `<img src="${src}" data-fallback="${h.avatarDataUrl}" ${dims} alt="" onerror="histAvatarError(this)">`;
+  }
+  return `<img src="${h.avatarDataUrl}" ${dims} alt="">`;
+}
 function renderHistory(){
   const rows = history.map((h,i)=>`
     <div class="hist-row">
-      <span class="avatar"><img src="${h.avatarDataUrl}" width="30" height="30" style="width:100%;height:100%;object-fit:cover" alt=""></span>
+      <span class="avatar">${histAvatarImg(h)}</span>
       <div class="hist-main">
         <div class="s-name">${esc(h.user)}</div>
         <div class="hist-sub">${siteBadge(h.site)}<span class="hist-dates">${h.addedDate?`${t('histAdded')} ${t('dateFmt')(h.addedDate)} · `:''}${t('histRemoved')} ${t('dateFmt')(h.removedDate)}</span></div>
