@@ -26,8 +26,9 @@ function renderDetail(s){
     const confirm = confirmDelId===f.id && !f._recording;
     const watchedLabel = f.watchPct>=100?t('watched'):f.watchPct>0?`${f.watchPct}%`:t('neverWatched');
     const useApiThumb = apiState.mode==='api' && f._filename;   // real ffmpeg frame when backed by the API; else the generated placeholder
+    const thumbVer = Math.floor((f.dt&&f.dt.getTime?f.dt.getTime():0)/1000);   // file mtime (s): busts the immutable thumb cache when the file is re-recorded
     const thumbSrc = useApiThumb
-      ? apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(f._filename)+'/thumb')
+      ? apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(f._filename)+'/thumb')+'?v='+thumbVer
       : genThumb(f.id);
     const liveThumb = f._recording && liveWatchable(s);   // recording tile enters live view instead of playing the growing tmp file
     return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}" ${liveThumb?`data-watchlive="${s.id}"`:`data-playfile="${f.id}"`}>

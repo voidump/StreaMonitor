@@ -521,6 +521,23 @@ def _download_favicon(domain, out_path):
         return False
 
 
+# Image endpoints (thumb/avatar/favicon) let the browser cache so console polls
+# don't refetch every avatar/favicon/thumbnail. Thumbnails are content-addressed
+# (cache key includes mtime) and their URLs carry a ?v= version param, so they're
+# safe to mark immutable for a year; avatars/favicons reuse a stable URL and only
+# get a short TTL. 404 fallbacks return JSON via _json (no caching) so the onerror
+# cascade keeps working.
+def _send_image(path, mimetype, cache_control):
+    resp = send_file(path, mimetype=mimetype)
+    resp.headers['Cache-Control'] = cache_control
+    return resp
+
+
+_THUMB_CACHE_CONTROL = 'private, max-age=31536000, immutable'
+_AVATAR_CACHE_CONTROL = 'private, max-age=3600'
+_FAVICON_CACHE_CONTROL = 'private, max-age=86400'
+
+
 def register_api_v2(app, manager, login_required):
     @app.route('/api/v2/streamers', methods=['GET'])
     @login_required
@@ -697,7 +714,7 @@ def register_api_v2(app, manager, login_required):
                 # Broken/unparseable file: 404 so the frontend falls back to its
                 # generated placeholder image.
                 return _json({'error': 'Thumbnail unavailable'}, 404)
-        return send_file(thumb_path, mimetype='image/jpeg')
+        return _send_image(thumb_path, 'image/jpeg', _THUMB_CACHE_CONTROL)
 
     @app.route('/api/v2/streamers/<site>/<user>/avatar', methods=['GET'])
     @login_required
@@ -709,12 +726,12 @@ def register_api_v2(app, manager, login_required):
         cached = os.path.exists(cache_path)
         fresh = cached and (time() - os.path.getmtime(cache_path) < _AVATAR_TTL)
         if fresh:
-            return send_file(cache_path, mimetype=_sniff_image_mime(cache_path))
+            return _send_image(cache_path, _sniff_image_mime(cache_path), _AVATAR_CACHE_CONTROL)
         url = _avatar_source_url(streamer)
         if url and _download_avatar(streamer, url, cache_path):
-            return send_file(cache_path, mimetype=_sniff_image_mime(cache_path))
+            return _send_image(cache_path, _sniff_image_mime(cache_path), _AVATAR_CACHE_CONTROL)
         if cached:  # stale but present, and no live source right now — serve it
-            return send_file(cache_path, mimetype=_sniff_image_mime(cache_path))
+            return _send_image(cache_path, _sniff_image_mime(cache_path), _AVATAR_CACHE_CONTROL)
         # No extractor / offline with no prior cache / download failed: 404 so the
         # frontend falls back to its generated placeholder avatar.
         return _json({'error': 'Avatar unavailable'}, 404)
@@ -729,12 +746,12 @@ def register_api_v2(app, manager, login_required):
         cached = os.path.exists(cache_path)
         fresh = cached and (time() - os.path.getmtime(cache_path) < _FAVICON_TTL)
         if fresh:
-            return send_file(cache_path, mimetype=_favicon_mime(cache_path))
+            return _send_image(cache_path, _favicon_mime(cache_path), _FAVICON_CACHE_CONTROL)
         domain = _site_domain(manager, site_cls)
         if domain and _download_favicon(domain, cache_path):
-            return send_file(cache_path, mimetype=_favicon_mime(cache_path))
+            return _send_image(cache_path, _favicon_mime(cache_path), _FAVICON_CACHE_CONTROL)
         if cached:  # stale but present, and no fresh fetch right now — serve it
-            return send_file(cache_path, mimetype=_favicon_mime(cache_path))
+            return _send_image(cache_path, _favicon_mime(cache_path), _FAVICON_CACHE_CONTROL)
         # Unknown domain / fetch failed with no prior cache: 404 so the frontend
         # falls back to its colored dot + abbreviation.
         return _json({'error': 'Favicon unavailable'}, 404)

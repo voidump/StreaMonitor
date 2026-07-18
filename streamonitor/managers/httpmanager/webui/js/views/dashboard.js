@@ -85,7 +85,8 @@ function cardCover(s){
     const av = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/avatar');
     const recent = (s.files||[]).find(f=>f._filename);
     if (recent){
-      const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(recent._filename)+'/thumb');
+      const ver = s._lastRecordedTs!=null ? s._lastRecordedTs : (recent.dt&&recent.dt.getTime?Math.floor(recent.dt.getTime()/1000):0);   // busts the immutable thumb cache when a newer recording lands
+      const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(recent._filename)+'/thumb')+'?v='+ver;
       return `<img class="card-cover-img" src="${src}" alt="" loading="lazy" data-cover-stage="thumb" data-cover-avatar="${av}" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
     }
     return `<img class="card-cover-img" src="${av}" alt="" loading="lazy" data-cover-stage="avatar" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;

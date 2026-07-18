@@ -871,6 +871,7 @@ def test_video_thumb_real_video_generates_and_caches(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.mimetype == "image/jpeg"
     assert len(response.data) > 0
+    assert response.headers["Cache-Control"] == "private, max-age=31536000, immutable"
 
     video = streamer.video_files[0]
     thumb_path = api_v2._thumb_cache_path(video.abs_path, int(video._stat.st_mtime))
@@ -966,6 +967,7 @@ def test_avatar_downloads_then_serves_from_cache(tmp_path, monkeypatch):
     assert first.status_code == 200
     assert first.mimetype == "image/png"
     assert first.data == _PNG_BYTES
+    assert first.headers["Cache-Control"] == "private, max-age=3600"
     assert len(calls) == 1
     cache_path = api_v2._avatar_cache_path(streamer.site, streamer.username)
     assert os.path.exists(cache_path)
@@ -1035,6 +1037,7 @@ def test_site_favicon_fetches_and_caches(tmp_path, monkeypatch, fake_site):
     assert response.status_code == 200
     assert response.mimetype == "image/png"
     assert response.data == _PNG_BYTES
+    assert response.headers["Cache-Control"] == "private, max-age=86400"
     assert calls == ["fake"]
 
     cache_path = api_v2._favicon_cache_path("FS")
