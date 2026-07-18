@@ -40,6 +40,10 @@ class Bot(Thread):
     sleep_on_error = 20
     sleep_on_ratelimit = 180
     long_offline_timeout = 600
+    # Minimum seconds between single getStatus() fallbacks while a bulk-update
+    # streamer is stranded in UNKNOWN. The bulk loop sleeps 1s, so without this
+    # a wedged UNKNOWN streamer would re-check roughly once per second.
+    min_unknown_fallback_interval = 20
 
     headers = {
         "User-Agent": HTTP_USER_AGENT
@@ -91,6 +95,7 @@ class Bot(Thread):
         self.recording_speed_bps = None  # Live recording speed in bytes/sec
         self._recording_speed_samples = []  # (timestamp, bytes) rolling samples
         self.lastCheckTs = None  # Epoch timestamp of last status check
+        self._last_unknown_fallback_ts = None  # Last single getStatus() fallback while UNKNOWN
         self.monitorState = 'active'  # active | paused | stopped (v3 web UI)
         self.video_files = []
         self.video_files_total_size = 0
@@ -205,6 +210,20 @@ class Bot(Thread):
             if self.quitting or not self.running:
                 return
 
+    def _should_do_single_status_check(self, now):
+        # Non-bulk sites always poll on their own cadence (governed by the
+        # sleep_on_* delays at the end of the loop).
+        if not self.bulk_update:
+            return True
+        # Bulk-update sites normally rely on the manager's batch call; they only
+        # fall back to a single getStatus() when a streamer is stranded.
+        if self.sc == Status.NOTRUNNING:
+            return True
+        if self.sc == Status.UNKNOWN:
+            last = self._last_unknown_fallback_ts
+            return last is None or (now - last) >= self.min_unknown_fallback_interval
+        return False
+
     def run(self):
         while not self.quitting:
             while not self.running and not self.quitting:
@@ -217,13 +236,18 @@ class Bot(Thread):
                 try:
                     self.recording = False
                     self.recording_filename = None
-                    if not self.bulk_update or self.sc in (Status.NOTRUNNING, Status.UNKNOWN):
+                    now = time.time()
+                    if self._should_do_single_status_check(now):
                         try:
                             self.sc = self.getStatus()
                         except Exception as e:
                             self.logger.exception(e)
                             self.sc = Status.ERROR
                         self.lastCheckTs = datetime.now().timestamp()
+                        # Throttle repeated fallbacks only while stranded in
+                        # UNKNOWN; any other outcome clears the backoff so a
+                        # fresh UNKNOWN is retried immediately.
+                        self._last_unknown_fallback_ts = now if self.sc == Status.UNKNOWN else None
                     # Check if the status has changed and log the update if it's different from the previous status
                     if self.sc != self.previous_status:
                         self.log(self.status())

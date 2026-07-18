@@ -226,6 +226,17 @@ _durations_lock = threading.Lock()
 _durations_cache = None          # dict key -> duration|null once loaded
 _durations_cache_path = None     # which durations.json the cache was loaded from
 
+# Stale-key cleanup. durations.json accumulates one entry per (path, mtime); when
+# a file is renamed, deleted, or rewritten (new mtime -> new key) the old entry is
+# never referenced again and the file grows without bound. We prune entries whose
+# key no longer matches any live video file. The sweep enumerates every streamer's
+# folder, so it is gated behind a size threshold and a growth margin to keep it off
+# the hot path: it only runs once the cache exceeds _DURATIONS_MAX_KEYS and has
+# grown _DURATIONS_CLEANUP_GROWTH keys since the previous sweep.
+_DURATIONS_MAX_KEYS = 2000
+_DURATIONS_CLEANUP_GROWTH = 200
+_durations_last_sweep_size = 0
+
 
 def _durations_path():
     return os.path.join(_thumbs_dir(), _DURATIONS_FILE)
@@ -290,6 +301,58 @@ def _get_duration_cached(abs_path, mtime):
         _durations_cache[key] = duration
         _save_durations_locked(path)
     return duration
+
+
+def _live_duration_keys(streamers):
+    # Set of cache keys for every video file that currently exists across all
+    # streamers, derived exactly like _get_duration_cached (abs_path + int(mtime)).
+    # Runs without _durations_lock: refreshing each streamer's listing touches the
+    # disk and must not block duration lookups on the hot path.
+    keys = set()
+    for streamer in streamers:
+        try:
+            streamer.cache_file_list()
+            for video in streamer.video_files:
+                keys.add(_cache_key(video.abs_path, int(video._stat.st_mtime)))
+        except Exception:
+            continue
+    return keys
+
+
+def _prune_durations(valid_keys):
+    # Drop cached durations whose key is absent from valid_keys (stale renamed or
+    # deleted files). Reuses the existing lock and atomic write. Returns the number
+    # of entries removed.
+    path = _durations_path()
+    with _durations_lock:
+        if _durations_cache is None or _durations_cache_path != path:
+            _load_durations_locked(path)
+        stale = [k for k in _durations_cache if k not in valid_keys]
+        for key in stale:
+            del _durations_cache[key]
+        if stale:
+            _save_durations_locked(path)
+        return len(stale)
+
+
+def _maybe_cleanup_durations(streamers):
+    # Threshold-gated stale-key sweep. Enumerating every streamer's folder is only
+    # worthwhile once durations.json has grown large, so we skip it entirely below
+    # the threshold and re-run only after meaningful growth since the last sweep,
+    # which keeps repeated detail requests from re-scanning a big library.
+    global _durations_last_sweep_size
+    path = _durations_path()
+    with _durations_lock:
+        if _durations_cache is None or _durations_cache_path != path:
+            _load_durations_locked(path)
+        size = len(_durations_cache)
+        if size <= _DURATIONS_MAX_KEYS or \
+                size - _durations_last_sweep_size < _DURATIONS_CLEANUP_GROWTH:
+            return
+    _prune_durations(_live_duration_keys(streamers))
+    with _durations_lock:
+        _durations_last_sweep_size = \
+            len(_durations_cache) if _durations_cache is not None else 0
 
 
 def _generate_thumb(abs_path, out_path, duration=None):
@@ -605,6 +668,9 @@ def register_api_v2(app, manager, login_required):
                 'recording': is_recording,
             })
         videos.sort(key=lambda v: v['mtime'], reverse=True)
+        # Opportunistically drop durations.json entries for files that no longer
+        # exist. Gated by size/growth so it stays off the common request path.
+        _maybe_cleanup_durations(manager.streamers)
         detail = _streamer_summary(streamer)
         detail['videos'] = videos
         return _json(detail)

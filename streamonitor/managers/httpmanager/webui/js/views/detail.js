@@ -136,7 +136,10 @@ function renderDetail(s){
           ? (displayFiles.length
               ? `<div class="thumb-grid">${thumbs}</div>`
               : `<div class="empty" style="padding:30px">${t('noMarked')}</div>`)
-          : (apiState.mode==='api' && !s._detailLoaded
+          : (apiState.mode==='api' && s._detailError
+              ? `<div class="empty" style="padding:30px">${IC.alert} ${t('detailLoadError')}
+                  <button class="btn" style="margin-left:10px" onclick="retryDetail()">${IC.wrench}${t('apiRetry')}</button></div>`
+              : apiState.mode==='api' && !s._detailLoaded
               ? `<div class="empty" style="padding:30px"><span class="spin"></span> ${t('apiLoading')}</div>`
               : liveWatchable(s)
               ? `<div class="thumb-grid"><div class="vthumb recording" data-watchlive="${s.id}">

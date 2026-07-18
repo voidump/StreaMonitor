@@ -204,7 +204,7 @@ function mapStreamers(list){
       _videoCount: item.videoCount!=null ? item.videoCount : null,
       _totalSize: item.totalSize!=null ? item.totalSize : null,
       _lastRecordedTs: item.lastRecordedTs!=null ? item.lastRecordedTs : null,
-      files: [], temps: [], schedule: EMPTY_SCHEDULE, _detailLoaded:false,
+      files: [], temps: [], schedule: EMPTY_SCHEDULE, _detailLoaded:false, _detailError:false,
     };
     if (prev && prev._detailLoaded){ s.files = prev.files; s.temps = prev.temps; s._detailLoaded = true; s._filesSig = prev._filesSig; }   // carry the file signature so loadDetail's guard can early-return while a video plays
     return s;
@@ -244,12 +244,21 @@ async function loadDetail(site, user){
         watchPct: old?old.watchPct:0, marked: old?!!old.marked:false,
         lastWatched: old?old.lastWatched:null, _filename: v.filename, _url: v.url||'', _recording: !!v.recording };
     }).sort((a,b)=>b.dt-a.dt);
-    s.temps = []; s._detailLoaded = true; s._filesSig = sig;
+    s.temps = []; s._detailLoaded = true; s._filesSig = sig; s._detailError = false;
     if (route.view==='detail' && route.id===s.id && !player.fileId && s.files[0]) setPlayerFile(s.files[0]);
     apiState.error = false; render();
   } catch(e){
+    const s = streamers.find(x=>x.id===site+'/'+user);
+    if (s && !s._detailLoaded) s._detailError = true;   // no data yet: surface an inline error + retry instead of a forever spinner
     apiState.error = true; render();
   }
+}
+/* retry a failed initial detail load — invoked from the inline retry button in the detail view */
+function retryDetail(){
+  const s = streamers.find(x=>x.id===route.id);
+  if (!s) return;
+  s._detailError = false; render();   // back to the spinner while we re-fetch
+  loadDetail(s.site, s.user);
 }
 async function loadBaseSettings(){
   try {

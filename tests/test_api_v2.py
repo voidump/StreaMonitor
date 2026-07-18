@@ -1020,6 +1020,52 @@ def test_duration_cache_tolerates_corrupt_json(tmp_path, monkeypatch):
     assert json.loads(resp.data)["videos"][0]["duration"] == 7.0
 
 
+def test_prune_durations_removes_only_stale_keys(tmp_path, monkeypatch):
+    # Direct unit test of the sweep primitive: keys absent from the live set are
+    # dropped, live keys survive, and the atomic rewrite reuses the same file.
+    monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
+    os.makedirs(api_v2._thumbs_dir(), exist_ok=True)
+    with open(api_v2._durations_path(), "w") as f:
+        json.dump({"keep": 10.0, "stale": 20.0}, f)
+    removed = api_v2._prune_durations({"keep"})
+    assert removed == 1
+    with open(api_v2._durations_path()) as f:
+        assert json.load(f) == {"keep": 10.0}
+
+
+def test_duration_cleanup_drops_stale_entry_on_detail(tmp_path, monkeypatch):
+    # A key for a file that no longer exists is removed once the sweep triggers,
+    # while the entry for the live video is preserved. Threshold/growth are lowered
+    # so the gated sweep fires for a tiny cache.
+    monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
+    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: 55.0)
+    monkeypatch.setattr(api_v2, "_DURATIONS_MAX_KEYS", 0)
+    monkeypatch.setattr(api_v2, "_DURATIONS_CLEANUP_GROWTH", 0)
+    monkeypatch.setattr(api_v2, "_durations_last_sweep_size", 0)
+    streamer, path = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+
+    first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    live_key = api_v2._cache_key(
+        streamer.video_files[0].abs_path, int(streamer.video_files[0]._stat.st_mtime))
+    assert json.loads(first.data)["videos"][0]["duration"] == 55.0
+
+    # Inject a stale key (no matching file) and force the next request to re-sweep.
+    stale_key = "0" * 40
+    with api_v2._durations_lock:
+        api_v2._durations_cache[stale_key] = 99.0
+    monkeypatch.setattr(api_v2, "_durations_last_sweep_size", 0)
+
+    second = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(second.data)["videos"][0]["duration"] == 55.0
+    with open(api_v2._durations_path()) as f:
+        stored = json.load(f)
+    assert stale_key not in stored
+    assert stored.get(live_key) == 55.0
+
+
 # --- model avatar: real on-site avatar with proxy download + cache (NB12) ---
 
 class _FakeResp:
