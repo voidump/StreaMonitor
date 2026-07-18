@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 from time import sleep, time
 from types import SimpleNamespace
 from urllib.parse import urljoin, urlparse
@@ -215,8 +216,48 @@ def _thumb_cache_path(abs_path, mtime):
     return os.path.join(_thumbs_dir(), _cache_key(abs_path, mtime) + '.jpg')
 
 
-def _meta_cache_path(abs_path, mtime):
-    return os.path.join(_thumbs_dir(), _cache_key(abs_path, mtime) + '.json')
+# All probed durations live in one consolidated JSON file (keyed by the same
+# path+mtime hash used for thumbs) instead of one tiny file per video. This is
+# loaded lazily on first access and kept in memory, so a service restart with a
+# warm cache never re-runs ffprobe over the whole library. A null value means a
+# prior probe failed and is cached to avoid re-probing broken files.
+_DURATIONS_FILE = 'durations.json'
+_durations_lock = threading.Lock()
+_durations_cache = None          # dict key -> duration|null once loaded
+_durations_cache_path = None     # which durations.json the cache was loaded from
+
+
+def _durations_path():
+    return os.path.join(_thumbs_dir(), _DURATIONS_FILE)
+
+
+def _load_durations_locked(path):
+    # Caller holds _durations_lock. Reads path into the in-memory cache; a
+    # missing or corrupt file is tolerated and treated as an empty cache.
+    global _durations_cache, _durations_cache_path
+    data = {}
+    try:
+        with open(path) as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            data = loaded
+    except Exception:
+        data = {}
+    _durations_cache = data
+    _durations_cache_path = path
+
+
+def _save_durations_locked(path):
+    # Caller holds _durations_lock. Atomic write via temp file + os.replace so a
+    # crash mid-write never leaves a truncated durations.json behind.
+    try:
+        os.makedirs(_thumbs_dir(), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(_durations_cache, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 def _probe_duration(abs_path):
@@ -235,22 +276,19 @@ def _probe_duration(abs_path):
 
 
 def _get_duration_cached(abs_path, mtime):
-    meta_path = _meta_cache_path(abs_path, mtime)
-    if os.path.exists(meta_path):
-        try:
-            with open(meta_path) as f:
-                return json.load(f).get('duration')
-        except Exception:
-            pass
+    key = _cache_key(abs_path, mtime)
+    path = _durations_path()
+    with _durations_lock:
+        if _durations_cache is None or _durations_cache_path != path:
+            _load_durations_locked(path)
+        if key in _durations_cache:
+            return _durations_cache[key]
     duration = _probe_duration(abs_path)
-    try:  # cache failures too (duration=None) to avoid re-probing broken files
-        os.makedirs(_thumbs_dir(), exist_ok=True)
-        tmp = meta_path + '.tmp'
-        with open(tmp, 'w') as f:
-            json.dump({'duration': duration}, f)
-        os.replace(tmp, meta_path)
-    except Exception:
-        pass
+    with _durations_lock:  # cache failures too (None) to avoid re-probing broken files
+        if _durations_cache is None or _durations_cache_path != path:
+            _load_durations_locked(path)
+        _durations_cache[key] = duration
+        _save_durations_locked(path)
     return duration
 
 

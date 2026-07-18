@@ -952,6 +952,74 @@ def test_detail_duration_real_video(tmp_path, monkeypatch):
     assert 1.0 < video["duration"] < 4.0
 
 
+def _reset_durations_cache(monkeypatch):
+    # Drop the in-memory cache so a test starts cold (also simulates a restart).
+    monkeypatch.setattr(api_v2, "_durations_cache", None)
+    monkeypatch.setattr(api_v2, "_durations_cache_path", None)
+
+
+def test_duration_cache_persists_to_consolidated_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
+    calls = []
+    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p) or 123.0))
+    streamer, _ = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(response.data)["videos"][0]["duration"] == 123.0
+    assert len(calls) == 1
+    dpath = api_v2._durations_path()
+    assert os.path.exists(dpath)
+    with open(dpath) as f:
+        stored = json.load(f)
+    assert 123.0 in stored.values()
+
+
+def test_duration_cache_survives_restart_without_reprobe(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
+    calls = []
+    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p) or 42.0))
+    streamer, _ = _make_streamer_with_video()
+    _client(HTTPManager([streamer])).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert len(calls) == 1
+    # Simulate a service restart: forget the in-memory cache, keep durations.json.
+    _reset_durations_cache(monkeypatch)
+    streamer2, _ = _make_streamer_with_video()
+    resp = _client(HTTPManager([streamer2])).get(
+        "/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(resp.data)["videos"][0]["duration"] == 42.0
+    assert len(calls) == 1   # cache hit from disk, no second ffprobe
+
+
+def test_duration_cache_caches_failed_probe_as_null(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
+    calls = []
+    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p), None)[1])
+    streamer, _ = _make_streamer_with_video()
+    _client(HTTPManager([streamer])).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    _reset_durations_cache(monkeypatch)
+    resp = _client(HTTPManager([streamer])).get(
+        "/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(resp.data)["videos"][0]["duration"] is None
+    assert len(calls) == 1   # a failed probe is cached and never retried
+
+
+def test_duration_cache_tolerates_corrupt_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
+    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: 7.0)
+    os.makedirs(api_v2._thumbs_dir(), exist_ok=True)
+    with open(api_v2._durations_path(), "w") as f:
+        f.write("{ not valid json ")
+    streamer, _ = _make_streamer_with_video()
+    resp = _client(HTTPManager([streamer])).get(
+        "/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert resp.status_code == 200
+    assert json.loads(resp.data)["videos"][0]["duration"] == 7.0
+
+
 # --- model avatar: real on-site avatar with proxy download + cache (NB12) ---
 
 class _FakeResp:

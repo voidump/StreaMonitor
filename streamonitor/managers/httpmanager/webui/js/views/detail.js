@@ -136,7 +136,9 @@ function renderDetail(s){
           ? (displayFiles.length
               ? `<div class="thumb-grid">${thumbs}</div>`
               : `<div class="empty" style="padding:30px">${t('noMarked')}</div>`)
-          : (liveWatchable(s)
+          : (apiState.mode==='api' && !s._detailLoaded
+              ? `<div class="empty" style="padding:30px"><span class="spin"></span> ${t('apiLoading')}</div>`
+              : liveWatchable(s)
               ? `<div class="thumb-grid"><div class="vthumb recording" data-watchlive="${s.id}">
                   <div class="imgwrap">
                     <img src="${genThumb(s.seed||s.id)}" alt="" loading="lazy">
