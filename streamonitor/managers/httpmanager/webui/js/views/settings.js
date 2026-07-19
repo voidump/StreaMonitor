@@ -46,6 +46,47 @@ function renderDownloadDirPanel(){
       </div>`;
 }
 
+function renderRecResolutionPanel(){
+  const r = recRes;
+  const busy = r.loading || r.saving;
+  const isCustom = r.sel==='custom';
+  const isMax = r.sel==='max';
+  const opt=(v,label)=>`<option value="${v}" ${r.sel===v?'selected':''}>${label}</option>`;
+  const prefOpt=(v,label)=>`<option value="${v}" ${r.pref===v?'selected':''}>${label}</option>`;
+  return `
+      <div class="panel settings-panel recres-panel">
+        <div class="set-row dldir-row">
+          <div class="grow">
+            <div class="k">${t('recRes')}</div>
+            <div class="desc">${t('recResDesc')}</div>
+            <div class="dldir-edit">
+              <select class="site-select on" data-recres-select ${busy?'disabled':''}>
+                ${opt('max',t('recResMax'))}
+                ${opt('1080','1080p')}
+                ${opt('720','720p')}
+                ${opt('480','480p')}
+                ${opt('360','360p')}
+                ${opt('240','240p')}
+                ${opt('custom',t('recResCustom'))}
+              </select>
+              ${isCustom?`<input type="number" id="recResCustom" class="dldir-input" value="${esc(r.custom)}" placeholder="${t('recResCustomPh')}" min="144" max="9999" step="1" ${busy?'disabled':''}>`:''}
+            </div>
+            <div class="desc" style="margin-top:12px">${t('recResPref')}</div>
+            <div class="dldir-edit" style="margin-top:6px">
+              <select class="site-select on" data-recres-pref ${(isMax||busy)?'disabled':''}>
+                ${prefOpt('closest',t('recResPrefClosest'))}
+                ${prefOpt('exact_or_least_higher',t('recResPrefLeastHigher'))}
+                ${prefOpt('exact_or_highest_lower',t('recResPrefHighestLower'))}
+                ${prefOpt('exact',t('recResPrefExact'))}
+              </select>
+            </div>
+            ${isMax?`<div class="desc" style="margin-top:8px">${t('recResPrefMaxNote')}</div>`:''}
+            ${r.error?`<div class="dldir-err">${t(r.error)}</div>`:''}
+          </div>
+        </div>
+      </div>`;
+}
+
 function renderSettings(){
   return `
   <div class="view">
@@ -69,6 +110,7 @@ function renderSettings(){
         </div>
       </div>
       ${renderDownloadDirPanel()}
+      ${renderRecResolutionPanel()}
       ${renderHotkeyPanel()}
     </div>
   </div>`;
@@ -112,11 +154,26 @@ document.addEventListener('input', e=>{
     downloadDir.draft = e.target.value;
     if (downloadDir.error){ downloadDir.error = null; render(); }
   }
+  if (e.target && e.target.id==='recResCustom'){   // keep the custom-height draft in sync across poll re-renders
+    recRes.custom = e.target.value;
+    if (recRes.error){ recRes.error = null; render(); }
+  }
 });
 document.addEventListener('change', e=>{
   if (route.view!=='settings') return;
   const sel = e.target.closest('[data-lang-select]');
-  if (sel){ lang=sel.value; localStorage.setItem('sm_lang',lang); render(); }
+  if (sel){ lang=sel.value; localStorage.setItem('sm_lang',lang); render(); return; }
+  const rsel = e.target.closest('[data-recres-select]');
+  if (rsel){
+    recRes.sel = rsel.value; recRes.error = null;
+    if (recRes.sel==='custom'){ render(); const inp=document.getElementById('recResCustom'); if(inp) inp.focus(); return; }   // wait for a valid number before saving
+    saveRecResolution();
+    return;
+  }
+  const rpref = e.target.closest('[data-recres-pref]');
+  if (rpref){ recRes.pref = rpref.value; saveRecResolution(); return; }
+  const rcustom = e.target.closest('#recResCustom');
+  if (rcustom){ recRes.custom = rcustom.value; saveRecResolution(); return; }
 });
 document.addEventListener('keydown', e=>{
   if (route.view!=='settings') return;
@@ -124,6 +181,11 @@ document.addEventListener('keydown', e=>{
     e.preventDefault();
     downloadDir.draft = e.target.value;
     saveDownloadDir();
+  }
+  if (e.target && e.target.id==='recResCustom' && e.key==='Enter'){
+    e.preventDefault();
+    recRes.custom = e.target.value;
+    saveRecResolution();
   }
 });
 

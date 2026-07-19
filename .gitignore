@@ -8,4 +8,5 @@ venv*/
 config.json
 backup_config/
 stripchat_mouflon_keys.json
+.strmntr_recording_resolution.json
 *.local_backup

@@ -1,3 +1,4 @@
+import json
 import os.path
 import environ
 
@@ -63,6 +64,93 @@ WANTED_RESOLUTION = env.int("STRMNTR_RESOLUTION", 1080)
 # Possible values: exact, exact_or_least_higher, exact_or_highest_lower, closest
 # Beware of the exact policy. Nothing gets downloaded if the wanted resolution is not available
 WANTED_RESOLUTION_PREFERENCE = env.str("STRMNTR_RESOLUTION_PREF", 'closest')
+
+
+# --- Recording resolution runtime setting (V33A) ---
+# The recording resolution is a runtime-configurable, persisted setting. Long-
+# lived modules (bot.py) must read it via get_recording_resolution() at call time
+# so changes made through the settings API take effect without a restart; do not
+# `from parameters import WANTED_RESOLUTION` and snapshot the constant.
+
+RECORDING_RESOLUTION_MAX = 'max'
+RESOLUTION_PREFERENCES = (
+    'closest', 'exact', 'exact_or_least_higher', 'exact_or_highest_lower')
+RECORDING_RESOLUTION_STORE = '.strmntr_recording_resolution.json'
+
+
+def _initial_recording_resolution():
+    # STRMNTR_RESOLUTION is only the first-run initial value. When it is unset the
+    # default is "max" (always record the highest available source).
+    raw = env.str("STRMNTR_RESOLUTION", None)
+    if raw is None:
+        return RECORDING_RESOLUTION_MAX
+    raw = str(raw).strip()
+    if raw.lower() == RECORDING_RESOLUTION_MAX:
+        return RECORDING_RESOLUTION_MAX
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return RECORDING_RESOLUTION_MAX
+
+
+def _initial_recording_resolution_preference():
+    pref = env.str("STRMNTR_RESOLUTION_PREF", 'closest')
+    return pref if pref in RESOLUTION_PREFERENCES else 'closest'
+
+
+_RECORDING_RESOLUTION = _initial_recording_resolution()
+_RECORDING_RESOLUTION_PREFERENCE = _initial_recording_resolution_preference()
+
+
+def get_recording_resolution():
+    # Read at call time so runtime changes via the settings API take effect
+    # without a restart. Returns "max" or an int height.
+    return _RECORDING_RESOLUTION
+
+
+def get_recording_resolution_preference():
+    return _RECORDING_RESOLUTION_PREFERENCE
+
+
+def set_recording_resolution(resolution, preference=None):
+    global _RECORDING_RESOLUTION, _RECORDING_RESOLUTION_PREFERENCE
+    _RECORDING_RESOLUTION = resolution
+    if preference is not None:
+        _RECORDING_RESOLUTION_PREFERENCE = preference
+
+
+def persist_recording_resolution(resolution, preference):
+    # Atomic write-then-rename to a JSON store (same strategy as config.py) so a
+    # crash mid-write can't corrupt the setting. The persisted value takes
+    # priority over the env var on the next startup (see load_recording_resolution).
+    data = {'resolution': resolution, 'preference': preference}
+    tmp_path = RECORDING_RESOLUTION_STORE + '.tmp'
+    with open(tmp_path, 'w') as f:
+        json.dump(data, f, indent=4)
+    os.replace(tmp_path, RECORDING_RESOLUTION_STORE)
+
+
+def load_recording_resolution():
+    # Load the persisted store (if any) into the runtime globals, giving it
+    # priority over the env-derived initial value. A missing or corrupt file is
+    # tolerated and leaves the current values untouched.
+    global _RECORDING_RESOLUTION, _RECORDING_RESOLUTION_PREFERENCE
+    try:
+        with open(RECORDING_RESOLUTION_STORE, 'r') as f:
+            data = json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return
+    if not isinstance(data, dict):
+        return
+    res = data.get('resolution')
+    if res == RECORDING_RESOLUTION_MAX or (isinstance(res, int) and not isinstance(res, bool)):
+        _RECORDING_RESOLUTION = res
+    pref = data.get('preference')
+    if pref in RESOLUTION_PREFERENCES:
+        _RECORDING_RESOLUTION_PREFERENCE = pref
+
+
+load_recording_resolution()
 
 # Specify output container here
 # Suggested values are 'mkv' or 'mp4'

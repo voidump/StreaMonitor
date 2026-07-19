@@ -818,6 +818,152 @@ def test_set_download_dir_unwritable_400(tmp_path, monkeypatch, preserve_downloa
         os.chmod(readonly, 0o700)   # let pytest clean up tmp_path
 
 
+# --- settings: recording resolution runtime setting (V33A) ---
+
+@pytest.fixture
+def preserve_recording_resolution(monkeypatch):
+    # set_recording_resolution mutates module globals; snapshot so tests never
+    # leak a changed value into the rest of the suite or the real process.
+    monkeypatch.setattr(
+        parameters, "_RECORDING_RESOLUTION", parameters._RECORDING_RESOLUTION)
+    monkeypatch.setattr(
+        parameters, "_RECORDING_RESOLUTION_PREFERENCE",
+        parameters._RECORDING_RESOLUTION_PREFERENCE)
+    yield
+
+
+def test_get_recording_resolution_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/recording-resolution")
+    assert response.status_code == 401
+
+
+def test_get_recording_resolution_default_is_max(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("STRMNTR_RESOLUTION", raising=False)
+    monkeypatch.delenv("STRMNTR_RESOLUTION_PREF", raising=False)
+    # Simulate a clean start: no persistence file and no env override.
+    monkeypatch.setattr(
+        parameters, "_RECORDING_RESOLUTION",
+        parameters._initial_recording_resolution())
+    monkeypatch.setattr(
+        parameters, "_RECORDING_RESOLUTION_PREFERENCE",
+        parameters._initial_recording_resolution_preference())
+    manager = HTTPManager([])
+    response = _client(manager).get(
+        "/api/v2/settings/recording-resolution", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["resolution"] == "max"
+    assert payload["preference"] == "closest"
+
+
+def test_set_recording_resolution_int_persists(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/recording-resolution",
+        json={"resolution": 720, "preference": "exact_or_highest_lower"},
+        headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["resolution"] == 720
+    assert payload["preference"] == "exact_or_highest_lower"
+    assert parameters.get_recording_resolution() == 720            # runtime effect
+    assert parameters.get_recording_resolution_preference() == "exact_or_highest_lower"
+    stored = json.loads(
+        (tmp_path / parameters.RECORDING_RESOLUTION_STORE).read_text())
+    assert stored == {"resolution": 720, "preference": "exact_or_highest_lower"}
+
+
+def test_set_recording_resolution_max_persists(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/recording-resolution",
+        json={"resolution": "max"}, headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["resolution"] == "max"
+    assert parameters.get_recording_resolution() == "max"
+
+
+def test_set_recording_resolution_accepts_post(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).post(
+        "/api/v2/settings/recording-resolution",
+        json={"resolution": 1080}, headers=AUTH)
+    assert response.status_code == 200
+    assert parameters.get_recording_resolution() == 1080
+
+
+def test_set_recording_resolution_missing_400(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/recording-resolution", json={}, headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "missing"
+
+
+@pytest.mark.parametrize("value", [99, 10000, "abc", 720.5, True])
+def test_set_recording_resolution_invalid_resolution_400(
+        tmp_path, monkeypatch, preserve_recording_resolution, value):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/recording-resolution",
+        json={"resolution": value}, headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "invalid_resolution"
+
+
+def test_set_recording_resolution_invalid_preference_400(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/recording-resolution",
+        json={"resolution": 720, "preference": "bogus"}, headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "invalid_preference"
+
+
+def test_recording_resolution_persists_across_reload(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    # Simulate a restart: PUT persists, then a fresh load_recording_resolution()
+    # re-reads the store and the value survives.
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    _client(manager).put(
+        "/api/v2/settings/recording-resolution",
+        json={"resolution": 720, "preference": "closest"}, headers=AUTH)
+    monkeypatch.setattr(parameters, "_RECORDING_RESOLUTION", "max")
+    monkeypatch.setattr(parameters, "_RECORDING_RESOLUTION_PREFERENCE", "exact")
+    parameters.load_recording_resolution()
+    assert parameters.get_recording_resolution() == 720
+    assert parameters.get_recording_resolution_preference() == "closest"
+
+
+def test_persisted_resolution_takes_priority_over_env(
+        tmp_path, monkeypatch, preserve_recording_resolution):
+    # The env var is only the first-run initial value; a persisted store wins.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("STRMNTR_RESOLUTION", "1080")
+    parameters.persist_recording_resolution(480, "closest")
+    monkeypatch.setattr(
+        parameters, "_RECORDING_RESOLUTION",
+        parameters._initial_recording_resolution())
+    parameters.load_recording_resolution()
+    assert parameters.get_recording_resolution() == 480
+
+
 # --- video thumbnails + duration (NB6) ---
 
 FFMPEG_AVAILABLE = (

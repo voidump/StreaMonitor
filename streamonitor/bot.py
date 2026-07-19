@@ -17,7 +17,7 @@ from streamonitor.enums import Status, COUNTRIES, Gender, GENDER_DATA
 from streamonitor.http_session import TimeoutSession
 import streamonitor.log as log
 import parameters
-from parameters import DEBUG, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE, CONTAINER, HTTP_USER_AGENT
+from parameters import DEBUG, CONTAINER, HTTP_USER_AGENT
 from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
 from streamonitor.models import VideoData
 
@@ -381,33 +381,45 @@ class Bot(Thread):
                 self.logger.error("No available sources")
                 return None
 
+            # Read the resolution setting at call time so changes made via the
+            # settings API apply to the next recording without a restart.
+            wanted_resolution = parameters.get_recording_resolution()
+            wanted_preference = parameters.get_recording_resolution_preference()
+            if wanted_resolution == parameters.RECORDING_RESOLUTION_MAX:
+                # "max" always selects the highest available source: a huge target
+                # height with the closest policy; preference is ignored here.
+                target_resolution = 999999
+                wanted_preference = 'closest'
+            else:
+                target_resolution = wanted_resolution
+
             for source in sources:
                 width, height = source['resolution']
                 if width < height:
-                    source['resolution_diff'] = width - WANTED_RESOLUTION
+                    source['resolution_diff'] = width - target_resolution
                 else:
-                    source['resolution_diff'] = height - WANTED_RESOLUTION
+                    source['resolution_diff'] = height - target_resolution
 
             sources.sort(key=lambda a: abs(a['resolution_diff']))
             selected_source = None
 
-            if WANTED_RESOLUTION_PREFERENCE == 'exact':
+            if wanted_preference == 'exact':
                 if sources[0]['resolution_diff'] == 0:
                     selected_source = sources[0]
-            elif WANTED_RESOLUTION_PREFERENCE == 'closest' or len(sources) == 1:
+            elif wanted_preference == 'closest' or len(sources) == 1:
                 selected_source = sources[0]
-            elif WANTED_RESOLUTION_PREFERENCE == 'exact_or_least_higher':
+            elif wanted_preference == 'exact_or_least_higher':
                 for source in sources:
                     if source['resolution_diff'] >= 0:
                         selected_source = source
                         break
-            elif WANTED_RESOLUTION_PREFERENCE == 'exact_or_highest_lower':
+            elif wanted_preference == 'exact_or_highest_lower':
                 for source in sources:
                     if source['resolution_diff'] <= 0:
                         selected_source = source
                         break
             else:
-                self.logger.error('Invalid value for WANTED_RESOLUTION_PREFERENCE')
+                self.logger.error('Invalid value for recording resolution preference')
                 return None
 
             if selected_source is None:

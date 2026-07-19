@@ -182,6 +182,58 @@ def _validate_download_dir(raw):
     return candidate, None
 
 
+# Recording resolution runtime setting (V33A). resolution is "max" (always pick
+# the source's highest variant) or an integer height in [_RESOLUTION_MIN,
+# _RESOLUTION_MAX]; preference is one of parameters.RESOLUTION_PREFERENCES and is
+# ignored when resolution is "max".
+_RESOLUTION_MIN = 144
+_RESOLUTION_MAX = 9999
+
+
+def _recording_resolution_payload():
+    return {
+        'resolution': parameters.get_recording_resolution(),
+        'preference': parameters.get_recording_resolution_preference(),
+    }
+
+
+def _validate_recording_resolution(data):
+    # Returns (resolution, preference, None) on success or
+    # (None, None, (code, message)) on failure.
+    if not isinstance(data, dict) or 'resolution' not in data:
+        return None, None, ('missing', 'resolution is required')
+    raw = data.get('resolution')
+    _invalid = ('invalid_resolution', 'resolution must be "max" or an integer height')
+    if isinstance(raw, str) and raw.strip().lower() == parameters.RECORDING_RESOLUTION_MAX:
+        resolution = parameters.RECORDING_RESOLUTION_MAX
+    else:
+        if isinstance(raw, bool):
+            return None, None, _invalid
+        if isinstance(raw, int):
+            resolution = raw
+        elif isinstance(raw, float):
+            if not raw.is_integer():
+                return None, None, _invalid
+            resolution = int(raw)
+        elif isinstance(raw, str):
+            try:
+                resolution = int(raw.strip())
+            except (TypeError, ValueError):
+                return None, None, _invalid
+        else:
+            return None, None, _invalid
+        if resolution < _RESOLUTION_MIN or resolution > _RESOLUTION_MAX:
+            return None, None, ('invalid_resolution',
+                                f'resolution must be between {_RESOLUTION_MIN} and {_RESOLUTION_MAX}')
+    preference = data.get('preference')
+    if preference is None:
+        preference = parameters.get_recording_resolution_preference()
+    elif preference not in parameters.RESOLUTION_PREFERENCES:
+        return None, None, ('invalid_preference',
+                            'preference must be one of ' + ', '.join(parameters.RESOLUTION_PREFERENCES))
+    return resolution, preference, None
+
+
 # Video thumbnail + duration extraction (NB6). Frames and durations are cached
 # under "<download dir>/.thumbs/" keyed by absolute source path + mtime, so a
 # changed/re-recorded file regenerates automatically and status polls never
@@ -1032,3 +1084,23 @@ def register_api_v2(app, manager, login_required):
         parameters.set_download_dir(candidate)
         parameters.persist_download_dir(candidate)
         return _json(_download_dir_payload())
+
+    @app.route('/api/v2/settings/recording-resolution', methods=['GET'])
+    @login_required
+    def api_v2_get_recording_resolution():
+        return _json(_recording_resolution_payload())
+
+    @app.route('/api/v2/settings/recording-resolution', methods=['PUT', 'POST'])
+    @login_required
+    def api_v2_set_recording_resolution():
+        data = request.get_json(silent=True) or {}
+        resolution, preference, err = _validate_recording_resolution(data)
+        if err:
+            code, message = err
+            return _json({'error': message, 'code': code}, 400)
+        # The next recording picks up the change immediately (bot.py reads the
+        # setting at playlist-selection time); in-progress recordings are
+        # unaffected.
+        parameters.set_recording_resolution(resolution, preference)
+        parameters.persist_recording_resolution(resolution, preference)
+        return _json(_recording_resolution_payload())

@@ -53,6 +53,19 @@ let settings = {hotkeys: loadHotkeys()};
  * mirroring addDraft; render() preserves the input's focus + caret by id. */
 let downloadDir = {path:'', draft:'', loading:false, saving:false, error:null, loaded:false};
 
+/* server-side recording resolution (v3.3). committed resolution/preference mirror
+ * the last server-confirmed value; sel/custom/pref are the editable UI drafts,
+ * rebuilt from committed on load and rolled back on save failure. Change-to-save. */
+const REC_RES_PRESETS = ['1080','720','480','360','240'];
+let recRes = {resolution:'max', preference:'closest', sel:'max', custom:'', pref:'closest', loading:false, saving:false, error:null, loaded:false};
+function recResSyncUi(){
+  const r = recRes.resolution;
+  if (r==='max'){ recRes.sel='max'; recRes.custom=''; }
+  else if (REC_RES_PRESETS.includes(String(r))){ recRes.sel=String(r); recRes.custom=''; }
+  else { recRes.sel='custom'; recRes.custom=String(r); }
+  recRes.pref = recRes.preference || 'closest';
+}
+
 /* ---- hotkey editing (read/write + conflict detection) ----
  * saveHotkeys(hk) needs the map passed explicitly (W1 note). */
 function hotkeyConflict(action, token){
@@ -96,7 +109,7 @@ function nav(to){
     if (s2 && !s2._detailLoaded) loadDetail(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
-  if (to.view==='settings') loadDownloadDir();   // read the current download dir (mock mode fills a demo path)
+  if (to.view==='settings'){ loadDownloadDir(); loadRecResolution(); }   // read the current download dir + recording resolution (mock fills demo values)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
 }
@@ -444,6 +457,72 @@ async function saveDownloadDir(){
     toast(t('dlDirSavedToast')); render();
   } catch(e){
     downloadDir.saving = false; downloadDir.error = t('dlDirErrGeneric'); render();
+  }
+}
+
+/* ---- recording resolution (server-side, v3.3): read + change-to-save ---- */
+async function loadRecResolution(){
+  if (apiState.mode!=='api'){   // mock: keep the default (max/closest), no backend call
+    if (!recRes.loaded){ recRes.loaded = true; recResSyncUi(); }
+    return;
+  }
+  recRes.loading = true; recRes.error = null; render();
+  try {
+    const d = await apiGet('/settings/recording-resolution');
+    recRes.resolution = (d && d.resolution!=null) ? d.resolution : 'max';
+    recRes.preference = (d && d.preference) || 'closest';
+    recResSyncUi();
+    recRes.loaded = true; recRes.loading = false; recRes.error = null;
+    render();
+  } catch(e){
+    recRes.loading = false; recRes.error = 'recResLoadErr'; render();
+  }
+}
+// recRes.error holds an i18n KEY (not translated text) so it re-translates live
+// when the language changes; the settings view resolves it with t() at render.
+// A raw server-provided message falls through t() unchanged (not in the dict).
+function recResErrKey(data){
+  const map = {invalid_resolution:'recResErrRange', invalid_preference:'recResErrPref', missing:'recResErrMissing'};
+  const key = data && map[data.code];
+  if (key) return key;
+  return (data && data.error) || 'recResErrGeneric';
+}
+function recResBuildPayload(){
+  if (recRes.sel==='max') return {payload:{resolution:'max', preference:recRes.pref}};
+  if (recRes.sel==='custom'){
+    const raw = (recRes.custom||'').trim();
+    const n = parseInt(raw, 10);
+    if (!/^[0-9]+$/.test(raw) || isNaN(n) || n<144 || n>9999) return {error:'recResErrRange'};
+    return {payload:{resolution:n, preference:recRes.pref}};
+  }
+  return {payload:{resolution:parseInt(recRes.sel, 10), preference:recRes.pref}};
+}
+async function saveRecResolution(){
+  const built = recResBuildPayload();
+  if (built.error){ recRes.error = built.error; render(); return; }   // invalid custom value: keep draft so the user can fix it
+  const payload = built.payload;
+  if (apiState.mode!=='api'){   // mock: accept locally, show success toast, no request
+    recRes.resolution = payload.resolution; recRes.preference = payload.preference;
+    recResSyncUi(); recRes.error = null;
+    toast(t('recResSavedToast')); render(); return;
+  }
+  recRes.saving = true; recRes.error = null; render();
+  try {
+    const r = await fetch(apiUrl('/settings/recording-resolution'), {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Accept':'application/json','Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const txt = await r.text();
+    const data = txt ? JSON.parse(txt) : {};
+    if (!r.ok){ recRes.saving = false; recRes.error = recResErrKey(data); recResSyncUi(); render(); return; }   // roll displayed value back to committed
+    recRes.resolution = (data && data.resolution!=null) ? data.resolution : payload.resolution;
+    recRes.preference = (data && data.preference) || payload.preference;
+    recResSyncUi();
+    recRes.saving = false; recRes.error = null;
+    toast(t('recResSavedToast')); render();
+  } catch(e){
+    recRes.saving = false; recRes.error = 'recResErrGeneric'; recResSyncUi(); render();
   }
 }
 
