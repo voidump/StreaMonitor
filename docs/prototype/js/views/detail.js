@@ -1,5 +1,20 @@
 'use strict';
 /* ---------------- detail ---------------- */
+/* V37C: skeleton grid shown while the detail payload is in flight. Uses the list-provided
+ * videoCount to render up to 12 placeholder cards (same .vthumb geometry, so the real grid
+ * drops in with no layout jump). When the count is unknown/zero, degrade to a centered hint. */
+function skeletonGrid(s){
+  const n = s._videoCount!=null && s._videoCount>0 ? Math.min(s._videoCount, 12) : 0;
+  if (!n) return `<div class="empty" style="padding:30px"><span class="spin"></span> ${t('apiLoading')}</div>`;
+  const card = `<div class="vthumb skeleton" aria-hidden="true">
+      <div class="imgwrap"></div>
+      <div class="meta">
+        <div class="l1"><span class="sk-line"></span></div>
+        <div class="l2"><span class="sk-line short"></span></div>
+      </div>
+    </div>`;
+  return `<div class="thumb-grid">${card.repeat(n)}</div>`;
+}
 function renderDetail(s){
   const cur = s.files.find(f=>f.id===player.fileId) || null;
   const stats = schedStats(s.schedule);
@@ -134,7 +149,9 @@ function renderDetail(s){
           ? (displayFiles.length
               ? `<div class="thumb-grid">${thumbs}</div>`
               : `<div class="empty" style="padding:30px">${t('noMarked')}</div>`)
-          : `<div class="empty" style="padding:30px">${t('noRecordings')}</div>`}
+          : (apiState.mode==='api' && !s._detailLoaded
+              ? skeletonGrid(s)
+              : `<div class="empty" style="padding:30px">${t('noRecordings')}</div>`)}
         ${s.temps.length?`
         <div class="rec-section-h" style="margin-top:22px">
           <h3>${t('tempTitle')}</h3><span class="n">${s.temps.length} · ${fmtSize(tempSize)}</span>

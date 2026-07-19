@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -368,6 +369,85 @@ def _get_duration_cache_only(abs_path, mtime):
         return _durations_cache.get(key)
 
 
+# Background duration probing. The detail endpoint must never block on ffprobe,
+# so uncached videos are queued here and probed by a single daemon worker that
+# writes results into the in-memory cache immediately and batches durations.json
+# writes (every _PROBE_BATCH_SAVE probes, plus a flush when the queue drains)
+# instead of rewriting the whole file per probe. A dedup set keeps a file from
+# being queued twice while it is pending or in flight.
+_PROBE_BATCH_SAVE = 20
+_probe_queue = queue.Queue()
+_probe_queued = set()
+_probe_queued_lock = threading.Lock()
+_probe_worker_thread = None
+_probe_worker_lock = threading.Lock()
+
+
+def _duration_probe_worker():
+    pending_saves = 0
+    while True:
+        abs_path, mtime = _probe_queue.get()
+        key = _cache_key(abs_path, mtime)
+        try:
+            path = _durations_path()
+            with _durations_lock:
+                if _durations_cache is None or _durations_cache_path != path:
+                    _load_durations_locked(path)
+                already = key in _durations_cache
+            if not already:
+                duration = _probe_duration(abs_path)  # cache None too (broken file)
+                with _durations_lock:
+                    if _durations_cache is None or _durations_cache_path != path:
+                        _load_durations_locked(path)
+                    _durations_cache[key] = duration
+                pending_saves += 1
+            # Flush before signalling task_done so queue.join() guarantees the
+            # batch is on disk (every _PROBE_BATCH_SAVE probes, or when drained).
+            if pending_saves and (pending_saves >= _PROBE_BATCH_SAVE or _probe_queue.empty()):
+                with _durations_lock:
+                    _save_durations_locked(_durations_path())
+                pending_saves = 0
+        except Exception:
+            pass
+        finally:
+            with _probe_queued_lock:
+                _probe_queued.discard(key)
+            _probe_queue.task_done()
+
+
+def _ensure_probe_worker():
+    global _probe_worker_thread
+    with _probe_worker_lock:
+        if _probe_worker_thread is None or not _probe_worker_thread.is_alive():
+            _probe_worker_thread = threading.Thread(
+                target=_duration_probe_worker, name='duration-probe', daemon=True)
+            _probe_worker_thread.start()
+
+
+def enqueue_duration_probe(abs_path, mtime):
+    # Fire-and-forget: queue a video for background duration probing so callers
+    # never block on ffprobe. No-op when the duration is already cached (a cached
+    # null counts, so broken files are not re-probed) or already pending. Never
+    # raises so recording teardown and request handling stay unaffected.
+    try:
+        mtime = int(mtime)
+        key = _cache_key(abs_path, mtime)
+        path = _durations_path()
+        with _durations_lock:
+            if _durations_cache is None or _durations_cache_path != path:
+                _load_durations_locked(path)
+            if key in _durations_cache:
+                return
+        with _probe_queued_lock:
+            if key in _probe_queued:
+                return
+            _probe_queued.add(key)
+        _ensure_probe_worker()
+        _probe_queue.put((abs_path, mtime))
+    except Exception:
+        pass
+
+
 def _live_duration_keys(streamers):
     # Set of cache keys for every video file that currently exists across all
     # streamers, derived exactly like _get_duration_cached (abs_path + int(mtime)).
@@ -447,6 +527,112 @@ def _generate_thumb(abs_path, out_path, duration=None):
     except Exception:
         pass
     return False
+
+
+# Thumbnail generation is CPU-heavy (one ffmpeg per frame extraction). Opening a
+# detail page with many uncached videos would otherwise spawn one ffmpeg per
+# concurrent /thumb request and thrash the CPU, so every generation (on-demand
+# and background prewarm alike) passes through one shared semaphore. A per-file
+# in-flight guard collapses duplicate concurrent requests for the same file:
+# only one thread generates while the others wait and then serve the result.
+_THUMB_MAX_CONCURRENCY = 2
+_thumb_semaphore = threading.Semaphore(_THUMB_MAX_CONCURRENCY)
+_thumb_inflight = {}
+_thumb_inflight_lock = threading.Lock()
+
+
+def _generate_thumb_limited(abs_path, thumb_path, mtime, duration=None,
+                            allow_probe=True):
+    # Concurrency-limited, dedup-guarded wrapper around _generate_thumb. Returns
+    # True when the thumbnail exists on disk (already cached or freshly made).
+    # The cached fast path takes no lock and no semaphore so it stays as cheap as
+    # a plain os.path.exists check. allow_probe=False (background prewarm) reads
+    # the duration cache only and never triggers an ffprobe, keeping all probing
+    # centralized in the duration worker; an unavailable duration just falls back
+    # to the fixed seek in _generate_thumb.
+    if os.path.exists(thumb_path):
+        return True
+    key = _cache_key(abs_path, mtime)
+    with _thumb_inflight_lock:
+        event = _thumb_inflight.get(key)
+        owner = event is None
+        if owner:
+            event = threading.Event()
+            _thumb_inflight[key] = event
+    if not owner:
+        # Another thread is already generating this exact file: wait for it and
+        # then serve whatever it produced instead of running a duplicate ffmpeg.
+        event.wait(_THUMB_TIMEOUT + 5)
+        return os.path.exists(thumb_path)
+    try:
+        with _thumb_semaphore:
+            # Re-check after acquiring: the file may have appeared meanwhile.
+            if os.path.exists(thumb_path):
+                return True
+            if duration is None:
+                duration = _get_duration_cached(abs_path, mtime) if allow_probe \
+                    else _get_duration_cache_only(abs_path, mtime)
+            # Pass 0 (not None) when unavailable so _generate_thumb never probes
+            # on its own: probing stays the duration worker's job.
+            return _generate_thumb(abs_path, thumb_path, duration or 0)
+    finally:
+        with _thumb_inflight_lock:
+            _thumb_inflight.pop(key, None)
+        event.set()
+
+
+# Background thumbnail prewarming. When a detail page is opened, every video that
+# is missing a cached thumbnail is queued here so a single low-priority daemon
+# worker generates them ahead of the browser's own requests. The worker shares
+# the _thumb_semaphore above, so prewarm and on-demand generation never exceed
+# the concurrency cap together. A dedup set keeps a file from being queued twice.
+_thumb_prewarm_queue = queue.Queue()
+_thumb_prewarm_queued = set()
+_thumb_prewarm_queued_lock = threading.Lock()
+_thumb_prewarm_thread = None
+_thumb_prewarm_worker_lock = threading.Lock()
+
+
+def _thumb_prewarm_worker():
+    while True:
+        abs_path, thumb_path, mtime = _thumb_prewarm_queue.get()
+        key = _cache_key(abs_path, mtime)
+        try:
+            _generate_thumb_limited(abs_path, thumb_path, mtime, allow_probe=False)
+        except Exception:
+            pass
+        finally:
+            with _thumb_prewarm_queued_lock:
+                _thumb_prewarm_queued.discard(key)
+            _thumb_prewarm_queue.task_done()
+
+
+def _ensure_thumb_prewarm_worker():
+    global _thumb_prewarm_thread
+    with _thumb_prewarm_worker_lock:
+        if _thumb_prewarm_thread is None or not _thumb_prewarm_thread.is_alive():
+            _thumb_prewarm_thread = threading.Thread(
+                target=_thumb_prewarm_worker, name='thumb-prewarm', daemon=True)
+            _thumb_prewarm_thread.start()
+
+
+def enqueue_thumb_prewarm(abs_path, thumb_path, mtime):
+    # Fire-and-forget: queue a video for background thumbnail generation. No-op
+    # when the thumbnail already exists or is already pending. Never raises so
+    # request handling stays unaffected.
+    try:
+        mtime = int(mtime)
+        if os.path.exists(thumb_path):
+            return
+        key = _cache_key(abs_path, mtime)
+        with _thumb_prewarm_queued_lock:
+            if key in _thumb_prewarm_queued:
+                return
+            _thumb_prewarm_queued.add(key)
+        _ensure_thumb_prewarm_worker()
+        _thumb_prewarm_queue.put((abs_path, thumb_path, mtime))
+    except Exception:
+        pass
 
 
 # Real on-site model avatar (NB12). "Show the model the way their site shows
@@ -722,8 +908,19 @@ def register_api_v2(app, manager, login_required):
         for video in streamer.video_files:
             is_recording = bool(streamer.recording and video.filename == recording_name)
             mtime = int(video._stat.st_mtime)
-            # Skip probing the file the recorder is still writing.
-            duration = None if is_recording else _get_duration_cached(video.abs_path, mtime)
+            # Never block the response on ffprobe: read the warm cache only and
+            # queue uncached files for the background worker (null until probed).
+            # The file the recorder is still writing is skipped entirely.
+            if is_recording:
+                duration = None
+            else:
+                duration = _get_duration_cache_only(video.abs_path, mtime)
+                if duration is None:
+                    enqueue_duration_probe(video.abs_path, mtime)
+                # Warm the thumbnail in the background (concurrency-capped) so it
+                # is ready before the browser requests it. No-op once cached.
+                enqueue_thumb_prewarm(
+                    video.abs_path, _thumb_cache_path(video.abs_path, mtime), mtime)
             videos.append({
                 'filename': video.filename,
                 'size': video.filesize,
@@ -898,12 +1095,12 @@ def register_api_v2(app, manager, login_required):
             return _json({'error': 'Video not found'}, 404)
         mtime = int(match._stat.st_mtime)
         thumb_path = _thumb_cache_path(match.abs_path, mtime)
-        if not os.path.exists(thumb_path):
-            duration = _get_duration_cached(match.abs_path, mtime)
-            if not _generate_thumb(match.abs_path, thumb_path, duration):
-                # Broken/unparseable file: 404 so the frontend falls back to its
-                # generated placeholder image.
-                return _json({'error': 'Thumbnail unavailable'}, 404)
+        # Concurrency-capped generation (shared with background prewarm); the
+        # cached path returns immediately without touching the semaphore.
+        if not _generate_thumb_limited(match.abs_path, thumb_path, mtime):
+            # Broken/unparseable file: 404 so the frontend falls back to its
+            # generated placeholder image.
+            return _json({'error': 'Thumbnail unavailable'}, 404)
         return _send_image(thumb_path, 'image/jpeg', _THUMB_CACHE_CONTROL)
 
     @app.route('/api/v2/streamers/<site>/<user>/avatar', methods=['GET'])

@@ -326,10 +326,11 @@ function renderPlayer(s){
   if (player.live) return renderLivePlayer(s);
   const cur = s.files.find(f=>f.id===player.fileId) || null;
   if (!cur){
-    if (!s.files.length && liveWatchable(s)){   // recording with no finished files yet: still offer a live entry
+    if (!s.files.length && liveWatchable(s)){   // recording with no finished files yet (or detail still loading): offer the live entry immediately
+      const sub = apiState.mode==='api' && !s._detailLoaded ? t('apiLoading') : t('noRecordings');   // don't claim "no recordings" before the detail payload lands
       return `<div class="player-empty live-empty" data-watchlive="${s.id}">
         <button class="plive-cta"><span class="ldot"></span><span>${t('liveWatchNow')}</span></button>
-        <span class="live-empty-sub">${t('noRecordings')}</span>
+        <span class="live-empty-sub">${sub}</span>
       </div>`;
     }
     return `<div class="player-empty">${s.files.length?t('noFileSelected'):t('noRecordings')}</div>`;
@@ -351,7 +352,7 @@ function renderPlayer(s){
     </div>
     <div class="pbar">
       <div class="pseek-wrap">
-        <input type="range" id="pseek" min="0" max="${cur.dur}" step="any" value="${player.pos}" style="--pct:${pct}%">
+        <input type="range" id="pseek" min="0" max="${cur.dur||0}" step="any" value="${player.pos}" style="--pct:${pct}%">
         <div class="pseek-tip" id="pseekTip"></div>
       </div>
       <div class="pctrl">

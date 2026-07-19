@@ -74,6 +74,7 @@ function resetHotkeys(){
 
 function nav(to){
   if (typeof stopLive==='function') stopLive();   // abort any live stream before leaving/switching (no ghost connections)
+  if (typeof clearDurBackfill==='function') clearDurBackfill();   // cancel any pending duration re-pull from the view we're leaving
   if (player.timer){clearInterval(player.timer); player.timer=null;}
   player = {fileId:null, playing:false, pos:0, timer:null};
   confirmDelId = null;
@@ -217,6 +218,23 @@ async function refreshStreamers(){
     render();   // keep last data on screen; banner surfaces the failure
   }
 }
+/* V37C: short-cycle duration backfill. When the detail payload still has finished
+ * (non-recording) files with an unknown duration, re-pull once after a short delay so
+ * the "--:--" placeholders resolve to real times. Single self-arming timer (deduped),
+ * stops once all durations are present or the user leaves this detail — never stacks
+ * with the 30s list poll into a request storm. */
+let detailDurTimer = null;
+function clearDurBackfill(){ if (detailDurTimer){ clearTimeout(detailDurTimer); detailDurTimer = null; } }
+function scheduleDurBackfill(s){
+  clearDurBackfill();
+  if (!(route.view==='detail' && route.id===s.id)) return;
+  const needs = s.files.some(f=>!f._recording && f.dur==null);
+  if (!needs) return;
+  detailDurTimer = setTimeout(()=>{
+    detailDurTimer = null;
+    if (route.view==='detail' && route.id===s.id) loadDetail(s.site, s.user);
+  }, 5000);
+}
 async function loadDetail(site, user){
   try {
     const data = await apiGet('/streamers/'+encodeURIComponent(site)+'/'+encodeURIComponent(user));
@@ -232,14 +250,19 @@ async function loadDetail(site, user){
     const oldById = {}; s.files.forEach(f=>{ oldById[f.id]=f; });   // preserve marks/progress
     s.files = vids.map(v=>{
       const id = v.filename; const old = oldById[id];
-      return { id, dt: parseTs(v.mtime), dur: v.duration!=null ? v.duration : (old?old.dur:0), size: v.size||0,
+      return { id, dt: parseTs(v.mtime), dur: v.duration!=null ? v.duration : (old && old.dur!=null ? old.dur : null), size: v.size||0,
         watchPct: old?old.watchPct:0, marked: old?!!old.marked:false,
         lastWatched: old?old.lastWatched:null, _filename: v.filename, _url: v.url||'', _recording: !!v.recording };
     }).sort((a,b)=>b.dt-a.dt);
-    s.temps = []; s._detailLoaded = true; s._filesSig = sig;
+    s.temps = []; s._detailLoaded = true; s._filesSig = sig; s._detailError = false;
     if (route.view==='detail' && route.id===s.id && !player.fileId && s.files[0]) setPlayerFile(s.files[0]);
+    // duration updates flow through this non-playing rebuild + render; the "playing → don't
+    // rebuild <video>" guard above stays intact. Short-cycle re-pull while durations backfill.
     apiState.error = false; render();
+    scheduleDurBackfill(s);
   } catch(e){
+    const s = streamers.find(x=>x.id===site+'/'+user);
+    if (s && !s._detailLoaded) s._detailError = true;   // no data yet: surface an inline error + retry instead of a forever spinner
     apiState.error = true; render();
   }
 }

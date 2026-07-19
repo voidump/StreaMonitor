@@ -512,6 +512,37 @@ tr:hover .row-actions{opacity:1}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-1px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
+/* ========== V37C: detail skeleton grid + immediate live CTA ========== */
+.vthumb.skeleton{cursor:default;pointer-events:none}
+.vthumb.skeleton .imgwrap,.vthumb.skeleton .sk-line{
+  background-color:var(--bg-active);
+  background-image:linear-gradient(90deg,rgba(255,255,255,0) 0,rgba(255,255,255,.06) 50%,rgba(255,255,255,0) 100%);
+  background-size:200% 100%;background-repeat:no-repeat;animation:skwave 1.4s ease-in-out infinite;
+}
+.vthumb.skeleton .sk-line{display:block;height:10px;border-radius:3px}
+.vthumb.skeleton .l1 .sk-line{width:68%}
+.vthumb.skeleton .sk-line.short{width:44%}
+@keyframes skwave{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.player-empty.live-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;cursor:pointer;
+  background:repeating-linear-gradient(45deg,#0e1a14 0 12px,#0c1712 12px 24px);
+}
+.plive-cta{
+  display:inline-flex;align-items:center;gap:9px;background:var(--rec);color:#05130b;
+  border:none;border-radius:22px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;
+  box-shadow:0 4px 16px rgba(38,208,124,.28);
+}
+.plive-cta:hover{filter:brightness(1.07)}
+.plive-cta .ldot{width:9px;height:9px;border-radius:50%;background:#05130b;animation:pulse 1.6s ease-in-out infinite}
+.live-empty-sub{font-size:12px;color:var(--text-faint)}
+.plive-chip{
+  position:absolute;left:10px;top:10px;z-index:3;display:inline-flex;align-items:center;gap:6px;
+  background:var(--rec);color:#05130b;border:none;border-radius:20px;padding:4px 11px;
+  font-size:11.5px;font-weight:700;cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.35);
+}
+.plive-chip:hover{filter:brightness(1.07)}
+.plive-chip .ldot{width:7px;height:7px;border-radius:50%;background:#05130b;animation:pulse 1.6s ease-in-out infinite}
+
 /* ========== Settings ========== */
 .settings-wrap{flex:1;overflow-y:auto;padding:20px}
 .settings-panel{max-width:560px}

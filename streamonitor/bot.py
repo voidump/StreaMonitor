@@ -204,6 +204,27 @@ class Bot(Thread):
         self.recording_speed_bps = None
         self._recording_speed_samples = []
 
+    def _probe_finished_recording(self, finished_name):
+        # Fire-and-forget: warm the duration cache for the just-finished recording
+        # so the web detail view never has to probe it on demand. Never raises and
+        # never affects the recording loop; a no-op when the web API is unavailable.
+        try:
+            from streamonitor.managers.httpmanager.api_v2 import enqueue_duration_probe
+        except Exception:
+            return
+        try:
+            target = None
+            for video in self.video_files:
+                if finished_name and video.filename == finished_name:
+                    target = video
+                    break
+            if target is None and self.video_files:
+                target = max(self.video_files, key=lambda v: v._stat.st_mtime)
+            if target is not None:
+                enqueue_duration_probe(target.abs_path, int(target._stat.st_mtime))
+        except Exception:
+            pass
+
     def _sleep(self, time):
         while time > 0:
             sleep(1)
@@ -309,6 +330,7 @@ class Bot(Thread):
                                 self.log(self.status())
                                 self._sleep(self.sleep_on_error)
                                 continue
+                            finished_name = self.recording_filename
                             self.recording = False
                             self.recording_filename = None
                             self.reset_recording_progress()
@@ -317,6 +339,7 @@ class Bot(Thread):
                                 self.cache_file_list()
                             except Exception as e:
                                 self.logger.exception(e)
+                            self._probe_finished_recording(finished_name)
                 except Exception as e:
                     self.logger.exception(e)
                     try:

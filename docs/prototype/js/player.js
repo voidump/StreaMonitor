@@ -352,7 +352,7 @@ function renderPlayer(s){
     </div>
     <div class="pbar">
       <div class="pseek-wrap">
-        <input type="range" id="pseek" min="0" max="${cur.dur}" step="any" value="${player.pos}" style="--pct:${pct}%">
+        <input type="range" id="pseek" min="0" max="${cur.dur||0}" step="any" value="${player.pos}" style="--pct:${pct}%">
         <div class="pseek-tip" id="pseekTip"></div>
       </div>
       <div class="pctrl">

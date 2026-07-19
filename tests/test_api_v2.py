@@ -1034,8 +1034,11 @@ def test_video_thumb_recording_in_progress_404(tmp_path, monkeypatch):
 
 
 def test_detail_includes_duration_field(tmp_path, monkeypatch):
-    # The duration key is always present; unparseable files report null.
+    # The duration key is always present. Reads are cache-only, so an uncached
+    # file reports null immediately and is queued for the background worker.
     monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
+    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: None)
     streamer, _ = _make_streamer_with_video()
     manager = HTTPManager([streamer])
     response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
@@ -1043,6 +1046,7 @@ def test_detail_includes_duration_field(tmp_path, monkeypatch):
     video = json.loads(response.data)["videos"][0]
     assert "duration" in video
     assert video["duration"] is None
+    api_v2._probe_queue.join()
 
 
 def test_detail_recording_video_has_null_duration(tmp_path, monkeypatch):
@@ -1089,9 +1093,15 @@ def test_video_thumb_real_video_generates_and_caches(tmp_path, monkeypatch):
 @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg/ffprobe not installed")
 def test_detail_duration_real_video(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    _reset_durations_cache(monkeypatch)
     streamer = make_streamer()
     _make_real_video(streamer, seconds=2)
     manager = HTTPManager([streamer])
+    # First read is cache-only (null) and queues a background probe.
+    first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(first.data)["videos"][0]["duration"] is None
+    api_v2._probe_queue.join()
+    # After the worker probes, the warm cache serves the real duration.
     response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     video = json.loads(response.data)["videos"][0]
     assert video["duration"] is not None
@@ -1111,9 +1121,14 @@ def test_duration_cache_persists_to_consolidated_json(tmp_path, monkeypatch):
     monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p) or 123.0))
     streamer, _ = _make_streamer_with_video()
     manager = HTTPManager([streamer])
-    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
-    assert json.loads(response.data)["videos"][0]["duration"] == 123.0
+    # Reads are non-blocking: the first request returns null and queues a probe.
+    first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(first.data)["videos"][0]["duration"] is None
+    api_v2._probe_queue.join()
     assert len(calls) == 1
+    # The probed duration is now served from the warm cache and persisted to disk.
+    second = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert json.loads(second.data)["videos"][0]["duration"] == 123.0
     dpath = api_v2._durations_path()
     assert os.path.exists(dpath)
     with open(dpath) as f:
@@ -1128,6 +1143,7 @@ def test_duration_cache_survives_restart_without_reprobe(tmp_path, monkeypatch):
     monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p) or 42.0))
     streamer, _ = _make_streamer_with_video()
     _client(HTTPManager([streamer])).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    api_v2._probe_queue.join()
     assert len(calls) == 1
     # Simulate a service restart: forget the in-memory cache, keep durations.json.
     _reset_durations_cache(monkeypatch)
@@ -1135,6 +1151,7 @@ def test_duration_cache_survives_restart_without_reprobe(tmp_path, monkeypatch):
     resp = _client(HTTPManager([streamer2])).get(
         "/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(resp.data)["videos"][0]["duration"] == 42.0
+    api_v2._probe_queue.join()
     assert len(calls) == 1   # cache hit from disk, no second ffprobe
 
 
@@ -1145,10 +1162,13 @@ def test_duration_cache_caches_failed_probe_as_null(tmp_path, monkeypatch):
     monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p), None)[1])
     streamer, _ = _make_streamer_with_video()
     _client(HTTPManager([streamer])).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    api_v2._probe_queue.join()
+    assert len(calls) == 1
     _reset_durations_cache(monkeypatch)
     resp = _client(HTTPManager([streamer])).get(
         "/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(resp.data)["videos"][0]["duration"] is None
+    api_v2._probe_queue.join()
     assert len(calls) == 1   # a failed probe is cached and never retried
 
 
@@ -1160,9 +1180,14 @@ def test_duration_cache_tolerates_corrupt_json(tmp_path, monkeypatch):
     with open(api_v2._durations_path(), "w") as f:
         f.write("{ not valid json ")
     streamer, _ = _make_streamer_with_video()
-    resp = _client(HTTPManager([streamer])).get(
-        "/api/v2/streamers/FakeSite/alice", headers=AUTH)
-    assert resp.status_code == 200
+    manager = HTTPManager([streamer])
+    # A corrupt cache file is treated as empty: the first read is a null miss
+    # that queues a probe; after the worker runs the duration is served.
+    first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    assert first.status_code == 200
+    assert json.loads(first.data)["videos"][0]["duration"] is None
+    api_v2._probe_queue.join()
+    resp = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(resp.data)["videos"][0]["duration"] == 7.0
 
 
@@ -1193,9 +1218,12 @@ def test_duration_cleanup_drops_stale_entry_on_detail(tmp_path, monkeypatch):
     streamer, path = _make_streamer_with_video()
     manager = HTTPManager([streamer])
 
-    first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     live_key = api_v2._cache_key(
         streamer.video_files[0].abs_path, int(streamer.video_files[0]._stat.st_mtime))
+    # The first request queued the probe; wait for the worker, then confirm value.
+    api_v2._probe_queue.join()
+    first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(first.data)["videos"][0]["duration"] == 55.0
 
     # Inject a stale key (no matching file) and force the next request to re-sweep.

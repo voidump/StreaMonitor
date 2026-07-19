@@ -1,5 +1,20 @@
 'use strict';
 /* ---------------- detail ---------------- */
+/* V37C: skeleton grid shown while the detail payload is in flight. Uses the list-provided
+ * videoCount to render up to 12 placeholder cards (same .vthumb geometry, so the real grid
+ * drops in with no layout jump). When the count is unknown/zero, degrade to a centered hint. */
+function skeletonGrid(s){
+  const n = s._videoCount!=null && s._videoCount>0 ? Math.min(s._videoCount, 12) : 0;
+  if (!n) return `<div class="empty" style="padding:30px"><span class="spin"></span> ${t('apiLoading')}</div>`;
+  const card = `<div class="vthumb skeleton" aria-hidden="true">
+      <div class="imgwrap"></div>
+      <div class="meta">
+        <div class="l1"><span class="sk-line"></span></div>
+        <div class="l2"><span class="sk-line short"></span></div>
+      </div>
+    </div>`;
+  return `<div class="thumb-grid">${card.repeat(n)}</div>`;
+}
 function renderDetail(s){
   const cur = s.files.find(f=>f.id===player.fileId) || null;
   const stats = schedStats(s.schedule);
@@ -157,7 +172,7 @@ function renderDetail(s){
               ? `<div class="empty" style="padding:30px">${IC.alert} ${t('detailLoadError')}
                   <button class="btn" style="margin-left:10px" onclick="retryDetail()">${IC.wrench}${t('apiRetry')}</button></div>`
               : apiState.mode==='api' && !s._detailLoaded
-              ? `<div class="empty" style="padding:30px"><span class="spin"></span> ${t('apiLoading')}</div>`
+              ? skeletonGrid(s)
               : liveWatchable(s)
               ? `<div class="thumb-grid"><div class="vthumb recording" data-watchlive="${s.id}">
                   <div class="imgwrap">
