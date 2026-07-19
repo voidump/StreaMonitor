@@ -16,6 +16,7 @@ import streamonitor.config as config
 from parameters import WEB_LIST_FREQUENCY, FFMPEG_PATH
 from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.enums import Status
+import streamonitor.online_history as online_history
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.utils import human_file_size
 
@@ -353,6 +354,18 @@ def _get_duration_cached(abs_path, mtime):
         _durations_cache[key] = duration
         _save_durations_locked(path)
     return duration
+
+
+def _get_duration_cache_only(abs_path, mtime):
+    # Read a previously probed duration from the warm cache without ever probing.
+    # Used by the schedule backfill so reconstructing history from a large library
+    # never triggers a mass ffprobe; uncached files simply return None.
+    key = _cache_key(abs_path, mtime)
+    path = _durations_path()
+    with _durations_lock:
+        if _durations_cache is None or _durations_cache_path != path:
+            _load_durations_locked(path)
+        return _durations_cache.get(key)
 
 
 def _live_duration_keys(streamers):
@@ -726,6 +739,27 @@ def register_api_v2(app, manager, login_required):
         detail = _streamer_summary(streamer)
         detail['videos'] = videos
         return _json(detail)
+
+    @app.route('/api/v2/streamers/<site>/<user>/schedule', methods=['GET'])
+    @login_required
+    def api_v2_streamer_schedule(site, user):
+        streamer = manager.getStreamer(user, site)
+        if streamer is None:
+            return _json({'error': 'Streamer not found'}, 404)
+        # Backfill historical online hours from existing recordings (once per
+        # streamer per process): file mtime is the session end, duration comes from
+        # the warm durations cache (uncached files still contribute their end hour).
+        try:
+            streamer.cache_file_list()
+            sessions = [
+                (video._stat.st_mtime,
+                 _get_duration_cache_only(video.abs_path, int(video._stat.st_mtime)))
+                for video in streamer.video_files
+            ]
+            online_history.backfill(streamer.site, streamer.username, sessions)
+        except Exception:
+            pass
+        return _json(online_history.compute_schedule(streamer.site, streamer.username))
 
     @app.route('/api/v2/streamers/<site>/<user>/live', methods=['GET'])
     @login_required

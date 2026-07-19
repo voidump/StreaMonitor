@@ -1438,3 +1438,147 @@ def test_reset_recording_progress_clears_metrics(monkeypatch):
     assert streamer.recording_resolution is None
     assert streamer.recording_speed_bps is None
     assert streamer._recording_speed_samples == []
+
+
+# --- online history + schedule API (V36A) ---
+
+import streamonitor.online_history as online_history
+
+_HOUR = 3600
+_DAY = 86400
+
+
+def _reset_online_history(monkeypatch):
+    # Forget the in-memory store/dedup/backfill state so each test starts cold
+    # (also simulates a service restart). On-disk state is isolated by chdir.
+    monkeypatch.setattr(online_history, "_cache", None)
+    monkeypatch.setattr(online_history, "_cache_path", None)
+    monkeypatch.setattr(online_history, "_last_hour", {})
+    monkeypatch.setattr(online_history, "_backfilled", set())
+
+
+def test_schedule_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([make_streamer()])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice/schedule")
+    assert response.status_code == 401
+
+
+def test_schedule_unknown_streamer_404(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/ghost/schedule", headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_schedule_new_streamer_all_empty(tmp_path, monkeypatch):
+    # A brand-new streamer with no observations and no recordings: observedSinceTs
+    # null, heat all zero, derived metrics all null (never fabricated).
+    monkeypatch.chdir(tmp_path)
+    _reset_online_history(monkeypatch)
+    manager = HTTPManager([make_streamer()])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/schedule", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["observedSinceTs"] is None
+    assert payload["sampleDays"] == 0
+    assert payload["days7OnlineHours"] is None
+    assert payload["avgSessionMin"] is None
+    assert payload["commonHours"] is None
+    assert len(payload["heat"]) == 7
+    assert all(len(row) == 24 for row in payload["heat"])
+    assert all(v == 0 for row in payload["heat"] for v in row)
+
+
+def test_record_online_marks_hour_and_persists(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_online_history(monkeypatch)
+    ts = 1_700_000_000.0
+    online_history.record_online("FakeSite", "alice", ts=ts)
+    # Persisted to disk with the expected hour epoch.
+    with open(online_history.ONLINE_HISTORY_STORE) as f:
+        stored = json.load(f)
+    assert stored["FakeSite/alice"] == [int(ts // _HOUR)]
+
+
+def test_record_online_hourly_dedup(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_online_history(monkeypatch)
+    base = 1_700_000_000.0
+    online_history.record_online("FakeSite", "alice", ts=base)
+    online_history.record_online("FakeSite", "alice", ts=base + 60)     # same hour
+    online_history.record_online("FakeSite", "alice", ts=base + _HOUR)  # next hour
+    with open(online_history.ONLINE_HISTORY_STORE) as f:
+        stored = json.load(f)
+    assert stored["FakeSite/alice"] == [int(base // _HOUR), int(base // _HOUR) + 1]
+
+
+def test_schedule_reflects_recorded_observation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_online_history(monkeypatch)
+    now = 1_700_000_000.0
+    monkeypatch.setattr(online_history, "datetime", _FrozenNow(now))
+    online_history.record_online("FakeSite", "alice", ts=now)
+    manager = HTTPManager([make_streamer()])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/schedule", headers=AUTH)
+    payload = json.loads(response.data)
+    assert payload["observedSinceTs"] == int(now // _HOUR) * _HOUR
+    assert payload["sampleDays"] == 1
+    assert payload["days7OnlineHours"] == 1
+    assert sum(v for row in payload["heat"] for v in row) == 1
+
+
+def test_schedule_persists_across_restart(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_online_history(monkeypatch)
+    ts = 1_700_000_000.0
+    online_history.record_online("FakeSite", "alice", ts=ts)
+    # Simulate a restart: drop the in-memory cache but keep the store on disk.
+    _reset_online_history(monkeypatch)
+    with online_history._lock:
+        online_history._ensure_loaded_locked()
+        assert online_history._cache["FakeSite/alice"] == [int(ts // _HOUR)]
+
+
+def test_schedule_backfills_from_recordings(tmp_path, monkeypatch):
+    # A streamer with an existing recording (known duration) returns non-empty heat
+    # on the very first query, without any prior polling observation.
+    monkeypatch.chdir(tmp_path)
+    _reset_online_history(monkeypatch)
+    monkeypatch.setattr(api_v2, "_durations_cache", None)
+    monkeypatch.setattr(api_v2, "_durations_cache_path", None)
+    now = 1_700_000_000.0
+    monkeypatch.setattr(online_history, "datetime", _FrozenNow(now))
+    streamer, path = _make_streamer_with_video("alice-20260706-120000.mp4")
+    # Recording ended "now"; seed the warm durations cache with a 2-hour duration.
+    os.utime(path, (now, now))
+    streamer.cache_file_list()
+    mtime = int(streamer.video_files[0]._stat.st_mtime)
+    with api_v2._durations_lock:
+        api_v2._load_durations_locked(api_v2._durations_path())
+        api_v2._durations_cache[
+            api_v2._cache_key(streamer.video_files[0].abs_path, mtime)] = 2 * _HOUR
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/schedule", headers=AUTH)
+    payload = json.loads(response.data)
+    assert payload["observedSinceTs"] is not None
+    assert sum(v for row in payload["heat"] for v in row) >= 1
+
+
+class _FrozenNow:
+    # Minimal stand-in for the datetime module: freezes now() but delegates
+    # fromtimestamp so bucket math stays real.
+    def __init__(self, ts):
+        from datetime import datetime as _dt
+        self._ts = ts
+        self._dt = _dt
+
+    def now(self):
+        return self._dt.fromtimestamp(self._ts)
+
+    def fromtimestamp(self, ts):
+        return self._dt.fromtimestamp(ts)

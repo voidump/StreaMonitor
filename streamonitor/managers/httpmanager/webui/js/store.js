@@ -104,9 +104,10 @@ function nav(to){
   route = to;
   if (typeof writeRouteHash==='function') writeRouteHash(to);   // keep the URL hash in sync so views are linkable / refresh-safe
   render();
-  if (apiState.mode==='api' && to.view==='detail'){   // pull real videos on entering a detail
+  if (apiState.mode==='api' && to.view==='detail'){   // pull real videos + on-line pattern on entering a detail
     const s2 = streamers.find(x=>x.id===to.id);
     if (s2 && !s2._detailLoaded) loadDetail(s2.site, s2.user);
+    if (s2 && !s2._schedLoaded) loadSchedule(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
   if (to.view==='settings'){ loadDownloadDir(); loadRecResolution(); }   // read the current download dir + recording resolution (mock fills demo values)
@@ -218,8 +219,10 @@ function mapStreamers(list){
       _totalSize: item.totalSize!=null ? item.totalSize : null,
       _lastRecordedTs: item.lastRecordedTs!=null ? item.lastRecordedTs : null,
       files: [], temps: [], schedule: EMPTY_SCHEDULE, _detailLoaded:false, _detailError:false,
+      _sched: null, _schedLoaded: false,   // /schedule payload (heat + honest metrics); lazily loaded with detail
     };
     if (prev && prev._detailLoaded){ s.files = prev.files; s.temps = prev.temps; s._detailLoaded = true; s._filesSig = prev._filesSig; }   // carry the file signature so loadDetail's guard can early-return while a video plays
+    if (prev && prev._schedLoaded){ s.schedule = prev.schedule; s._sched = prev._sched; s._schedLoaded = true; }   // carry real schedule across list polls so the sparkline stays truthful
     return s;
   });
 }
@@ -232,7 +235,7 @@ async function refreshStreamers(){
     apiState.error = false; apiState.loading = false;
     if (pendingRoute && typeof resolvePendingRoute==='function'){ resolvePendingRoute(); return; }   // land a deep-linked view now that data is in
     render();
-    if (route.view==='detail'){ const s = streamers.find(x=>x.id===route.id); if (s) loadDetail(s.site, s.user); }
+    if (route.view==='detail'){ const s = streamers.find(x=>x.id===route.id); if (s){ loadDetail(s.site, s.user); if (!s._schedLoaded) loadSchedule(s.site, s.user); } }
   } catch(e){
     apiState.loading = false; apiState.error = true;
     render();   // keep last data on screen; banner surfaces the failure
@@ -265,6 +268,27 @@ async function loadDetail(site, user){
     if (s && !s._detailLoaded) s._detailError = true;   // no data yet: surface an inline error + retry instead of a forever spinner
     apiState.error = true; render();
   }
+}
+/* pull the real on-line pattern (/schedule) for one streamer: heat + honest
+ * metrics (commonHours / avgSessionMin / days7OnlineHours / sampleDays). Non-
+ * critical — a failure just leaves EMPTY_SCHEDULE and the "gathering data" state.
+ * Only meaningful in API mode; mock keeps its generated mkSchedule heat. */
+async function loadSchedule(site, user){
+  try {
+    const data = await apiGet('/streamers/'+encodeURIComponent(site)+'/'+encodeURIComponent(user)+'/schedule');
+    const s = streamers.find(x=>x.id===site+'/'+user);
+    if (!s || !data) return;
+    s.schedule = Array.isArray(data.heat) ? data.heat : EMPTY_SCHEDULE;
+    s._sched = {
+      observedSinceTs: data.observedSinceTs!=null ? data.observedSinceTs : null,
+      sampleDays: data.sampleDays!=null ? data.sampleDays : 0,
+      days7OnlineHours: data.days7OnlineHours!=null ? data.days7OnlineHours : null,
+      avgSessionMin: data.avgSessionMin!=null ? data.avgSessionMin : null,
+      commonHours: Array.isArray(data.commonHours) ? data.commonHours : null,
+    };
+    s._schedLoaded = true;
+    render();
+  } catch(e){ /* schedule is non-critical; leave EMPTY_SCHEDULE + accumulating state */ }
 }
 /* retry a failed initial detail load — invoked from the inline retry button in the detail view */
 function retryDetail(){

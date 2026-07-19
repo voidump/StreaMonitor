@@ -419,6 +419,8 @@ tr:hover .row-actions{opacity:1}
 .heatmap .hm-cell.l1{background:#274664}
 .heatmap .hm-cell.l2{background:var(--accent-strong)}
 .heatmap .hm-cell.l3{background:var(--accent)}
+.heatmap .hm-cell.l4{background:#8ec5f5}
+.hm-empty{padding:26px 14px;text-align:center;font-size:12px;color:var(--text-faint)}
 .hm-hours{display:grid;grid-template-columns:26px repeat(24,1fr);gap:2px;margin-bottom:10px}
 .hm-hours span{font-size:8.5px;color:var(--text-faint);text-align:center;font-family:var(--mono)}
 .stat-rows{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--border)}

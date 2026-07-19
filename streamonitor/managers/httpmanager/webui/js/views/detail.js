@@ -10,6 +10,21 @@ function renderDetail(s){
   const act = stats.total>90?t('activeHigh'):stats.total>45?t('activeMid'):t('activeLow');
   const off = s.status==='paused'||s.status==='stopped';
   const wd = t('weekdays');
+  // API mode: render the honest /schedule payload (real heat + metrics, "—" when
+  // a metric is null, "gathering data" until at least a week is observed). Mock
+  // mode keeps the generated prototype figures untouched.
+  const apiMode = apiState.mode==='api';
+  const sched = s._sched;
+  const accumulating = apiMode && s._schedLoaded && sched && sched.sampleDays < 7;
+  const commonStr = apiMode
+    ? (sched && sched.commonHours ? t('hourRange')(sched.commonHours[0], sched.commonHours[1]) : '—')
+    : t('hourRange')(stats.commonStart, stats.commonEnd);
+  const avgStr = apiMode
+    ? (sched && sched.avgSessionMin!=null ? `${sched.avgSessionMin} ${t('minsUnit')}` : '—')
+    : `${avgMin} ${t('minsUnit')}`;
+  const days7Str = apiMode
+    ? (sched && sched.days7OnlineHours!=null ? `${sched.days7OnlineHours} ${t('hoursUnit')}` : '—')
+    : `${week7h/10} ${t('hoursUnit')}`;
   const markedFiles = s.files.filter(f=>f.marked);
   const ff = detailState.fileFilter;
   const displayFiles = ff==='marked' ? markedFiles : s.files;
@@ -103,15 +118,17 @@ function renderDetail(s){
         <div style="display:flex;flex-direction:column;gap:16px">
           <div class="panel">
             <div class="panel-h">${t('schedTitle')}<span class="n">${t('schedHeat')}</span></div>
-            <div class="sched">
+            ${accumulating
+              ? `<div class="hm-empty">${t('schedAccum')(sched.sampleDays)}</div>`
+              : `<div class="sched">
               <div class="heatmap">${heatRows}</div>
               <div class="hm-hours"><span></span>${Array.from({length:24},(_,h)=>`<span>${h%6===0?h:''}</span>`).join('')}</div>
-            </div>
+            </div>`}
             <div class="stat-rows">
-              <div class="stat-row"><span class="k">${t('schedCommon')}</span><span class="v accent">${t('hourRange')(stats.commonStart, stats.commonEnd)}</span></div>
-              <div class="stat-row"><span class="k">${t('schedAvg')}</span><span class="v">${avgMin} ${t('minsUnit')}</span></div>
-              <div class="stat-row"><span class="k">${t('schedDays7')}</span><span class="v">${week7h/10} ${t('hoursUnit')}</span></div>
-              <div class="stat-row"><span class="k">${t('schedActive')}</span><span class="v">${act}</span></div>
+              <div class="stat-row"><span class="k">${t('schedCommon')}</span><span class="v accent">${commonStr}</span></div>
+              <div class="stat-row"><span class="k">${t('schedAvg')}</span><span class="v">${avgStr}</span></div>
+              <div class="stat-row"><span class="k">${t('schedDays7')}</span><span class="v">${days7Str}</span></div>
+              ${!apiMode ? `<div class="stat-row"><span class="k">${t('schedActive')}</span><span class="v">${act}</span></div>` : ''}
             </div>
           </div>
           <div class="panel">

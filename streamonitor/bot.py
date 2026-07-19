@@ -16,6 +16,7 @@ import requests.cookies
 from streamonitor.enums import Status, COUNTRIES, Gender, GENDER_DATA
 from streamonitor.http_session import TimeoutSession
 import streamonitor.log as log
+import streamonitor.online_history as online_history
 import parameters
 from parameters import DEBUG, CONTAINER, HTTP_USER_AGENT
 from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
@@ -252,6 +253,14 @@ class Bot(Thread):
                     if self.sc != self.previous_status:
                         self.log(self.status())
                         self.previous_status = self.sc
+                    # Record an "online" observation for the schedule/heatmap. Hour
+                    # granularity with in-memory per-hour dedup keeps this off the
+                    # disk on all but the first poll of each hour; never fatal.
+                    if self.sc in (Status.PUBLIC, Status.PRIVATE):
+                        try:
+                            online_history.record_online(self.site, self.username)
+                        except Exception:
+                            pass
                     if self.sc == Status.ERROR:
                         self._sleep(self.sleep_on_error)
                     if self.sc == Status.OFFLINE:
