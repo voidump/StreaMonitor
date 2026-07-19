@@ -188,11 +188,10 @@ WEBSERVER_HOST = env.str("STRMNTR_HOST", "127.0.0.1")
 WEBSERVER_PORT = env.int("STRMNTR_PORT", 5000)
 
 # Web UI skin
-# Available options:
-# - kseen715 - 2nd skin, currently broken
-# - truck-kun (default) - 3rd skin, row oriented
-# - shaftoverflow - 4th skin, card layout, links in menus
-WEBSERVER_SKIN = env.str("STRMNTR_SKIN", "truck-kun")
+# Only the redesigned single-page console (`webui`) is available. The legacy
+# skins (kseen715, truck-kun, shaftoverflow) have been removed; any other value
+# falls back to `webui`.
+WEBSERVER_SKIN = env.str("STRMNTR_SKIN", "webui")
 
 # set frequency in seconds of how often the streamer list will update
 WEB_LIST_FREQUENCY = env.int("STRMNTR_LIST_FREQ", 30)

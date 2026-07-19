@@ -90,25 +90,15 @@ You can access the web interface on port 5000.
 If set password in parameters.py username is admin, password admin, empty password is also allowed.
 When you set the WEBSERVER_HOST it is also accesible to from other computers in the network
 
-##### Skins
-
-The web interface ships with several skins, selected with the `STRMNTR_SKIN`
-environment variable (default `truck-kun`):
-
-* `truck-kun` (default) – row-oriented, server-rendered (Jinja) interface
-* `shaftoverflow` – card layout
-* `webui` – the new v2 recording console (see below)
-
 ##### v2 recording console (`webui`)
 
-Enable the redesigned single-page console by setting the skin to `webui`:
-
-```
-STRMNTR_SKIN=webui python3 Downloader.py
-```
+The web interface is the redesigned single-page console (`webui`), which is the
+only skin. The legacy skins (`kseen715`, `truck-kun`, `shaftoverflow`) have been
+removed. The `STRMNTR_SKIN` environment variable defaults to `webui`; any other
+value falls back to `webui` with a warning, so old configurations keep working.
 
 The console is a static front-end that talks to the backend over a JSON API
-(`/api/v2/...`, mounted on every skin) and adds:
+(`/api/v2/...`) and adds:
 
 * Dashboard with status chips (recording / online / private / paused / stopped /
   offline / error …), per-site filters, column sorting and a live recording

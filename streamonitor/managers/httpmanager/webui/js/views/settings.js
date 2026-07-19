@@ -87,6 +87,18 @@ function renderRecResolutionPanel(){
       </div>`;
 }
 
+/* Deleted-streamers entry: history is no longer a top-level nav item, so it is
+ * reached from here. data-nav="history" reuses the global nav click handler. */
+function renderDeletedStreamersPanel(){
+  return `
+      <div class="panel settings-panel">
+        <div class="set-row">
+          <div class="grow"><div class="k">${t('setHistory')}</div><div class="desc">${t('setHistoryDesc')}</div></div>
+          <button class="btn" data-nav="history">${t('setHistoryOpen')}${history.length?` · ${history.length}`:''}</button>
+        </div>
+      </div>`;
+}
+
 function renderSettings(){
   return `
   <div class="view">
@@ -109,6 +121,7 @@ function renderSettings(){
           <span class="soon">${t('soon')}</span>
         </div>
       </div>
+      ${renderDeletedStreamersPanel()}
       ${renderDownloadDirPanel()}
       ${renderRecResolutionPanel()}
       ${renderHotkeyPanel()}

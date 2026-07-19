@@ -176,11 +176,9 @@ function renderChrome(){
     <div class="disk-row"><span>${t('disk')}</span><b>${fmtSize(DISK.total-DISK.used)} ${t('diskFree')}</b></div>
     <div class="disk-bar"><i class="${pct>85?'hot':''}" style="width:${pct}%"></i></div>`;
   const nRec = streamers.filter(s=>s.status==='recording').length;
-  const clockIC = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
   document.getElementById('nav').innerHTML = `
     <button class="nav-item ${(route.view==='dashboard'||route.view==='detail')?'active':''}" data-nav="dashboard">${IC.grid}<span>${t('navDashboard')}</span>${nRec?`<span class="nav-count" style="color:var(--rec)">●${nRec}</span>`:''}</button>
-    <button class="nav-item ${route.view==='history'?'active':''}" data-nav="history">${clockIC}<span>${t('navHistory')}</span>${history.length?`<span class="nav-count">${history.length}</span>`:''}</button>
-    <button class="nav-item ${route.view==='settings'?'active':''}" data-nav="settings">${IC.gear}<span>${t('navSettings')}</span></button>`;
+    <button class="nav-item ${(route.view==='settings'||route.view==='history')?'active':''}" data-nav="settings">${IC.gear}<span>${t('navSettings')}</span></button>`;
   document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=t(el.dataset.i18n)});
   document.documentElement.lang = lang==='zh'?'zh-CN':'en';
 }
