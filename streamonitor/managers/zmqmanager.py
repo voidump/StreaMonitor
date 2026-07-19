@@ -1,4 +1,5 @@
 import zmq
+from parameters import ZMQ_HOST, ZMQ_PORT
 from streamonitor.manager import Manager
 import streamonitor.log as log
 
@@ -10,7 +11,7 @@ class ZMQManager(Manager):
 
     def run(self):
         with zmq.Context.instance().socket(zmq.REP) as socket:
-            socket.bind("tcp://*:6969")
+            socket.bind("tcp://%s:%d" % (ZMQ_HOST, ZMQ_PORT))
             while True:
                 line = socket.recv_string()
                 self.logger.info("[ZMQ] " + line)

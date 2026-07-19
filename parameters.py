@@ -211,3 +211,12 @@ WEB_CONFIRM_DELETES = env.str("STRMNTR_CONFIRM_DEL", "MOBILE")
 # Password for the web server
 # If empty no auth required, else username admin and choosen password
 WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "admin")
+
+# ZMQ (external console) configuration
+
+# The ZMQ interface accepts unauthenticated commands, so it defaults to binding
+# only the loopback interface. Set STRMNTR_ZMQ_HOST to 0.0.0.0 for remote access
+# from all hosts (not recommended without a firewall) or disable it entirely.
+ZMQ_ENABLED = env.bool("STRMNTR_ZMQ_ENABLED", True)
+ZMQ_HOST = env.str("STRMNTR_ZMQ_HOST", "127.0.0.1")
+ZMQ_PORT = env.int("STRMNTR_ZMQ_PORT", 6969)

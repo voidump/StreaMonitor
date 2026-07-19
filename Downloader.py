@@ -1,6 +1,7 @@
 import os
 import sys
 import streamonitor.config as config
+from parameters import ZMQ_ENABLED
 from streamonitor.managers.bulk_status_manager import BulkStatusManager
 from streamonitor.managers.httpmanager import HTTPManager
 from streamonitor.managers.climanager import CLIManager
@@ -38,8 +39,9 @@ def main():
         console_manager = CLIManager(streamers)
         console_manager.start()
 
-    zmq_manager = ZMQManager(streamers)
-    zmq_manager.start()
+    if ZMQ_ENABLED:
+        zmq_manager = ZMQManager(streamers)
+        zmq_manager.start()
 
     http_manager = HTTPManager(streamers)
     http_manager.start()

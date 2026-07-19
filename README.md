@@ -84,6 +84,15 @@ List the streamers in the config
 python3 Controller.py status
 ```
 
+The remote controller talks to the downloader over ZeroMQ. Because this
+interface accepts unauthenticated commands, it only binds to `127.0.0.1:6969`
+by default, so `Controller.py` works from the same machine but is not reachable
+from the network. You can change this with environment variables:
+* `STRMNTR_ZMQ_HOST` - bind address (default `127.0.0.1`; use `0.0.0.0` to
+  expose it to the network, only behind a firewall)
+* `STRMNTR_ZMQ_PORT` - port (default `6969`)
+* `STRMNTR_ZMQ_ENABLED` - set to `false` to disable the ZeroMQ interface entirely
+
 #### Web interface
 
 You can access the web interface on port 5000.
