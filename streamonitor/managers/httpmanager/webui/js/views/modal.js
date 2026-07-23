@@ -1,6 +1,28 @@
 'use strict';
 /* ---------------- modal ---------------- */
+/* The entrance animation (backdrop fadein + modal pop) should play only when a
+ * modal first opens. Re-renders — switching the remove-dialog radio option, or
+ * the full render()→renderView()→renderModal() rebuild fired by list polling —
+ * recreate the backdrop DOM and would otherwise replay the animation, making the
+ * whole screen appear to flash. Track the shown modal's signature; on a re-render
+ * of the same modal, tag the backdrop with `no-anim` to skip the animation. */
+let _modalSig = null;
+function modalSig(){
+  if (!modalState) return null;
+  const key = modalState.id!=null ? modalState.id : (modalState.idx!=null ? modalState.idx : '');
+  return modalState.type + ':' + key;
+}
 function renderModal(){
+  const sig = modalSig();
+  const animate = sig!==null && sig!==_modalSig;
+  renderModalInner();
+  _modalSig = modalSig();   // recompute: inner may clear modalState (missing streamer/history)
+  if (!animate){
+    const bk = document.getElementById('modalBk');
+    if (bk) bk.classList.add('no-anim');
+  }
+}
+function renderModalInner(){
   const root = document.getElementById('modalRoot');
   if (!modalState){ root.innerHTML=''; return; }
   if (modalState.type==='batchUnmon'){
@@ -95,12 +117,12 @@ function renderModal(){
       <div class="modal-h">${t('removeTitle')(s.user)}</div>
       <div class="modal-b">
         ${alreadyStopped?'':`
-        <label class="opt ${!delFiles?'sel':''}">
-          <input type="radio" name="rmopt" ${!delFiles?'checked':''} data-rmopt="keep">
+        <label class="opt ${!delFiles?'sel':''}" data-rmopt="keep">
+          <input type="radio" name="rmopt" ${!delFiles?'checked':''}>
           <span><span class="t">${t('unmonT')}</span><br><span class="d">${t('unmonD')}</span></span>
         </label>`}
-        <label class="opt ${delFiles?'sel danger':''}">
-          <input type="radio" name="rmopt" ${delFiles?'checked':''} data-rmopt="del">
+        <label class="opt ${delFiles?'sel danger':''}" data-rmopt="del">
+          <input type="radio" name="rmopt" ${delFiles?'checked':''}>
           <span><span class="t">${t('purgeT')}</span><br><span class="d">${t('purgeD')(n, sz)}</span></span>
         </label>
       </div>

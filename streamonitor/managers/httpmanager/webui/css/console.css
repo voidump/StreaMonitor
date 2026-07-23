@@ -585,6 +585,9 @@ tr:hover .row-actions{opacity:1}
   animation:pop .14s;
 }
 @keyframes pop{from{transform:scale(.97);opacity:.6}to{transform:scale(1);opacity:1}}
+/* re-renders (option switch, polling rebuild) reuse the same modal — skip the
+ * entrance animation so it doesn't flash the whole screen each time */
+.modal-backdrop.no-anim,.modal-backdrop.no-anim .modal{animation:none}
 .modal-h{padding:14px 18px 0;font-size:14px;font-weight:600}
 .modal-b{padding:12px 18px 4px;color:var(--text-dim);font-size:12.5px}
 .modal-b .opt{
