@@ -13,10 +13,12 @@ import streamonitor.sites  # must have
         
 def is_docker():
     path = '/proc/self/cgroup'
-    return (
-        os.path.exists('/.dockerenv') or
-        os.path.isfile(path) and any('docker' in line for line in open(path))
-    )
+    if os.path.exists('/.dockerenv'):
+        return True
+    if os.path.isfile(path):
+        with open(path) as f:
+            return any('docker' in line for line in f)
+    return False
 
 
 def main():

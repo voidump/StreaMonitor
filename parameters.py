@@ -164,7 +164,7 @@ VR_FORMAT_SUFFIX = env.bool("STRMNTR_VR_FORMAT_SUFFIX", True)
 # Setting it to 0 can result in very fragmented recordings.
 # 1 can result in skipped segments
 # 1.3 should be the sweet spot but use what works
-FFMPEG_READRATE = env.int("STRMNTR_FFMPEG_READRATE", 1.3)
+FFMPEG_READRATE = env.float("STRMNTR_FFMPEG_READRATE", 1.3)
 
 # Specify the segment time in seconds
 # If None, the video will be downloaded as a single file

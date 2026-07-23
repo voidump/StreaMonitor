@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import time
 
 from streamonitor.bot import Bot
@@ -20,8 +19,15 @@ def load_config():
             json.dump([], f, indent=4)
             return []
     except Exception as e:
-        print(e)
-        sys.exit(1)
+        # Corrupt config.json: back it up and continue with an empty list so a
+        # single bad file can't prevent startup.
+        backup_loc = f"{config_loc}.broken-{int(time.time())}"
+        try:
+            os.replace(config_loc, backup_loc)
+            logger.error(f"Corrupt config ({e}); backed up to {backup_loc}, starting with empty list")
+        except OSError as move_err:
+            logger.error(f"Corrupt config ({e}); failed to back up ({move_err}), starting with empty list")
+        return []
 
 
 def save_config(config):

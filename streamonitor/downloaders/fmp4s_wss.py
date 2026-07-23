@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import subprocess
@@ -74,18 +75,37 @@ def getVideoWSSVR(self, url, filename):
         return False
 
     # Post-processing
+    stdout = subprocess.DEVNULL
+    stderr = subprocess.DEVNULL
     try:
-        stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-        stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+        if DEBUG:
+            stdout = open(filename + '.postprocess_stdout.log', 'w+')
+            stderr = open(filename + '.postprocess_stderr.log', 'w+')
         output_str = '-c:a copy -c:v copy'
         if SEGMENT_TIME is not None:
             output_str += f' -f segment -reset_timestamps 1 -segment_time {str(SEGMENT_TIME)}'
             filename = basefilename + '_%03d' + suffix + '.' + CONTAINER
         ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: '-ignore_editlist 1'}, outputs={filename: output_str})
         ff.run(stdout=stdout, stderr=stderr)
-        os.remove(tmpfilename)
     except FFRuntimeError as e:
         if e.exit_code and e.exit_code != 255:
+            # Remux failed: keep the temp file for later repair.
             return False
+    finally:
+        if hasattr(stdout, "close"):
+            stdout.close()
+        if hasattr(stderr, "close"):
+            stderr.close()
 
+    # Only delete the temp file once the remuxed output exists and is non-empty.
+    if SEGMENT_TIME is not None:
+        produced = glob.glob(filename.replace('%03d', '*'))
+        output_ok = any(os.path.exists(f) and os.path.getsize(f) > 0 for f in produced)
+    else:
+        output_ok = os.path.exists(filename) and os.path.getsize(filename) > 0
+
+    if not output_ok:
+        return False
+
+    os.remove(tmpfilename)
     return True

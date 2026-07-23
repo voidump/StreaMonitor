@@ -1,3 +1,4 @@
+import glob
 import m3u8
 import os
 import subprocess
@@ -32,7 +33,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
 
     def execute():
         nonlocal error
-        downloaded_list = []
+        downloaded_list = set()
         consecutive_failures = 0
         max_consecutive_failures = 15  # Tolerate transient 404s from LL-HLS
         total_bytes = 0
@@ -71,7 +72,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     for chunk in chunklist.segment_map + chunklist.segments:
                         if chunk.uri in downloaded_list:
                             continue
-                        downloaded_list.append(chunk.uri)
+                        downloaded_list.add(chunk.uri)
                         chunk_uri = chunk.uri
                         self.debug('Downloading ' + chunk_uri)
                         if not chunk_uri.startswith("https://"):
@@ -138,9 +139,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         return False
 
     # Post-processing
+    stdout = subprocess.DEVNULL
+    stderr = subprocess.DEVNULL
     try:
-        stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-        stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+        if DEBUG:
+            stdout = open(filename + '.postprocess_stdout.log', 'w+')
+            stderr = open(filename + '.postprocess_stderr.log', 'w+')
         output_str = '-c:a copy -c:v copy'
         suffix = ''
         if SEGMENT_TIME is not None:
@@ -150,9 +154,25 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             filename = filename[:-len('.' + CONTAINER)] + '_%03d' + suffix + '.' + CONTAINER
         ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
         ff.run(stdout=stdout, stderr=stderr)
-        os.remove(tmpfilename)
     except FFRuntimeError as e:
         if e.exit_code and e.exit_code != 255:
+            # Remux failed: keep the temp file for later repair.
             return False
+    finally:
+        if hasattr(stdout, "close"):
+            stdout.close()
+        if hasattr(stderr, "close"):
+            stderr.close()
 
+    # Only delete the temp file once the remuxed output exists and is non-empty.
+    if SEGMENT_TIME is not None:
+        produced = glob.glob(filename.replace('%03d', '*'))
+        output_ok = any(os.path.exists(f) and os.path.getsize(f) > 0 for f in produced)
+    else:
+        output_ok = os.path.exists(filename) and os.path.getsize(filename) > 0
+
+    if not output_ok:
+        return False
+
+    os.remove(tmpfilename)
     return True
