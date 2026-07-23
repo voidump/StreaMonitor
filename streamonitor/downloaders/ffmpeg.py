@@ -7,6 +7,7 @@ import time
 import requests.cookies
 from threading import Thread
 from parameters import DEBUG, SEGMENT_TIME, CONTAINER, FFMPEG_PATH, FFMPEG_READRATE
+from streamonitor.video_filter import remove_undersized_videos
 
 _PROGRESS_POLL_INTERVAL = 2  # seconds between live recording-size samples
 
@@ -149,4 +150,32 @@ def getVideoFfmpeg(self, url, filename):
     thread.join()
     monitor_thread.join()
     self.stopDownload = None
-    return not error
+    if error:
+        return False
+
+    # ffmpeg writes the final container(s) directly. Filter out undersized
+    # outputs from this session: the single output path, or the timestamped
+    # segments sharing the username prefix that were written after start.
+    if SEGMENT_TIME is not None:
+        produced = []
+        try:
+            for entry in os.scandir(folder):
+                if not entry.is_file():
+                    continue
+                if not entry.name.startswith(username_prefix):
+                    continue
+                if not entry.name.endswith('.' + CONTAINER):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                if st.st_mtime >= start_ts:
+                    produced.append(entry.path)
+        except OSError:
+            produced = []
+    else:
+        produced = [os.path.splitext(filename)[0] + suffix + '.' + CONTAINER]
+
+    remove_undersized_videos(produced, self.logger)
+    return True

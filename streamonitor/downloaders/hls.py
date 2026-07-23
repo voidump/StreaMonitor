@@ -7,6 +7,7 @@ from ffmpy import FFmpeg, FFRuntimeError
 from time import sleep
 from parameters import DEBUG, CONTAINER, SEGMENT_TIME, FFMPEG_PATH
 from streamonitor.http_session import DEFAULT_TIMEOUT
+from streamonitor.video_filter import remove_undersized_videos
 
 _http_lib = None
 if not _http_lib:
@@ -169,10 +170,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         produced = glob.glob(filename.replace('%03d', '*'))
         output_ok = any(os.path.exists(f) and os.path.getsize(f) > 0 for f in produced)
     else:
+        produced = [filename]
         output_ok = os.path.exists(filename) and os.path.getsize(filename) > 0
 
     if not output_ok:
         return False
 
     os.remove(tmpfilename)
+    remove_undersized_videos(produced, self.logger)
     return True

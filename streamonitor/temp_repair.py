@@ -2,11 +2,12 @@ import glob
 import os
 import subprocess
 
-from ffmpy import FFmpeg, FFRuntimeError
+from ffmpy import FFmpeg, FFRuntimeError, FFExecutableNotFoundError
 
 import parameters
 from parameters import CONTAINER, FFMPEG_PATH
 import streamonitor.log as log
+from streamonitor.video_filter import remove_undersized_videos
 
 
 logger = log.Logger("temp_repair").get_logger()
@@ -36,13 +37,18 @@ def _unique_output_path(base):
         i += 1
 
 
-def _cleanup_failed(tmppath, output_path):
-    name = os.path.basename(tmppath)
+def _discard_output(output_path):
+    # Drop a partial/empty remux output while leaving the temp file untouched.
     if output_path and os.path.exists(output_path):
         try:
             os.remove(output_path)
         except OSError:
             pass
+
+
+def _cleanup_failed(tmppath, output_path):
+    name = os.path.basename(tmppath)
+    _discard_output(output_path)
     try:
         os.remove(tmppath)
     except OSError as e:
@@ -75,14 +81,29 @@ def _repair_one(tmppath, input_opts, suffix):
         )
         ff.run(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FFRuntimeError as e:
+        # ffmpeg actually ran. A genuine non-zero exit (other than 255, which is
+        # ffmpeg's interrupted code) means the temp file itself is unrepairable,
+        # so it is safe to remove. On 255/interrupted, keep it for a later retry.
         if e.exit_code and e.exit_code != 255:
             logger.warning(
                 f'Repair failed for {name} (ffmpeg exit {e.exit_code}); removing temp file')
             _cleanup_failed(tmppath, output_path)
-            return
+        else:
+            logger.warning(
+                f'Repair interrupted for {name} (ffmpeg exit {e.exit_code}); keeping temp file for retry')
+            _discard_output(output_path)
+        return
+    except FFExecutableNotFoundError as e:
+        # ffmpeg is missing/not executable: an environment error, not a bad temp
+        # file. Keep the temp file so a later startup (with ffmpeg present) can
+        # still repair it.
+        logger.warning(f'Cannot repair {name}: ffmpeg not available ({e}); keeping temp file for retry')
+        _discard_output(output_path)
+        return
     except Exception as e:
-        logger.warning(f'Repair error for {name}: {e}; removing temp file')
-        _cleanup_failed(tmppath, output_path)
+        # Other environmental errors (IO errors, etc.): keep the temp file.
+        logger.warning(f'Repair error for {name}: {e}; keeping temp file for retry')
+        _discard_output(output_path)
         return
 
     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
@@ -93,9 +114,10 @@ def _repair_one(tmppath, input_opts, suffix):
                 f'Repaired {name} -> {os.path.basename(output_path)} but failed to remove temp: {e}')
             return
         logger.info(f'Repaired {name} -> {os.path.basename(output_path)}')
+        remove_undersized_videos([output_path], logger)
     else:
-        logger.warning(f'Repair produced no output for {name}; removing temp file')
-        _cleanup_failed(tmppath, output_path)
+        logger.warning(f'Repair produced no output for {name}; keeping temp file for retry')
+        _discard_output(output_path)
 
 
 def repair_leftover_temp_files():

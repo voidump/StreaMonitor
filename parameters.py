@@ -53,6 +53,12 @@ DEBUG = env.bool("STRMNTR_DEBUG", False)
 # by an interrupted recording). Set to False to keep the original behavior.
 REPAIR_TEMP_ON_START = env.bool("STRMNTR_REPAIR_TEMP_ON_START", True)
 
+# Automatically remove freshly produced video files smaller than this many MB
+# (tiny fragments left by an aborted stream). Applied only to files just created
+# by a finished recording or by the startup temp repair, never to historic files.
+# Set to 0 to disable the filter entirely.
+MIN_VIDEO_SIZE_MB = env.float("STRMNTR_MIN_VIDEO_SIZE_MB", 5.0)
+
 # The camsoda bot ignores this setting in favor of a chrome useragent generated with the fake-useragent library
 HTTP_USER_AGENT = env.str("STRMNTR_USER_AGENT", "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0")
 

@@ -7,6 +7,7 @@ from websocket import create_connection, WebSocketConnectionClosedException, Web
 from contextlib import closing
 from ffmpy import FFmpeg, FFRuntimeError
 from parameters import DEBUG, CONTAINER, SEGMENT_TIME, FFMPEG_PATH
+from streamonitor.video_filter import remove_undersized_videos
 
 
 def getVideoWSSVR(self, url, filename):
@@ -102,10 +103,12 @@ def getVideoWSSVR(self, url, filename):
         produced = glob.glob(filename.replace('%03d', '*'))
         output_ok = any(os.path.exists(f) and os.path.getsize(f) > 0 for f in produced)
     else:
+        produced = [filename]
         output_ok = os.path.exists(filename) and os.path.getsize(filename) > 0
 
     if not output_ok:
         return False
 
     os.remove(tmpfilename)
+    remove_undersized_videos(produced, self.logger)
     return True
