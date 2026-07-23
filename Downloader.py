@@ -8,6 +8,7 @@ from streamonitor.managers.climanager import CLIManager
 from streamonitor.managers.zmqmanager import ZMQManager
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.clean_exit import CleanExit
+from streamonitor.temp_repair import repair_leftover_temp_files
 import streamonitor.sites  # must have
 
         
@@ -26,6 +27,10 @@ def main():
     # if not OOSDetector.disk_space_good():
     #     print(OOSDetector.under_threshold_message)
     #     sys.exit(1)
+
+    # Repair temp files left behind by an interrupted recording before loading
+    # streamers so a new recording can't collide with an old leftover.
+    repair_leftover_temp_files()
 
     streamers = config.loadStreamers()
 
