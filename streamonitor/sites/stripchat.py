@@ -122,9 +122,12 @@ class StripChat(RoomIdBot):
 
     @classmethod
     def getInitialData(cls):
-        """Fetch static config and doppio.js for automatic key extraction."""
+        """Fetch static config, then best-effort doppio.js for automatic key extraction."""
         s = cls._get_session()
 
+        # Step 1: fetch static config (single request). Once it succeeds the data
+        # is applied immediately so recording via pre-populated/cached mouflon
+        # keys keeps working even if the best-effort extraction below fails.
         try:
             r = s.get(
                 "https://hu.stripchat.com/api/front/v3/config/static",
@@ -133,28 +136,35 @@ class StripChat(RoomIdBot):
             )
             r.raise_for_status()
             response_json = r.json()
+        except Exception as e:
+            print(f"ERROR in getInitialData: {e}")
+            return
 
-            # Handle different response structures
-            if "static" in response_json:
-                static_data = response_json["static"]
-            else:
-                static_data = response_json
+        # Handle different response structures
+        if "static" in response_json:
+            static_data = response_json["static"]
+        else:
+            static_data = response_json
 
-            # Determine MMP origin - try featureSettings first, then features
-            if "featureSettings" in static_data:
-                mmp_origin = "https://mmp.doppiocdn.com/player/mmp"
-            elif "features" in static_data:
-                mmp_origin = "https://mmp.doppiocdn.com/player/mmp"
-            else:
-                raise Exception(f"'featureSettings'/'features' not found. Keys: {list(static_data.keys())}")
+        StripChat._static_data = static_data
 
-            if "featuresV2" not in static_data:
-                raise Exception(f"'featuresV2' not found. Keys: {list(static_data.keys())}")
+        # Step 2 (best-effort): automatic key extraction from doppio.js. This only
+        # works when the remote API still exposes
+        # featuresV2.playerModuleExternalLoading.mmpVersion. When it's missing the
+        # API shape has changed; log a single warning and keep using the
+        # pre-populated/cached mouflon keys instead of failing hard.
+        mmp_version = (
+            static_data.get("featuresV2", {})
+            .get("playerModuleExternalLoading", {})
+            .get("mmpVersion")
+        )
+        if not mmp_version:
+            print("WARNING: featuresV2 mmpVersion unavailable; automatic mouflon "
+                  "key extraction disabled, relying on pre-populated/cached keys")
+            return
 
-            if "playerModuleExternalLoading" not in static_data["featuresV2"]:
-                raise Exception("'playerModuleExternalLoading' not found in featuresV2")
-
-            mmp_version = static_data["featuresV2"]["playerModuleExternalLoading"]["mmpVersion"]
+        try:
+            mmp_origin = "https://mmp.doppiocdn.com/player/mmp"
             mmp_base = f"{mmp_origin}/{mmp_version}"
 
             # Fetch main.js to find doppio.js reference
@@ -184,20 +194,9 @@ class StripChat(RoomIdBot):
                 StripChat._doppio_js_data = r.text
                 print(f"Loaded doppio.js for auto key extraction")
 
-            # Only update class variables after everything succeeds
-            StripChat._static_data = static_data
             StripChat._main_js_data = main_js_data
-
         except Exception as e:
-            print(f"ERROR in getInitialData: {e}")
-            # Fall back to basic static data fetch
-            try:
-                session = requests.Session()
-                r = session.get('https://hu.stripchat.com/api/front/v3/config/static', headers=cls.headers, timeout=5)
-                if r.status_code == 200:
-                    StripChat._static_data = r.json().get('static')
-            except:
-                pass
+            print(f"WARNING: doppio.js auto key extraction failed: {e}")
 
     @classmethod
     @lru_cache(maxsize=512)
