@@ -1,14 +1,14 @@
 import os
 import sys
 import streamonitor.config as config
-from parameters import ZMQ_ENABLED, MEDIA_INDEX_ENABLED
+from parameters import ZMQ_ENABLED, MEDIA_INDEX_ENABLED, REPAIR_TEMP_INTERVAL
 from streamonitor.managers.bulk_status_manager import BulkStatusManager
 from streamonitor.managers.httpmanager import HTTPManager
 from streamonitor.managers.climanager import CLIManager
 from streamonitor.managers.zmqmanager import ZMQManager
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.clean_exit import CleanExit
-from streamonitor.temp_repair import repair_leftover_temp_files
+from streamonitor.temp_repair import repair_leftover_temp_files, TempRepairScanner
 from streamonitor.media_index import MediaIndexScanner
 import streamonitor.sites  # must have
 
@@ -43,6 +43,10 @@ def main():
     if MEDIA_INDEX_ENABLED:
         media_index_scanner = MediaIndexScanner(streamers)
         media_index_scanner.start()
+
+    if REPAIR_TEMP_INTERVAL > 0:
+        temp_repair_scanner = TempRepairScanner(streamers)
+        temp_repair_scanner.start()
 
     bulk_status_manager = BulkStatusManager(streamers)
     bulk_status_manager.start()

@@ -1,12 +1,15 @@
 import glob
 import os
 import subprocess
+import time
+from threading import Thread
 
 from ffmpy import FFmpeg, FFRuntimeError, FFExecutableNotFoundError
 
 import parameters
 from parameters import CONTAINER, FFMPEG_PATH
 import streamonitor.log as log
+from streamonitor.media_index import record_repaired_file
 from streamonitor.video_filter import remove_undersized_videos
 
 
@@ -19,6 +22,10 @@ TEMP_SUFFIXES = {
     '.tmp.ts': None,
     '.tmp.mp4': '-ignore_editlist 1',
 }
+
+# A temp file whose mtime is within this window is treated as actively being
+# written and is never touched by the runtime periodic repair.
+ACTIVE_MTIME_GRACE = 300  # seconds
 
 
 def _unique_output_path(base):
@@ -115,9 +122,67 @@ def _repair_one(tmppath, input_opts, suffix):
             return
         logger.info(f'Repaired {name} -> {os.path.basename(output_path)}')
         remove_undersized_videos([output_path], logger)
+        record_repaired_file(output_path)
     else:
         logger.warning(f'Repair produced no output for {name}; keeping temp file for retry')
         _discard_output(output_path)
+
+
+def _active_tmp_paths(streamers):
+    # Absolute temp paths that could belong to a recording in progress, derived
+    # from each recording streamer's final filename. Best-effort: the mtime
+    # grace check is the authoritative guard.
+    skip = set()
+    for streamer in streamers or []:
+        try:
+            if not getattr(streamer, 'recording', False):
+                continue
+            name = getattr(streamer, 'recording_filename', None)
+            if not name:
+                continue
+            base = os.path.splitext(name)[0]
+            for suffix in TEMP_SUFFIXES:
+                skip.add(os.path.abspath(os.path.join(streamer.outputFolder, base + suffix)))
+        except Exception:
+            continue
+    return skip
+
+
+def _recently_modified(tmppath):
+    try:
+        return (time.time() - os.path.getmtime(tmppath)) < ACTIVE_MTIME_GRACE
+    except OSError:
+        return True  # cannot stat -> treat as active, do not touch
+
+
+def _scan_and_repair(streamers=None, guard_active=False):
+    downloads_dir = parameters.get_download_dir()
+    if not os.path.isdir(downloads_dir):
+        return
+
+    active = _active_tmp_paths(streamers) if guard_active else set()
+    matches = []
+    for suffix in TEMP_SUFFIXES:
+        for tmppath in glob.glob(os.path.join(downloads_dir, '*', '*' + suffix)):
+            matches.append((tmppath, suffix))
+    if not matches:
+        return
+
+    todo = []
+    for tmppath, suffix in matches:
+        if guard_active and (os.path.abspath(tmppath) in active or _recently_modified(tmppath)):
+            logger.debug(f'Skipping active temp file: {os.path.basename(tmppath)}')
+            continue
+        todo.append((tmppath, suffix))
+    if not todo:
+        return
+
+    logger.info(f'Found {len(todo)} leftover temp file(s) to repair')
+    for tmppath, suffix in todo:
+        try:
+            _repair_one(tmppath, TEMP_SUFFIXES[suffix], suffix)
+        except Exception as e:
+            logger.warning(f'Unexpected error repairing {os.path.basename(tmppath)}: {e}')
 
 
 def repair_leftover_temp_files():
@@ -126,22 +191,33 @@ def repair_leftover_temp_files():
     try:
         if not parameters.REPAIR_TEMP_ON_START:
             return
-        downloads_dir = parameters.get_download_dir()
-        if not os.path.isdir(downloads_dir):
-            return
-
-        matches = []
-        for suffix in TEMP_SUFFIXES:
-            for tmppath in glob.glob(os.path.join(downloads_dir, '*', '*' + suffix)):
-                matches.append((tmppath, suffix))
-        if not matches:
-            return
-
-        logger.info(f'Found {len(matches)} leftover temp file(s) to repair')
-        for tmppath, suffix in matches:
-            try:
-                _repair_one(tmppath, TEMP_SUFFIXES[suffix], suffix)
-            except Exception as e:
-                logger.warning(f'Unexpected error repairing {os.path.basename(tmppath)}: {e}')
+        _scan_and_repair()
     except Exception as e:
         logger.error(f'Temp repair scan failed (ignored): {e}')
+
+
+class TempRepairScanner(Thread):
+    # Runtime periodic repair of leftover temp files, one pass every
+    # REPAIR_TEMP_INTERVAL seconds. Temp files of an in-progress recording
+    # (streamer recording state or a recent mtime) are never touched. Any
+    # failure only logs and never affects recording.
+    def __init__(self, streamers):
+        super().__init__()
+        self.daemon = True
+        self.streamers = streamers
+
+    def run(self):
+        while True:
+            # Re-read every cycle so a runtime settings change takes effect;
+            # a 60s floor guards against a misconfigured busy loop.
+            try:
+                interval = int(parameters.REPAIR_TEMP_INTERVAL)
+            except Exception:
+                interval = 1800
+            time.sleep(max(interval, 60))
+            if interval <= 0:
+                continue
+            try:
+                _scan_and_repair(self.streamers, guard_active=True)
+            except Exception as e:
+                logger.error(f'Periodic temp repair failed (ignored): {e}')
