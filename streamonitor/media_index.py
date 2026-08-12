@@ -205,6 +205,94 @@ def record_finished_file(streamer, filename):
         logger.warning(f'Failed to index finished recording {filename}: {e}')
 
 
+def _index_readable():
+    # Read paths must never create the db file: a missing index means the
+    # scanner has not produced anything yet and callers should fall back to
+    # their existing disk-scan logic.
+    return parameters.MEDIA_INDEX_ENABLED and os.path.isfile(index_db_path())
+
+
+def list_videos(siteslug, username):
+    # All indexed (non-deleted) videos for one streamer as a list of dicts with
+    # filename, abs_path, size, mtime, duration and thumb_path. Returns None
+    # when the index cannot serve the query (disabled, missing db, query error
+    # or no rows) so the caller falls back to scanning the disk.
+    if not _index_readable():
+        return None
+    try:
+        with closing(connect()) as conn:
+            rows = conn.execute(
+                'SELECT filename, abs_path, size, mtime, duration, thumb_path '
+                'FROM media_files WHERE deleted=0 AND site=? AND username=?',
+                (siteslug, username)).fetchall()
+    except Exception as e:
+        logger.warning(f'Media index query failed for {username} [{siteslug}]: {e}')
+        return None
+    if not rows:
+        return None
+    return [
+        {'filename': row[0], 'abs_path': row[1], 'size': row[2],
+         'mtime': row[3], 'duration': row[4], 'thumb_path': row[5]}
+        for row in rows
+    ]
+
+
+def get_video(siteslug, username, filename):
+    # Single-file lookup for the thumbnail endpoint. Returns the same dict
+    # shape as one list_videos entry, or None (miss -> caller scans the disk).
+    if not _index_readable():
+        return None
+    try:
+        with closing(connect()) as conn:
+            row = conn.execute(
+                'SELECT filename, abs_path, size, mtime, duration, thumb_path '
+                'FROM media_files WHERE deleted=0 AND site=? AND username=? AND filename=?',
+                (siteslug, username, filename)).fetchone()
+    except Exception as e:
+        logger.warning(f'Media index lookup failed for {filename}: {e}')
+        return None
+    if row is None:
+        return None
+    return {'filename': row[0], 'abs_path': row[1], 'size': row[2],
+            'mtime': row[3], 'duration': row[4], 'thumb_path': row[5]}
+
+
+def get_stats_by_streamer():
+    # One aggregate query for the list endpoint: {(site, username): {count,
+    # total_size, last_mtime}} across all indexed streamers, so summarising N
+    # streamers costs one db round-trip instead of N directory scans. Returns
+    # None when the index cannot serve the query (caller falls back to the
+    # per-bot cached enumeration).
+    if not _index_readable():
+        return None
+    try:
+        with closing(connect()) as conn:
+            rows = conn.execute(
+                'SELECT site, username, COUNT(*), COALESCE(SUM(size), 0), MAX(mtime) '
+                'FROM media_files WHERE deleted=0 GROUP BY site, username').fetchall()
+    except Exception as e:
+        logger.warning(f'Media index stats query failed: {e}')
+        return None
+    return {
+        (row[0], row[1]): {'count': row[2], 'total_size': row[3], 'last_mtime': row[4]}
+        for row in rows
+    }
+
+
+def mark_deleted(abs_path):
+    # Called from the web API's delete endpoints so a manual deletion is
+    # reflected immediately instead of waiting for the next scan. Never raises.
+    try:
+        if not _index_readable():
+            return
+        with _db_lock, closing(connect()) as conn:
+            conn.execute('UPDATE media_files SET deleted=1, updated_ts=? WHERE abs_path=?',
+                         (int(time.time()), os.path.abspath(abs_path)))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f'Failed to mark {abs_path} deleted in media index: {e}')
+
+
 class MediaIndexScanner(Thread):
     # Background scanner: full pass at startup, then one incremental pass every
     # MEDIA_INDEX_SCAN_INTERVAL seconds. Any failure only logs and the loop

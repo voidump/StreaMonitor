@@ -17,6 +17,7 @@ import streamonitor.config as config
 from parameters import WEB_LIST_FREQUENCY, FFMPEG_PATH
 from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.enums import Status
+import streamonitor.media_index as media_index
 import streamonitor.online_history as online_history
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.utils import human_file_size
@@ -111,13 +112,22 @@ def _live_tmp_path(streamer):
     return os.path.join(streamer.outputFolder, tmp_name)
 
 
-def _streamer_summary(streamer):
+def _streamer_summary(streamer, index_stats=None):
     tmp_path = _live_tmp_path(streamer)
-    # Most recent recording time for the list card (NB15). Reuse the already
-    # cached video_files enumeration (same as videoCount/totalSize) so the status
-    # poll never adds a fresh directory scan; epoch seconds, or None when empty.
-    video_files = streamer.video_files
-    last_recorded_ts = int(max(v._stat.st_mtime for v in video_files)) if video_files else None
+    # Most recent recording time for the list card (NB15). Prefer the media
+    # index aggregate when the caller provides one (single SQLite query for the
+    # whole list); otherwise reuse the already cached video_files enumeration
+    # (same as videoCount/totalSize) so the status poll never adds a fresh
+    # directory scan; epoch seconds, or None when empty.
+    if index_stats is not None:
+        video_count = index_stats['count']
+        total_size = index_stats['total_size']
+        last_recorded_ts = index_stats['last_mtime']
+    else:
+        video_files = streamer.video_files
+        video_count = len(video_files)
+        total_size = streamer.video_files_total_size
+        last_recorded_ts = int(max(v._stat.st_mtime for v in video_files)) if video_files else None
     return {
         'site': streamer.site,
         'siteslug': streamer.siteslug,
@@ -135,8 +145,8 @@ def _streamer_summary(streamer):
         # sites that never resolve a resolution (frontend degrades gracefully).
         'recordingSpeedBps': getattr(streamer, 'recording_speed_bps', None) if streamer.recording else None,
         'recordingResolution': getattr(streamer, 'recording_resolution', None) if streamer.recording else None,
-        'videoCount': len(streamer.video_files),
-        'totalSize': streamer.video_files_total_size,
+        'videoCount': video_count,
+        'totalSize': total_size,
         'lastCheckTs': getattr(streamer, 'lastCheckTs', None),
         'lastRecordedTs': last_recorded_ts,
     }
@@ -894,7 +904,14 @@ def register_api_v2(app, manager, login_required):
     @app.route('/api/v2/streamers', methods=['GET'])
     @login_required
     def api_v2_streamers():
-        return _json([_streamer_summary(s) for s in manager.streamers])
+        # One aggregate SQLite query covers every streamer; entries missing from
+        # the index (or a missing/disabled index) fall back per-streamer to the
+        # cached video_files enumeration inside _streamer_summary.
+        stats = media_index.get_stats_by_streamer() or {}
+        return _json([
+            _streamer_summary(s, stats.get((s.siteslug, s.username)))
+            for s in manager.streamers
+        ])
 
     @app.route('/api/v2/streamers/<site>/<user>', methods=['GET'])
     @login_required
@@ -902,38 +919,71 @@ def register_api_v2(app, manager, login_required):
         streamer = manager.getStreamer(user, site)
         if streamer is None:
             return _json({'error': 'Streamer not found'}, 404)
-        streamer.cache_file_list()
         recording_name = getattr(streamer, 'recording_filename', None)
+        # Prefer the media index (one SQLite query, durations included) over
+        # re-scanning the directory. On any miss fall back to the existing
+        # disk scan so behavior is unchanged when the index is off or cold.
+        indexed = media_index.list_videos(streamer.siteslug, streamer.username)
+        if indexed is not None:
+            entries = [(row['filename'], row['abs_path'], row['size'],
+                        row['mtime'], row['duration']) for row in indexed]
+            # The scanner skips the file the recorder is writing, so add it
+            # from disk to keep the detail response identical to the scan path.
+            if streamer.recording and recording_name and \
+                    recording_name not in {e[0] for e in entries}:
+                rec_path = os.path.join(streamer.outputFolder, recording_name)
+                try:
+                    rec_stat = os.stat(rec_path)
+                    entries.append((recording_name, os.path.abspath(rec_path),
+                                    rec_stat.st_size, int(rec_stat.st_mtime), None))
+                except OSError:
+                    pass
+        else:
+            streamer.cache_file_list()
+            entries = [(v.filename, v.abs_path, v.filesize,
+                        int(v._stat.st_mtime), None) for v in streamer.video_files]
         videos = []
-        for video in streamer.video_files:
-            is_recording = bool(streamer.recording and video.filename == recording_name)
-            mtime = int(video._stat.st_mtime)
-            # Never block the response on ffprobe: read the warm cache only and
-            # queue uncached files for the background worker (null until probed).
-            # The file the recorder is still writing is skipped entirely.
+        for filename, abs_path, size, mtime, indexed_duration in entries:
+            is_recording = bool(streamer.recording and filename == recording_name)
+            # Never block the response on ffprobe: use the index's duration or
+            # the warm cache only, and queue uncached files for the background
+            # worker (null until probed). The file the recorder is still
+            # writing is skipped entirely.
             if is_recording:
                 duration = None
             else:
-                duration = _get_duration_cache_only(video.abs_path, mtime)
+                duration = indexed_duration
                 if duration is None:
-                    enqueue_duration_probe(video.abs_path, mtime)
+                    duration = _get_duration_cache_only(abs_path, mtime)
+                if duration is None:
+                    enqueue_duration_probe(abs_path, mtime)
                 # Warm the thumbnail in the background (concurrency-capped) so it
                 # is ready before the browser requests it. No-op once cached.
                 enqueue_thumb_prewarm(
-                    video.abs_path, _thumb_cache_path(video.abs_path, mtime), mtime)
+                    abs_path, _thumb_cache_path(abs_path, mtime), mtime)
             videos.append({
-                'filename': video.filename,
-                'size': video.filesize,
+                'filename': filename,
+                'size': size,
                 'mtime': mtime,
                 'duration': duration,
-                'url': f'/video/{streamer.username}/{streamer.siteslug}/{video.filename}',
+                'url': f'/video/{streamer.username}/{streamer.siteslug}/{filename}',
                 'recording': is_recording,
             })
         videos.sort(key=lambda v: v['mtime'], reverse=True)
         # Opportunistically drop durations.json entries for files that no longer
         # exist. Gated by size/growth so it stays off the common request path.
         _maybe_cleanup_durations(manager.streamers)
-        detail = _streamer_summary(streamer)
+        # Keep the summary counters consistent with the videos we just listed
+        # when they came from the index (the fallback path just re-reads the
+        # freshly refreshed video_files cache).
+        index_stats = None
+        if indexed is not None:
+            index_stats = {
+                'count': len(videos),
+                'total_size': sum(v['size'] for v in videos),
+                'last_mtime': max((v['mtime'] for v in videos), default=None),
+            }
+        detail = _streamer_summary(streamer, index_stats)
         detail['videos'] = videos
         return _json(detail)
 
@@ -1049,6 +1099,7 @@ def register_api_v2(app, manager, login_required):
             os.remove(match.abs_path)
         except Exception:
             return _json({'error': 'Failed to delete video'}, 500)
+        media_index.mark_deleted(match.abs_path)
         streamer.cache_file_list()
         return _json({'ok': True})
 
@@ -1073,6 +1124,7 @@ def register_api_v2(app, manager, login_required):
             try:
                 size = video.filesize
                 os.remove(video.abs_path)
+                media_index.mark_deleted(video.abs_path)
                 deleted += 1
                 freed += size
             except Exception:
@@ -1089,15 +1141,24 @@ def register_api_v2(app, manager, login_required):
         # No thumbnail for the file the recorder is still writing.
         if streamer.recording and filename == getattr(streamer, 'recording_filename', None):
             return _json({'error': 'Recording in progress'}, 404)
-        streamer.cache_file_list()
-        match = next((v for v in streamer.video_files if v.filename == filename), None)
-        if match is None:
-            return _json({'error': 'Video not found'}, 404)
-        mtime = int(match._stat.st_mtime)
-        thumb_path = _thumb_cache_path(match.abs_path, mtime)
+        # Single-row index lookup avoids re-scanning the whole folder per thumb
+        # request; a stale row (file gone) or any miss falls back to the scan.
+        abs_path = mtime = None
+        indexed = media_index.get_video(streamer.siteslug, streamer.username, filename)
+        if indexed is not None and os.path.isfile(indexed['abs_path']):
+            abs_path = indexed['abs_path']
+            mtime = int(indexed['mtime'])
+        else:
+            streamer.cache_file_list()
+            match = next((v for v in streamer.video_files if v.filename == filename), None)
+            if match is None:
+                return _json({'error': 'Video not found'}, 404)
+            abs_path = match.abs_path
+            mtime = int(match._stat.st_mtime)
+        thumb_path = _thumb_cache_path(abs_path, mtime)
         # Concurrency-capped generation (shared with background prewarm); the
         # cached path returns immediately without touching the semaphore.
-        if not _generate_thumb_limited(match.abs_path, thumb_path, mtime):
+        if not _generate_thumb_limited(abs_path, thumb_path, mtime):
             # Broken/unparseable file: 404 so the frontend falls back to its
             # generated placeholder image.
             return _json({'error': 'Thumbnail unavailable'}, 404)
