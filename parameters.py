@@ -53,6 +53,13 @@ DEBUG = env.bool("STRMNTR_DEBUG", False)
 # by an interrupted recording). Set to False to keep the original behavior.
 REPAIR_TEMP_ON_START = env.bool("STRMNTR_REPAIR_TEMP_ON_START", True)
 
+# SQLite media index of recorded videos, stored at <download dir>/.thumbs/media_index.db.
+# A background thread runs a full scan on startup and an incremental scan every
+# STRMNTR_MEDIA_INDEX_SCAN_INTERVAL seconds (skipping files being recorded).
+# Set the enabled flag to False to turn the index off entirely.
+MEDIA_INDEX_ENABLED = env.bool("STRMNTR_MEDIA_INDEX_ENABLED", True)
+MEDIA_INDEX_SCAN_INTERVAL = env.int("STRMNTR_MEDIA_INDEX_SCAN_INTERVAL", 300)  # in seconds
+
 # Automatically remove freshly produced video files smaller than this many MB
 # (tiny fragments left by an aborted stream). Applied only to files just created
 # by a finished recording or by the startup temp repair, never to historic files.

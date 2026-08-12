@@ -20,6 +20,7 @@ import streamonitor.online_history as online_history
 import parameters
 from parameters import DEBUG, CONTAINER, HTTP_USER_AGENT
 from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
+from streamonitor.media_index import record_finished_file
 from streamonitor.models import VideoData
 
 LOADED_SITES = set()
@@ -340,6 +341,7 @@ class Bot(Thread):
                             except Exception as e:
                                 self.logger.exception(e)
                             self._probe_finished_recording(finished_name)
+                            record_finished_file(self, finished_name)
                 except Exception as e:
                     self.logger.exception(e)
                     try:
