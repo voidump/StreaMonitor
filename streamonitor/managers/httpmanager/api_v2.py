@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -1412,6 +1413,31 @@ def register_api_v2(app, manager, login_required):
         parameters.set_download_dir(candidate)
         parameters.persist_download_dir(candidate)
         return _json(_download_dir_payload())
+
+    @app.route('/api/v2/settings/min-video-size', methods=['GET'])
+    @login_required
+    def api_v2_get_min_video_size():
+        return _json({'minVideoSizeMb': parameters.get_min_video_size_mb()})
+
+    @app.route('/api/v2/settings/min-video-size', methods=['PUT', 'POST'])
+    @login_required
+    def api_v2_set_min_video_size():
+        data = request.get_json(silent=True) or {}
+        raw = data.get('minVideoSizeMb')
+        if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+            return _json({'error': 'Value must be a number', 'code': 'invalid'}, 400)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return _json({'error': 'Value must be a number', 'code': 'invalid'}, 400)
+        if not math.isfinite(value) or value < 0 or value > 10240:
+            return _json({'error': 'Value must be between 0 and 10240', 'code': 'invalid'}, 400)
+        # Takes effect immediately: video_filter and the media index scanner
+        # read the threshold via the getter. 0 disables both the
+        # post-recording filter and the library scan cleanup.
+        parameters.set_min_video_size_mb(value)
+        parameters.persist_min_video_size_mb(value)
+        return _json({'minVideoSizeMb': parameters.get_min_video_size_mb()})
 
     @app.route('/api/v2/settings/recording-resolution', methods=['GET'])
     @login_required

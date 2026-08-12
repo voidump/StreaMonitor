@@ -8,6 +8,7 @@ from threading import Thread
 
 import parameters
 import streamonitor.log as log
+from streamonitor.video_filter import remove_undersized_videos
 
 
 logger = log.Logger("media_index").get_logger()
@@ -163,6 +164,17 @@ def scan_once(streamers=None):
         return
     skip_paths = _recording_paths(streamers)
     disk = _list_disk_videos(downloads_dir, skip_paths)
+    # Library-level cleanup: delete undersized finished videos before syncing so
+    # they never (re)enter the index; the vanished-file logic below then marks
+    # previously indexed ones deleted. Files being recorded and .tmp. files are
+    # already excluded from `disk`. A threshold of 0 disables this entirely.
+    min_mb = parameters.get_min_video_size_mb()
+    if min_mb and min_mb > 0:
+        small = [entry[3] for entry in disk if entry[4] < int(min_mb * 1024 * 1024)]
+        if small:
+            removed = set(remove_undersized_videos(small, logger))
+            if removed:
+                disk = [entry for entry in disk if entry[3] not in removed]
     now = int(time.time())
     with _db_lock, closing(connect()) as conn:
         existing = {
@@ -210,6 +222,31 @@ def record_finished_file(streamer, filename):
             conn.commit()
     except Exception as e:
         logger.warning(f'Failed to index finished recording {filename}: {e}')
+
+
+def record_repaired_file(abs_path):
+    # Called by the periodic temp repair after producing a final file so it
+    # shows up in the index immediately instead of waiting for the next scan.
+    # The streamer is derived from the parent folder name. Never raises.
+    try:
+        if not parameters.MEDIA_INDEX_ENABLED or not abs_path:
+            return
+        abs_path = os.path.abspath(abs_path)
+        if not os.path.isfile(abs_path):
+            return  # e.g. removed by the undersized-video filter
+        match = _FOLDER_RE.match(os.path.basename(os.path.dirname(abs_path)))
+        if not match:
+            return
+        stat = os.stat(abs_path)
+        mtime = int(stat.st_mtime)
+        duration, thumb_path = _duration_and_thumb(abs_path, mtime)
+        with _db_lock, closing(connect()) as conn:
+            conn.execute(_UPSERT, (match.group('site'), match.group('username'),
+                                   os.path.basename(abs_path), abs_path, stat.st_size,
+                                   mtime, duration, thumb_path, int(time.time())))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f'Failed to index repaired file {abs_path}: {e}')
 
 
 def _index_readable():

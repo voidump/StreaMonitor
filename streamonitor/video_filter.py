@@ -8,12 +8,14 @@ _logger = log.Logger("video_filter").get_logger()
 
 
 def remove_undersized_videos(paths, logger=None):
-    # Delete freshly produced video files smaller than STRMNTR_MIN_VIDEO_SIZE_MB.
-    # `paths` are the exact final files just created by a finished recording or a
-    # temp repair, so historic/in-progress files are never touched. Returns the
-    # list of removed paths. Never raises; a threshold of 0 disables the filter.
+    # Delete video files smaller than the min-video-size threshold. `paths` are
+    # exact final files: either just created by a finished recording / temp
+    # repair, or library files pre-screened by the media index scanner (which
+    # excludes in-progress recordings and .tmp. files). Returns the list of
+    # removed paths. Never raises; a threshold of 0 disables the filter. The
+    # threshold is read via the getter so runtime settings changes apply.
     logger = logger or _logger
-    min_mb = parameters.MIN_VIDEO_SIZE_MB
+    min_mb = parameters.get_min_video_size_mb()
     if not min_mb or min_mb <= 0:
         return []
 

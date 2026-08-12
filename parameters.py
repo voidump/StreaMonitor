@@ -53,6 +53,12 @@ DEBUG = env.bool("STRMNTR_DEBUG", False)
 # by an interrupted recording). Set to False to keep the original behavior.
 REPAIR_TEMP_ON_START = env.bool("STRMNTR_REPAIR_TEMP_ON_START", True)
 
+# Also repair leftover temp files periodically at runtime, every this many
+# seconds (default 30 minutes). Temp files of an in-progress recording
+# (streamer recording state or a recent mtime) are never touched.
+# Set to 0 to disable the periodic scan.
+REPAIR_TEMP_INTERVAL = env.int("STRMNTR_REPAIR_TEMP_INTERVAL", 1800)
+
 # SQLite media index of recorded videos, stored at <download dir>/.thumbs/media_index.db.
 # A background thread runs a full scan on startup and an incremental scan every
 # STRMNTR_MEDIA_INDEX_SCAN_INTERVAL seconds (skipping files being recorded).
@@ -60,11 +66,48 @@ REPAIR_TEMP_ON_START = env.bool("STRMNTR_REPAIR_TEMP_ON_START", True)
 MEDIA_INDEX_ENABLED = env.bool("STRMNTR_MEDIA_INDEX_ENABLED", True)
 MEDIA_INDEX_SCAN_INTERVAL = env.int("STRMNTR_MEDIA_INDEX_SCAN_INTERVAL", 300)  # in seconds
 
-# Automatically remove freshly produced video files smaller than this many MB
-# (tiny fragments left by an aborted stream). Applied only to files just created
-# by a finished recording or by the startup temp repair, never to historic files.
-# Set to 0 to disable the filter entirely.
-MIN_VIDEO_SIZE_MB = env.float("STRMNTR_MIN_VIDEO_SIZE_MB", 5.0)
+# Automatically remove video files smaller than this many MB (tiny fragments
+# left by an aborted stream). Applied to files just created by a finished
+# recording or the startup temp repair, and by the media index scanner to
+# historic files in the library. Files being recorded and .tmp. files are
+# never touched. Set to 0 to disable the filter entirely.
+MIN_VIDEO_SIZE_MB = env.float("STRMNTR_MIN_VIDEO_SIZE_MB", 10.0)
+
+
+def get_min_video_size_mb():
+    # Read at call time so runtime changes made via the settings API take
+    # effect without restarting (same pattern as get_download_dir).
+    return MIN_VIDEO_SIZE_MB
+
+
+def set_min_video_size_mb(value):
+    global MIN_VIDEO_SIZE_MB
+    MIN_VIDEO_SIZE_MB = value
+
+
+def persist_min_video_size_mb(value):
+    # Write STRMNTR_MIN_VIDEO_SIZE_MB into the project .env, preserving other
+    # keys, using the same atomic write-then-rename as persist_download_dir.
+    env_path = '.env'
+    key = 'STRMNTR_MIN_VIDEO_SIZE_MB'
+    new_line = f'{key}={value:g}'
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            lines = f.read().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
+            lines[i] = new_line
+            found = True
+            break
+    if not found:
+        lines.append(new_line)
+    tmp_path = env_path + '.tmp'
+    with open(tmp_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    os.replace(tmp_path, env_path)
 
 # The camsoda bot ignores this setting in favor of a chrome useragent generated with the fake-useragent library
 HTTP_USER_AGENT = env.str("STRMNTR_USER_AGENT", "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0")

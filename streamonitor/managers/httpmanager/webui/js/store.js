@@ -52,6 +52,8 @@ let settings = {hotkeys: loadHotkeys()};
 /* server-side download directory (NB4). draft survives timer-driven re-renders,
  * mirroring addDraft; render() preserves the input's focus + caret by id. */
 let downloadDir = {path:'', draft:'', loading:false, saving:false, error:null, loaded:false};
+/* server-side min-video-size cleanup threshold (MB); mirrors downloadDir */
+let minVid = {value:null, draft:'', loading:false, saving:false, error:null, loaded:false};
 
 /* server-side recording resolution (v3.3). committed resolution/preference mirror
  * the last server-confirmed value; sel/custom/pref are the editable UI drafts,
@@ -111,7 +113,7 @@ function nav(to){
     if (s2 && !s2._schedLoaded) loadSchedule(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
-  if (to.view==='settings'){ loadDownloadDir(); loadRecResolution(); }   // read the current download dir + recording resolution (mock fills demo values)
+  if (to.view==='settings'){ loadDownloadDir(); loadMinVideoSize(); loadRecResolution(); }   // read the current download dir + cleanup threshold + recording resolution (mock fills demo values)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
 }
@@ -502,6 +504,50 @@ async function saveDownloadDir(){
     toast(t('dlDirSavedToast')); render();
   } catch(e){
     downloadDir.saving = false; downloadDir.error = t('dlDirErrGeneric'); render();
+  }
+}
+
+/* ---- min-video-size cleanup threshold (server-side): read + validate-and-save ---- */
+async function loadMinVideoSize(){
+  if (apiState.mode!=='api'){   // mock: show a representative value, no backend call
+    if (!minVid.loaded){ minVid.value = MOCK_MIN_VIDEO_SIZE_MB; minVid.draft = String(MOCK_MIN_VIDEO_SIZE_MB); minVid.loaded = true; }
+    return;
+  }
+  minVid.loading = true; minVid.error = null; render();
+  try {
+    const d = await apiGet('/settings/min-video-size');
+    minVid.value = (d && d.minVideoSizeMb!=null) ? d.minVideoSizeMb : 0;
+    minVid.draft = String(minVid.value);
+    minVid.loaded = true; minVid.loading = false; minVid.error = null;
+    render();
+  } catch(e){
+    minVid.loading = false; minVid.error = t('minVidLoadErr'); render();
+  }
+}
+async function saveMinVideoSize(){
+  const raw = (minVid.draft||'').trim();
+  const n = Number(raw);
+  if (raw==='' || !isFinite(n) || n<0 || n>10240){ minVid.error = t('minVidErrInvalid'); render(); return; }
+  if (apiState.mode!=='api'){   // mock: accept locally, show success toast
+    minVid.value = n; minVid.draft = String(n); minVid.error = null;
+    toast(t('minVidSavedToast')); render(); return;
+  }
+  minVid.saving = true; minVid.error = null; render();
+  try {
+    const r = await fetch(apiUrl('/settings/min-video-size'), {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Accept':'application/json','Content-Type':'application/json'},
+      body: JSON.stringify({minVideoSizeMb: n}),
+    });
+    const txt = await r.text();
+    const data = txt ? JSON.parse(txt) : {};
+    if (!r.ok){ minVid.saving = false; minVid.error = (data && data.code==='invalid') ? t('minVidErrInvalid') : ((data && data.error) || t('minVidErrGeneric')); render(); return; }
+    minVid.value = (data && data.minVideoSizeMb!=null) ? data.minVideoSizeMb : n;
+    minVid.draft = String(minVid.value);
+    minVid.saving = false; minVid.error = null;
+    toast(t('minVidSavedToast')); render();
+  } catch(e){
+    minVid.saving = false; minVid.error = t('minVidErrGeneric'); render();
   }
 }
 

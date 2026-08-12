@@ -46,6 +46,24 @@ function renderDownloadDirPanel(){
       </div>`;
 }
 
+function renderMinVideoSizePanel(){
+  const m = minVid;
+  return `
+      <div class="panel settings-panel dldir-panel">
+        <div class="set-row dldir-row">
+          <div class="grow">
+            <div class="k">${t('minVid')}</div>
+            <div class="desc">${t('minVidDesc')}</div>
+            <div class="dldir-edit">
+              <input type="number" id="minVidInput" class="dldir-input" value="${esc(m.draft)}" placeholder="${t('minVidPh')}" min="0" max="10240" step="any" ${m.loading?'disabled':''}>
+              <button class="btn primary" data-minvid-save ${(m.saving||m.loading)?'disabled':''}>${m.saving?t('dlDirSaving'):t('dlDirSave')}</button>
+            </div>
+            ${m.error?`<div class="dldir-err">${m.error}</div>`:''}
+          </div>
+        </div>
+      </div>`;
+}
+
 function renderRecResolutionPanel(){
   const r = recRes;
   const busy = r.loading || r.saving;
@@ -123,6 +141,7 @@ function renderSettings(){
       </div>
       ${renderDeletedStreamersPanel()}
       ${renderDownloadDirPanel()}
+      ${renderMinVideoSizePanel()}
       ${renderRecResolutionPanel()}
       ${renderHotkeyPanel()}
     </div>
@@ -138,6 +157,14 @@ document.addEventListener('click', e=>{
     const inp = document.getElementById('dlDirInput');
     if (inp) downloadDir.draft = inp.value;
     saveDownloadDir();
+    return;
+  }
+  const mvSave = e.target.closest('[data-minvid-save]');
+  if (mvSave){
+    e.stopPropagation();
+    const inp = document.getElementById('minVidInput');
+    if (inp) minVid.draft = inp.value;
+    saveMinVideoSize();
     return;
   }
   const bind = e.target.closest('[data-hkbind]');
@@ -167,6 +194,10 @@ document.addEventListener('input', e=>{
     downloadDir.draft = e.target.value;
     if (downloadDir.error){ downloadDir.error = null; render(); }
   }
+  if (e.target && e.target.id==='minVidInput'){   // keep the threshold draft in sync across poll re-renders
+    minVid.draft = e.target.value;
+    if (minVid.error){ minVid.error = null; render(); }
+  }
   if (e.target && e.target.id==='recResCustom'){   // keep the custom-height draft in sync across poll re-renders
     recRes.custom = e.target.value;
     if (recRes.error){ recRes.error = null; render(); }
@@ -194,6 +225,11 @@ document.addEventListener('keydown', e=>{
     e.preventDefault();
     downloadDir.draft = e.target.value;
     saveDownloadDir();
+  }
+  if (e.target && e.target.id==='minVidInput' && e.key==='Enter'){
+    e.preventDefault();
+    minVid.draft = e.target.value;
+    saveMinVideoSize();
   }
   if (e.target && e.target.id==='recResCustom' && e.key==='Enter'){
     e.preventDefault();
