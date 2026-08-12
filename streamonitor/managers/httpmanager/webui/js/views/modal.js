@@ -22,6 +22,29 @@ function renderModal(){
     if (bk) bk.classList.add('no-anim');
   }
 }
+/* Switching the remove-dialog radio must not rebuild the backdrop: even with
+ * no-anim, destroying and recreating the blurred backdrop recomposites the
+ * whole viewport and reads as a full-page flash. Update only the affected
+ * nodes (option selection + confirm button) in place. */
+function updateRemoveModal(){
+  if (!modalState || modalState.type!=='remove') return;
+  const bk = document.getElementById('modalBk');
+  if (!bk){ renderModal(); return; }
+  const delFiles = !!modalState.delFiles;
+  bk.querySelectorAll('.opt[data-rmopt]').forEach(opt=>{
+    const on = (opt.dataset.rmopt==='del') === delFiles;
+    opt.classList.toggle('sel', on);
+    opt.classList.toggle('danger', on && delFiles);
+    const r = opt.querySelector('input[type="radio"]');
+    if (r) r.checked = on;
+  });
+  const btn = document.getElementById('modalConfirm');
+  if (btn){
+    btn.classList.toggle('danger-solid', delFiles);
+    btn.classList.toggle('primary', !delFiles);
+    btn.textContent = delFiles ? t('purgeBtn') : t('unmonBtn');
+  }
+}
 function renderModalInner(){
   const root = document.getElementById('modalRoot');
   if (!modalState){ root.innerHTML=''; return; }

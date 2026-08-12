@@ -424,7 +424,7 @@ document.addEventListener('click', e=>{
   // modal interactions
   if (e.target.closest('#modalCancel') || e.target.id==='modalBk'){ modalState=null; renderModal(); return; }
   const rmopt = e.target.closest('[data-rmopt]');
-  if (rmopt){ modalState.delFiles = rmopt.dataset.rmopt==='del'; renderModal(); return; }
+  if (rmopt){ modalState.delFiles = rmopt.dataset.rmopt==='del'; updateRemoveModal(); return; }
   if (e.target.closest('#modalConfirm')){
     if (modalState.type==='batchUnmon'){ modalState=null; renderModal(); batchUnmonitor(); return; }
     if (modalState.type==='batchPurge'){ modalState=null; renderModal(); batchPurge(); return; }
