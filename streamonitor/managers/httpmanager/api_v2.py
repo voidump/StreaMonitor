@@ -900,6 +900,25 @@ _AVATAR_CACHE_CONTROL = 'private, max-age=3600'
 _FAVICON_CACHE_CONTROL = 'private, max-age=86400'
 
 
+def _recording_disk_entry(streamer):
+    # (filename, abs_path, size, mtime) of the file the recorder is writing,
+    # stat'ed from disk, or None. The scanner deliberately never indexes this
+    # file, so index-served responses must merge it back in to match the
+    # disk-scan path (which does include it).
+    if not getattr(streamer, 'recording', False):
+        return None
+    recording_name = getattr(streamer, 'recording_filename', None)
+    if not recording_name:
+        return None
+    rec_path = os.path.join(streamer.outputFolder, recording_name)
+    try:
+        rec_stat = os.stat(rec_path)
+    except OSError:
+        return None
+    return (recording_name, os.path.abspath(rec_path),
+            rec_stat.st_size, int(rec_stat.st_mtime))
+
+
 def register_api_v2(app, manager, login_required):
     @app.route('/api/v2/streamers', methods=['GET'])
     @login_required
@@ -908,10 +927,24 @@ def register_api_v2(app, manager, login_required):
         # the index (or a missing/disabled index) fall back per-streamer to the
         # cached video_files enumeration inside _streamer_summary.
         stats = media_index.get_stats_by_streamer() or {}
-        return _json([
-            _streamer_summary(s, stats.get((s.siteslug, s.username)))
-            for s in manager.streamers
-        ])
+        payload = []
+        for s in manager.streamers:
+            s_stats = stats.get((s.siteslug, s.username))
+            if s_stats is not None:
+                # The index never contains the file being recorded; merge it
+                # from disk so videoCount/totalSize/lastRecordedTs match the
+                # cache-based path (which does include it). Streamers with no
+                # indexed rows keep the cached-enumeration fallback.
+                rec = _recording_disk_entry(s)
+                if rec is not None:
+                    _name, _path, rec_size, rec_mtime = rec
+                    s_stats = {
+                        'count': s_stats['count'] + 1,
+                        'total_size': s_stats['total_size'] + rec_size,
+                        'last_mtime': max(s_stats['last_mtime'] or 0, rec_mtime),
+                    }
+            payload.append(_streamer_summary(s, s_stats))
+        return _json(payload)
 
     @app.route('/api/v2/streamers/<site>/<user>', methods=['GET'])
     @login_required
@@ -925,19 +958,22 @@ def register_api_v2(app, manager, login_required):
         # disk scan so behavior is unchanged when the index is off or cold.
         indexed = media_index.list_videos(streamer.siteslug, streamer.username)
         if indexed is not None:
-            entries = [(row['filename'], row['abs_path'], row['size'],
-                        row['mtime'], row['duration']) for row in indexed]
+            # Externally deleted files (video_filter, temp repair, purge, manual
+            # rm) are not reflected until the next scan; drop stale rows here
+            # and sync the index so playback never 404s on a listed video.
+            entries = []
+            for row in indexed:
+                if os.path.isfile(row['abs_path']):
+                    entries.append((row['filename'], row['abs_path'], row['size'],
+                                    row['mtime'], row['duration']))
+                else:
+                    media_index.mark_deleted(row['abs_path'])
             # The scanner skips the file the recorder is writing, so add it
             # from disk to keep the detail response identical to the scan path.
-            if streamer.recording and recording_name and \
-                    recording_name not in {e[0] for e in entries}:
-                rec_path = os.path.join(streamer.outputFolder, recording_name)
-                try:
-                    rec_stat = os.stat(rec_path)
-                    entries.append((recording_name, os.path.abspath(rec_path),
-                                    rec_stat.st_size, int(rec_stat.st_mtime), None))
-                except OSError:
-                    pass
+            if recording_name not in {e[0] for e in entries}:
+                rec = _recording_disk_entry(streamer)
+                if rec is not None:
+                    entries.append(rec + (None,))
         else:
             streamer.cache_file_list()
             entries = [(v.filename, v.abs_path, v.filesize,

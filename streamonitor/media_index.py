@@ -133,7 +133,10 @@ def _list_disk_videos(downloads_dir, skip_paths):
             # which would otherwise pass the extension whitelist).
             if name.startswith('.') or '.tmp.' in name:
                 continue
-            if os.path.splitext(name)[1][1:].lower() not in VIDEO_EXTENSIONS:
+            # Case-sensitive on purpose: Bot.cache_file_list does not lower the
+            # extension, and the two views must agree or a file listed via the
+            # index could never be deleted via the cache-based endpoint.
+            if os.path.splitext(name)[1][1:] not in VIDEO_EXTENSIONS:
                 continue
             try:
                 if file.is_dir():
@@ -151,6 +154,10 @@ def _list_disk_videos(downloads_dir, skip_paths):
 def scan_once(streamers=None):
     # One incremental sync pass: upsert new/changed files, mark vanished files
     # deleted. Unchanged rows that already have a duration are left untouched.
+    # Re-check the enabled flag here (not just at startup) so a runtime settings
+    # change stops the periodic scans too.
+    if not parameters.MEDIA_INDEX_ENABLED:
+        return
     downloads_dir = parameters.get_download_dir()
     if not os.path.isdir(downloads_dir):
         return
