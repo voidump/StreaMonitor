@@ -1,7 +1,7 @@
 import os
 import sys
 import streamonitor.config as config
-from parameters import ZMQ_ENABLED, MEDIA_INDEX_ENABLED, REPAIR_TEMP_INTERVAL
+from parameters import ZMQ_ENABLED, REPAIR_TEMP_INTERVAL
 from streamonitor.managers.bulk_status_manager import BulkStatusManager
 from streamonitor.managers.httpmanager import HTTPManager
 from streamonitor.managers.climanager import CLIManager
@@ -40,9 +40,12 @@ def main():
     oos_detector = OOSDetector(streamers)
     oos_detector.start()
 
-    if MEDIA_INDEX_ENABLED:
-        media_index_scanner = MediaIndexScanner(streamers)
-        media_index_scanner.start()
+    # Started unconditionally: the scanner also performs the undersized-video
+    # cleanup, which must keep working when the media index is disabled.
+    # scan_once itself gates index writes on MEDIA_INDEX_ENABLED and becomes a
+    # no-op when both the index and the cleanup threshold are off.
+    media_index_scanner = MediaIndexScanner(streamers)
+    media_index_scanner.start()
 
     if REPAIR_TEMP_INTERVAL > 0:
         temp_repair_scanner = TempRepairScanner(streamers)

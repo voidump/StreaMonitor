@@ -1,4 +1,6 @@
 import os
+import time
+import types
 
 import pytest
 
@@ -108,3 +110,69 @@ def test_reads_return_none_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr(media_index.parameters, "MEDIA_INDEX_ENABLED", False)
     assert media_index.list_videos("FS", "alice") is None
     assert media_index.get_stats_by_streamer() is None
+
+
+def _recording_streamer(tmp_path, username="alice", site="FS",
+                        recording_filename="alice-20260706-120000.mp4"):
+    folder = str(tmp_path / f"downloads/{username} [{site}]")
+    return types.SimpleNamespace(recording=True, username=username,
+                                 recording_filename=recording_filename,
+                                 outputFolder=folder)
+
+
+@pytest.mark.parametrize("filename", [
+    # ffmpeg -f segment -strftime: on-disk name differs from recording_filename
+    "alice-20260812-234947.mp4",
+    # VR sites append filename_extra_suffix to the base name
+    "alice-20260706-120000_LR_F180.mp4",
+    # hls/fmp4s post-processing writes _%03d segments
+    "alice-20260706-120000_001.mp4",
+])
+def test_cleanup_keeps_recording_streamer_files(tmp_path, monkeypatch, filename):
+    # Regression for P1: files actively written by a recorder whose name does
+    # not equal recording_filename must survive cleanup. mtime is old on
+    # purpose so the username-prefix exclusion (not the grace window) is what
+    # protects them.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "MIN_VIDEO_SIZE_MB", 10)
+    path = _make_video(tmp_path, filename=filename)
+    media_index.scan_once([_recording_streamer(tmp_path)])
+    assert os.path.exists(path)
+
+
+def test_cleanup_mtime_grace_protects_unmatched_files(tmp_path, monkeypatch):
+    # Regression for P1 fallback: a small file with a fresh mtime is never
+    # cleaned up even when no recording streamer matches it (external writes,
+    # recording just ended, etc.).
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "MIN_VIDEO_SIZE_MB", 10)
+    now = time.time()
+    fresh = _make_video(tmp_path, filename="fresh.mp4", mtime=int(now))
+    old = _make_video(tmp_path, filename="old.mp4")
+    media_index.scan_once()
+    assert os.path.exists(fresh)
+    assert not os.path.exists(old)
+
+
+def test_cleanup_deletes_other_streamers_old_small_files(tmp_path, monkeypatch):
+    # The recording exclusion is scoped to the recording streamer's folder and
+    # username prefix; other streamers' old small files are still cleaned up.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "MIN_VIDEO_SIZE_MB", 10)
+    other = _make_video(tmp_path, username="bob", filename="bob-20260101-000000.mp4")
+    media_index.scan_once([_recording_streamer(tmp_path)])
+    assert not os.path.exists(other)
+
+
+def test_cleanup_runs_when_index_disabled(tmp_path, monkeypatch):
+    # Regression for P2: the undersized cleanup must not depend on
+    # MEDIA_INDEX_ENABLED, but index writes stay off (no db created).
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "MEDIA_INDEX_ENABLED", False)
+    monkeypatch.setattr(media_index.parameters, "MIN_VIDEO_SIZE_MB", 10)
+    small = _make_video(tmp_path, filename="small.mp4")
+    big = _make_video(tmp_path, filename="big.mp4", data=b"0" * (11 * 1024 * 1024))
+    media_index.scan_once()
+    assert not os.path.exists(small)
+    assert os.path.exists(big)
+    assert not os.path.exists(media_index.index_db_path())

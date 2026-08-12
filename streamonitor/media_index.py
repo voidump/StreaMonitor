@@ -20,6 +20,13 @@ VIDEO_EXTENSIONS = ('mp4', 'mkv', 'webm', 'mov', 'avi', 'wmv')
 # Streamer folders are named "<username> [<siteslug>]" (see Bot.outputFolder).
 _FOLDER_RE = re.compile(r'^(?P<username>.+) \[(?P<site>[^\[\]]+)\]$')
 
+# Never clean up files modified within this many seconds. Actively written
+# files (ffmpeg strftime segments, hls _%03d parts, VR remux outputs, external
+# writes) keep a fresh mtime while data is flowing, so this guard protects any
+# write path even when the file is not matched to a recording streamer. 300s
+# matches TempRepairScanner's active-file protection window.
+CLEANUP_MTIME_GRACE_SECONDS = 300
+
 # Serializes all writers (scanner thread + per-bot finished-recording calls);
 # connections are short-lived so the db file can be deleted at any time and the
 # next scan simply recreates it.
@@ -152,29 +159,65 @@ def _list_disk_videos(downloads_dir, skip_paths):
     return videos
 
 
+def _cleanup_undersized(disk, streamers):
+    # Library-level cleanup: delete undersized finished videos and drop them
+    # from the disk list so they never (re)enter the index and the vanished-file
+    # logic marks previously indexed ones deleted. A threshold of 0 disables
+    # this entirely. Protections (any one is enough to keep a file):
+    #   - .tmp. files and exact recording paths never reach `disk`
+    #   - mtime within CLEANUP_MTIME_GRACE_SECONDS (actively written files)
+    #   - any username-prefixed file in a recording streamer's outputFolder,
+    #     because the real on-disk names differ from recording_filename under
+    #     ffmpeg strftime segments, VR filename_extra_suffix and hls _%03d
+    #     segmenting - all of them start with the username prefix
+    min_mb = parameters.get_min_video_size_mb()
+    if not min_mb or min_mb <= 0:
+        return disk
+    min_bytes = int(min_mb * 1024 * 1024)
+    now = time.time()
+    active = []  # (abs outputFolder, username) of streamers recording right now
+    for streamer in streamers or []:
+        try:
+            if getattr(streamer, 'recording', False):
+                active.append((os.path.abspath(streamer.outputFolder), streamer.username))
+        except Exception:
+            continue
+    small = []
+    for site, username, name, abs_path, size, mtime in disk:
+        if size >= min_bytes:
+            continue
+        if now - mtime < CLEANUP_MTIME_GRACE_SECONDS:
+            continue
+        folder = os.path.dirname(abs_path)
+        if any(folder == rec_folder and name.startswith(rec_user)
+               for rec_folder, rec_user in active):
+            continue
+        small.append(abs_path)
+    if small:
+        removed = set(remove_undersized_videos(small, logger))
+        if removed:
+            disk = [entry for entry in disk if entry[3] not in removed]
+    return disk
+
+
 def scan_once(streamers=None):
-    # One incremental sync pass: upsert new/changed files, mark vanished files
-    # deleted. Unchanged rows that already have a duration are left untouched.
-    # Re-check the enabled flag here (not just at startup) so a runtime settings
-    # change stops the periodic scans too.
-    if not parameters.MEDIA_INDEX_ENABLED:
+    # One incremental sync pass: undersized-video cleanup first, then (index
+    # enabled only) upsert new/changed files and mark vanished files deleted.
+    # Cleanup deliberately does not depend on MEDIA_INDEX_ENABLED so the
+    # threshold setting keeps working when the index is disabled; flags are
+    # re-checked here (not just at startup) so runtime changes take effect.
+    min_mb = parameters.get_min_video_size_mb()
+    cleanup_enabled = bool(min_mb and min_mb > 0)
+    if not parameters.MEDIA_INDEX_ENABLED and not cleanup_enabled:
         return
     downloads_dir = parameters.get_download_dir()
     if not os.path.isdir(downloads_dir):
         return
     skip_paths = _recording_paths(streamers)
     disk = _list_disk_videos(downloads_dir, skip_paths)
-    # Library-level cleanup: delete undersized finished videos before syncing so
-    # they never (re)enter the index; the vanished-file logic below then marks
-    # previously indexed ones deleted. Files being recorded and .tmp. files are
-    # already excluded from `disk`. A threshold of 0 disables this entirely.
-    min_mb = parameters.get_min_video_size_mb()
-    if min_mb and min_mb > 0:
-        small = [entry[3] for entry in disk if entry[4] < int(min_mb * 1024 * 1024)]
-        if small:
-            removed = set(remove_undersized_videos(small, logger))
-            if removed:
-                disk = [entry for entry in disk if entry[3] not in removed]
+    disk = _cleanup_undersized(disk, streamers)
+    if not parameters.MEDIA_INDEX_ENABLED:
+        return
     now = int(time.time())
     with _db_lock, closing(connect()) as conn:
         existing = {
