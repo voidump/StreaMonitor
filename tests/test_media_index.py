@@ -1,6 +1,15 @@
 import os
 
+import pytest
+
 import streamonitor.media_index as media_index
+
+
+@pytest.fixture(autouse=True)
+def _no_min_video_size(monkeypatch):
+    # scan_once deletes finished videos under MIN_VIDEO_SIZE_MB (default 10MB);
+    # disable it so the tiny fixture files survive the scan.
+    monkeypatch.setattr(media_index.parameters, "MIN_VIDEO_SIZE_MB", 0)
 
 
 def _make_video(tmp_path, username="alice", site="FS",

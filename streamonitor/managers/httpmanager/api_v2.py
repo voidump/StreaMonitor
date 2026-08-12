@@ -901,6 +901,38 @@ _AVATAR_CACHE_CONTROL = 'private, max-age=3600'
 _FAVICON_CACHE_CONTROL = 'private, max-age=86400'
 
 
+# The list endpoint serves aggregates straight from the index, so externally
+# deleted files (video_filter, temp repair, manual rm) would keep inflating
+# videoCount/totalSize until the next scan or a detail request. Re-validate the
+# indexed rows against the disk at most once per interval: the list endpoint is
+# polled frequently, and an unthrottled per-file stat on every poll would undo
+# the point of the aggregate query.
+_LIST_VALIDATE_INTERVAL = 30  # seconds
+_list_validate_lock = threading.Lock()
+_list_validated_ts = 0.0
+
+
+def _validate_indexed_files(streamers):
+    # Drop index rows whose file no longer exists (same isfile + mark_deleted
+    # sync as the detail endpoint). Returns True when anything was marked
+    # deleted so the caller can re-fetch the aggregate. Throttled; no-op inside
+    # the interval.
+    global _list_validated_ts
+    with _list_validate_lock:
+        now = time()
+        if now - _list_validated_ts < _LIST_VALIDATE_INTERVAL:
+            return False
+        _list_validated_ts = now
+    changed = False
+    for s in streamers:
+        rows = media_index.list_videos(s.siteslug, s.username)
+        for row in rows or ():
+            if not os.path.isfile(row['abs_path']):
+                media_index.mark_deleted(row['abs_path'])
+                changed = True
+    return changed
+
+
 def _recording_disk_entry(streamer):
     # (filename, abs_path, size, mtime) of the file the recorder is writing,
     # stat'ed from disk, or None. The scanner deliberately never indexes this
@@ -928,22 +960,28 @@ def register_api_v2(app, manager, login_required):
         # the index (or a missing/disabled index) fall back per-streamer to the
         # cached video_files enumeration inside _streamer_summary.
         stats = media_index.get_stats_by_streamer() or {}
+        if stats and _validate_indexed_files(manager.streamers):
+            stats = media_index.get_stats_by_streamer() or {}
         payload = []
         for s in manager.streamers:
             s_stats = stats.get((s.siteslug, s.username))
             if s_stats is not None:
-                # The index never contains the file being recorded; merge it
+                # The index normally lacks the file being recorded; merge it
                 # from disk so videoCount/totalSize/lastRecordedTs match the
-                # cache-based path (which does include it). Streamers with no
-                # indexed rows keep the cached-enumeration fallback.
+                # cache-based path (which does include it). Skip the merge if
+                # the scanner raced the recording start and already indexed it
+                # (same dedup as the detail endpoint), or it would be counted
+                # twice. Streamers with no indexed rows keep the
+                # cached-enumeration fallback.
                 rec = _recording_disk_entry(s)
                 if rec is not None:
-                    _name, _path, rec_size, rec_mtime = rec
-                    s_stats = {
-                        'count': s_stats['count'] + 1,
-                        'total_size': s_stats['total_size'] + rec_size,
-                        'last_mtime': max(s_stats['last_mtime'] or 0, rec_mtime),
-                    }
+                    rec_name, _path, rec_size, rec_mtime = rec
+                    if media_index.get_video(s.siteslug, s.username, rec_name) is None:
+                        s_stats = {
+                            'count': s_stats['count'] + 1,
+                            'total_size': s_stats['total_size'] + rec_size,
+                            'last_mtime': max(s_stats['last_mtime'] or 0, rec_mtime),
+                        }
             payload.append(_streamer_summary(s, s_stats))
         return _json(payload)
 
