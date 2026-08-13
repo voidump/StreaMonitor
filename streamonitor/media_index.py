@@ -115,47 +115,59 @@ def _recording_paths(streamers):
 
 def _list_disk_videos(downloads_dir, skip_paths):
     videos = []
-    try:
-        folders = list(os.scandir(downloads_dir))
-    except OSError as e:
-        logger.warning(f'Cannot list download dir: {e}')
-        return videos
-    for folder in folders:
+    roots = [downloads_dir]
+    # Relocated non-adult videos keep the "<username> [<siteslug>]" folder
+    # layout under the non-adult directory; scan it too (when present) so
+    # moved files stay indexed instead of being marked deleted. Scanned
+    # regardless of the relocation toggle so turning it off later never
+    # hides files that were already moved. The folder name "_nonadult" does
+    # not match _FOLDER_RE, so a nested default location is never scanned
+    # twice via the downloads pass.
+    nonadult_root = os.path.abspath(parameters.get_nonadult_dir())
+    if nonadult_root != os.path.abspath(downloads_dir) and os.path.isdir(nonadult_root):
+        roots.append(nonadult_root)
+    for root in roots:
         try:
-            if not folder.is_dir():
-                continue
-        except OSError:
+            folders = list(os.scandir(root))
+        except OSError as e:
+            logger.warning(f'Cannot list {root}: {e}')
             continue
-        match = _FOLDER_RE.match(folder.name)
-        if not match:
-            continue
-        site = match.group('site')
-        username = match.group('username')
-        try:
-            entries = list(os.scandir(folder.path))
-        except OSError:
-            continue
-        for file in entries:
-            name = file.name
-            # ".tmp." skips in-progress temp outputs (e.g. fmp4s' .tmp.mp4,
-            # which would otherwise pass the extension whitelist).
-            if name.startswith('.') or '.tmp.' in name:
-                continue
-            # Case-sensitive on purpose: Bot.cache_file_list does not lower the
-            # extension, and the two views must agree or a file listed via the
-            # index could never be deleted via the cache-based endpoint.
-            if os.path.splitext(name)[1][1:] not in VIDEO_EXTENSIONS:
-                continue
+        for folder in folders:
             try:
-                if file.is_dir():
+                if not folder.is_dir():
                     continue
-                stat = file.stat()
             except OSError:
                 continue
-            abs_path = os.path.abspath(file.path)
-            if abs_path in skip_paths:
+            match = _FOLDER_RE.match(folder.name)
+            if not match:
                 continue
-            videos.append((site, username, name, abs_path, stat.st_size, int(stat.st_mtime)))
+            site = match.group('site')
+            username = match.group('username')
+            try:
+                entries = list(os.scandir(folder.path))
+            except OSError:
+                continue
+            for file in entries:
+                name = file.name
+                # ".tmp." skips in-progress temp outputs (e.g. fmp4s' .tmp.mp4,
+                # which would otherwise pass the extension whitelist).
+                if name.startswith('.') or '.tmp.' in name:
+                    continue
+                # Case-sensitive on purpose: Bot.cache_file_list does not lower the
+                # extension, and the two views must agree or a file listed via the
+                # index could never be deleted via the cache-based endpoint.
+                if os.path.splitext(name)[1][1:] not in VIDEO_EXTENSIONS:
+                    continue
+                try:
+                    if file.is_dir():
+                        continue
+                    stat = file.stat()
+                except OSError:
+                    continue
+                abs_path = os.path.abspath(file.path)
+                if abs_path in skip_paths:
+                    continue
+                videos.append((site, username, name, abs_path, stat.st_size, int(stat.st_mtime)))
     return videos
 
 
@@ -244,6 +256,103 @@ def scan_once(streamers=None):
         conn.commit()
     if upserts or gone:
         logger.info(f'Media index scan: {len(upserts)} upserted, {len(gone)} marked deleted')
+    relocate_non_adult(streamers)
+
+
+def _rekey_video_caches(old_abs, new_abs, mtime):
+    # Migrate api_v2's duration and thumbnail cache entries (keyed by
+    # abs_path+mtime) to the new path so a moved file keeps its cached
+    # duration and thumbnail instead of re-probing. Best effort; never raises.
+    try:
+        from streamonitor.managers.httpmanager import api_v2
+        return api_v2.rekey_video_caches(old_abs, new_abs, mtime)
+    except Exception:
+        return None
+
+
+def relocate_non_adult(streamers=None):
+    # Move finished videos classified 'non-adult' (label written by the NSFW
+    # pipeline; 'adult'/'unknown'/empty are never touched) into the non-adult
+    # directory, preserving the "<username> [<siteslug>]" folder layout so the
+    # index, the /video route fallback and Bot.cache_file_list all keep
+    # serving them. Same safety standard as the undersized cleanup: exact
+    # recording paths, any username-prefixed file in a recording streamer's
+    # folder, and files modified within CLEANUP_MTIME_GRACE_SECONDS are never
+    # moved. os.rename only (atomic, same filesystem); a cross-device target
+    # logs and leaves the file in place. Returns the number of files moved.
+    if not parameters.NONADULT_RELOCATE_ENABLED or not _index_readable():
+        return 0
+    root = os.path.abspath(parameters.get_nonadult_dir())
+    if root == os.path.abspath(parameters.get_download_dir()):
+        return 0
+    try:
+        with closing(connect()) as conn:
+            rows = conn.execute(
+                "SELECT abs_path, filename, mtime FROM media_files "
+                "WHERE deleted=0 AND classification='non-adult'").fetchall()
+    except Exception as e:
+        logger.warning(f'Non-adult relocation query failed: {e}')
+        return 0
+    candidates = [row for row in rows
+                  if not os.path.abspath(row[0]).startswith(root + os.sep)]
+    if not candidates:
+        return 0
+    now = time.time()
+    recording_paths = _recording_paths(streamers)
+    active = []  # (abs outputFolder, username) of streamers recording right now
+    for streamer in streamers or []:
+        try:
+            if getattr(streamer, 'recording', False):
+                active.append((os.path.abspath(streamer.outputFolder), streamer.username))
+        except Exception:
+            continue
+    moved = 0
+    for abs_path, filename, _db_mtime in candidates:
+        abs_path = os.path.abspath(abs_path)
+        if abs_path in recording_paths:
+            continue
+        try:
+            stat = os.stat(abs_path)
+        except OSError:
+            continue  # vanished; the next scan marks it deleted
+        if now - stat.st_mtime < CLEANUP_MTIME_GRACE_SECONDS:
+            continue
+        src_folder = os.path.dirname(abs_path)
+        if any(src_folder == rec_folder and filename.startswith(rec_user)
+               for rec_folder, rec_user in active):
+            continue
+        folder_name = os.path.basename(src_folder)
+        if not _FOLDER_RE.match(folder_name):
+            continue
+        dest_dir = os.path.join(root, folder_name)
+        dest = os.path.join(dest_dir, filename)
+        if os.path.exists(dest):
+            logger.warning(f'Non-adult relocation skipped, target exists: {dest}')
+            continue
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            os.rename(abs_path, dest)
+        except OSError as e:
+            logger.warning(f'Non-adult relocation failed for {abs_path}: {e}')
+            continue
+        mtime = int(stat.st_mtime)
+        new_thumb = _rekey_video_caches(abs_path, dest, mtime)
+        try:
+            with _db_lock, closing(connect()) as conn:
+                conn.execute(
+                    'UPDATE media_files SET abs_path=?, thumb_path=?, updated_ts=? '
+                    'WHERE abs_path=?',
+                    (dest, new_thumb, int(time.time()), abs_path))
+                conn.commit()
+        except Exception as e:
+            # The rename already happened; the next scan self-heals by marking
+            # the old row deleted and upserting the new path (classification
+            # is lost in that case, which is safe: worst case is a re-label).
+            logger.warning(f'Non-adult index update failed for {dest}: {e}')
+        moved += 1
+    if moved:
+        logger.info(f'Non-adult relocation: moved {moved} video(s) to {root}')
+    return moved
 
 
 def record_finished_file(streamer, filename):
@@ -378,6 +487,42 @@ def mark_deleted(abs_path):
             conn.commit()
     except Exception as e:
         logger.warning(f'Failed to mark {abs_path} deleted in media index: {e}')
+
+
+CLASSIFICATION_LABELS = ('adult', 'non-adult', 'unknown')
+
+
+def set_classification(abs_path, classification):
+    # Sole writer of the classification column (NSFW analysis pipeline). Uses
+    # an upsert so labeling works even when the row has not been inserted yet
+    # by the scanner or the finished-recording hook; a later re-scan never
+    # clobbers the label (classification is absent from _UPSERT's update
+    # clause). Never raises.
+    try:
+        if classification not in CLASSIFICATION_LABELS:
+            return
+        if not parameters.MEDIA_INDEX_ENABLED:
+            return
+        abs_path = os.path.abspath(abs_path)
+        if not os.path.isfile(abs_path):
+            return  # e.g. removed by the undersized-video filter meanwhile
+        match = _FOLDER_RE.match(os.path.basename(os.path.dirname(abs_path)))
+        if not match:
+            return
+        stat = os.stat(abs_path)
+        with _db_lock, closing(connect()) as conn:
+            conn.execute('''INSERT INTO media_files (site, username, filename, abs_path,
+                                                     size, mtime, classification, deleted, updated_ts)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                            ON CONFLICT(abs_path) DO UPDATE SET
+                                classification=excluded.classification,
+                                updated_ts=excluded.updated_ts''',
+                         (match.group('site'), match.group('username'),
+                          os.path.basename(abs_path), abs_path, stat.st_size,
+                          int(stat.st_mtime), classification, int(time.time())))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f'Failed to set classification for {abs_path}: {e}')
 
 
 class MediaIndexScanner(Thread):

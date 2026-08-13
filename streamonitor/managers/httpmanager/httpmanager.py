@@ -61,10 +61,16 @@ class HTTPManager(Manager):
             streamer = cast(Union[Bot, None], self.getStreamer(user, site))
             if streamer is None:
                 return 'Streamer not found', 404
-            return send_from_directory(
-                os.path.abspath(streamer.outputFolder),
-                filename
-            )
+            # Videos classified non-adult may have been relocated (see
+            # media_index.relocate_non_adult); fall back to the streamer's
+            # non-adult folder so their URLs keep playing after the move.
+            # send_from_directory does the safe path join in both cases.
+            output_dir = os.path.abspath(streamer.outputFolder)
+            nonadult_dir = os.path.abspath(streamer.nonAdultFolder)
+            if (not os.path.isfile(os.path.join(output_dir, filename))
+                    and os.path.isfile(os.path.join(nonadult_dir, filename))):
+                return send_from_directory(nonadult_dir, filename)
+            return send_from_directory(output_dir, filename)
 
         register_api_v2(app, self, login_required)
 

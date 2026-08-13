@@ -176,3 +176,94 @@ def test_cleanup_runs_when_index_disabled(tmp_path, monkeypatch):
     assert not os.path.exists(small)
     assert os.path.exists(big)
     assert not os.path.exists(media_index.index_db_path())
+
+
+def _classify(abs_path, label):
+    from contextlib import closing
+    with closing(media_index.connect()) as conn:
+        conn.execute("UPDATE media_files SET classification=? WHERE abs_path=?",
+                     (label, os.path.abspath(abs_path)))
+        conn.commit()
+
+
+def test_relocate_moves_non_adult_and_updates_index(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    media_index.scan_once()
+    dest = tmp_path / "downloads/_nonadult/alice [FS]/alice-20260706-120000.mp4"
+    assert not os.path.exists(path)
+    assert dest.is_file()
+    rows = media_index.list_videos("FS", "alice")
+    assert rows is not None and len(rows) == 1
+    assert rows[0]["abs_path"] == str(dest)
+    # A subsequent scan keeps listing the moved file (the non-adult tree is
+    # scanned too) and never marks it deleted or moves it again.
+    media_index.scan_once()
+    rows = media_index.list_videos("FS", "alice")
+    assert rows is not None and rows[0]["abs_path"] == str(dest)
+
+
+def test_relocate_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    media_index.scan_once()
+    assert os.path.exists(path)
+
+
+def test_relocate_never_touches_adult_or_unknown(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
+    adult = _make_video(tmp_path, filename="a.mp4")
+    unknown = _make_video(tmp_path, filename="b.mp4")
+    media_index.scan_once()
+    _classify(adult, "adult")
+    media_index.scan_once()
+    assert os.path.exists(adult)
+    assert os.path.exists(unknown)
+
+
+def test_relocate_skips_recently_modified_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
+    path = _make_video(tmp_path, mtime=int(time.time()))
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    media_index.scan_once()
+    assert os.path.exists(path)
+
+
+@pytest.mark.parametrize("filename", [
+    "alice-20260812-234947.mp4",
+    "alice-20260706-120000_LR_F180.mp4",
+    "alice-20260706-120000_001.mp4",
+])
+def test_relocate_skips_recording_streamer_files(tmp_path, monkeypatch, filename):
+    # Same protection as the undersized cleanup: any username-prefixed file in
+    # a recording streamer's folder is never moved even with an old mtime.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
+    path = _make_video(tmp_path, filename=filename)
+    streamer = _recording_streamer(tmp_path)
+    media_index.scan_once([streamer])
+    _classify(path, "non-adult")
+    media_index.scan_once([streamer])
+    assert os.path.exists(path)
+
+
+def test_relocate_skips_existing_target(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
+    path = _make_video(tmp_path)
+    dest = tmp_path / "downloads/_nonadult/alice [FS]/alice-20260706-120000.mp4"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"other")
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    media_index.scan_once()
+    assert os.path.exists(path)
+    assert dest.read_bytes() == b"other"

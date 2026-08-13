@@ -380,6 +380,35 @@ def _get_duration_cache_only(abs_path, mtime):
         return _durations_cache.get(key)
 
 
+def rekey_video_caches(old_abs, new_abs, mtime):
+    # A moved file (same content, same mtime) gets a new cache key because the
+    # key hashes abs_path+mtime. Migrate the cached duration entry and rename
+    # the cached thumbnail so the move never triggers a re-probe or a thumbnail
+    # regeneration. Returns the new thumbnail path when the cached frame exists
+    # on disk after the migration, else None. Best effort; never raises.
+    mtime = int(mtime)
+    old_key = _cache_key(old_abs, mtime)
+    new_key = _cache_key(new_abs, mtime)
+    path = _durations_path()
+    try:
+        with _durations_lock:
+            if _durations_cache is None or _durations_cache_path != path:
+                _load_durations_locked(path)
+            if old_key in _durations_cache and new_key not in _durations_cache:
+                _durations_cache[new_key] = _durations_cache.pop(old_key)
+                _save_durations_locked(path)
+    except Exception:
+        pass
+    old_thumb = _thumb_cache_path(old_abs, mtime)
+    new_thumb = _thumb_cache_path(new_abs, mtime)
+    try:
+        if os.path.exists(old_thumb) and not os.path.exists(new_thumb):
+            os.replace(old_thumb, new_thumb)
+    except Exception:
+        pass
+    return new_thumb if os.path.exists(new_thumb) else None
+
+
 # Background duration probing. The detail endpoint must never block on ffprobe,
 # so uncached videos are queued here and probed by a single daemon worker that
 # writes results into the in-memory cache immediately and batches durations.json

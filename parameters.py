@@ -83,6 +83,22 @@ MEDIA_INDEX_SCAN_INTERVAL = env.int("STRMNTR_MEDIA_INDEX_SCAN_INTERVAL", 300)  #
 # never touched. Set to 0 to disable the filter entirely.
 MIN_VIDEO_SIZE_MB = env.float("STRMNTR_MIN_VIDEO_SIZE_MB", 10.0)
 
+# Move finished videos classified 'non-adult' in the media index into a
+# separate directory, keeping the "<username> [<siteslug>]" folder layout so
+# the web UI keeps listing, playing and thumbnailing them after the move.
+# Files being recorded and recently modified files are never moved. Disabled
+# by default; requires the media index (classification source). The directory
+# is resolved against the download dir unless an absolute path is given.
+NONADULT_RELOCATE_ENABLED = env.bool("STRMNTR_NONADULT_RELOCATE", False)
+NONADULT_DIR = env.str("STRMNTR_NONADULT_DIR", "_nonadult")
+
+
+def get_nonadult_dir():
+    # Resolved at call time so a runtime download-dir change is honored.
+    if os.path.isabs(NONADULT_DIR):
+        return NONADULT_DIR
+    return os.path.join(get_download_dir(), NONADULT_DIR)
+
 
 def get_min_video_size_mb():
     # Read at call time so runtime changes made via the settings API take
@@ -118,6 +134,34 @@ def persist_min_video_size_mb(value):
     with open(tmp_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
     os.replace(tmp_path, env_path)
+
+# --- NSFW frame analysis (optional, disabled by default) ---
+# When enabled, a frame is grabbed from the file being recorded every
+# STRMNTR_NSFW_SAMPLE_INTERVAL seconds and scored by a local ONNX NSFW
+# classifier; when the recording ends the video is labeled adult / non-adult /
+# unknown in the media index. Requires the optional onnxruntime + numpy
+# packages and a model file at STRMNTR_NSFW_MODEL_PATH (supported models are
+# documented in streamonitor/nsfw_analyzer.py). While this flag is False
+# (default) nothing is imported, loaded or started. When analysis is not
+# possible (missing packages/model, ffmpeg errors) videos are labeled
+# 'unknown' and recording is never affected.
+NSFW_ENABLED = env.bool("STRMNTR_NSFW_ENABLED", False)
+
+# Seconds between frame grabs while a recording is in progress.
+NSFW_SAMPLE_INTERVAL = env.int("STRMNTR_NSFW_SAMPLE_INTERVAL", 60)
+
+# A frame whose adult confidence (0..1) is at or above this threshold marks
+# the whole video as adult; a video is non-adult only if every sampled frame
+# stays below it.
+NSFW_THRESHOLD = env.float("STRMNTR_NSFW_THRESHOLD", 0.7)
+
+# Path to the ONNX classifier model file (bring your own model, it is not
+# downloaded automatically; see streamonitor/nsfw_analyzer.py for options).
+NSFW_MODEL_PATH = env.str("STRMNTR_NSFW_MODEL_PATH", os.path.join('models', 'nsfw-model.onnx'))
+
+# Maximum number of frames sampled evenly across the finished file when live
+# sampling produced fewer scores than this (short recordings, unseekable tails).
+NSFW_MAX_SAMPLES = env.int("STRMNTR_NSFW_MAX_SAMPLES", 8)
 
 # The camsoda bot ignores this setting in favor of a chrome useragent generated with the fake-useragent library
 HTTP_USER_AGENT = env.str("STRMNTR_USER_AGENT", "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0")
