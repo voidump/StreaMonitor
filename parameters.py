@@ -47,6 +47,16 @@ def persist_download_dir(path):
         f.write('\n'.join(lines) + '\n')
     os.replace(tmp_path, env_path)
 MIN_FREE_DISK_PERCENT = env.float("STRMNTR_MIN_FREE_SPACE", 5.0)  # in %
+
+# When free space drops below STRMNTR_OOS_CLEANUP_THRESHOLD percent (should be
+# above STRMNTR_MIN_FREE_SPACE), the out-of-space detector deletes finished
+# videos classified 'non-adult' in the media index (oldest first) until free
+# space is back above the threshold. 'adult' and 'unknown' videos, files being
+# recorded and recently modified files are never touched. If cleanup cannot
+# free enough space, the original exit-on-low-space behavior still applies.
+# Disabled by default; requires the media index (classification source).
+OOS_CLEANUP_NON_ADULT = env.bool("STRMNTR_OOS_CLEANUP_NON_ADULT", False)
+OOS_CLEANUP_THRESHOLD_PERCENT = env.float("STRMNTR_OOS_CLEANUP_THRESHOLD", 8.0)  # in %
 DEBUG = env.bool("STRMNTR_DEBUG", False)
 
 # Repair leftover temp files on startup (hls .tmp.ts / fmp4s .tmp.mp4 left behind
