@@ -22,6 +22,7 @@ from parameters import DEBUG, CONTAINER, HTTP_USER_AGENT
 from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
 from streamonitor.media_index import record_finished_file
 from streamonitor.models import VideoData
+from streamonitor import nsfw_analyzer
 
 LOADED_SITES = set()
 
@@ -162,10 +163,15 @@ class Bot(Thread):
         return GENDER_DATA.get(self.gender, GENDER_DATA.get(Gender.UNKNOWN))
 
     def cache_file_list(self):
-        videos_folder = self.outputFolder
+        # Relocated non-adult videos live under "<nonadult dir>/<same folder
+        # name>" (see media_index.relocate_non_adult); include them so the web
+        # UI keeps listing, playing, thumbnailing and deleting moved files.
+        folders = [self.outputFolder, self.nonAdultFolder]
         _videos = []
         _total_size = 0
-        if os.path.isdir(videos_folder):
+        for videos_folder in folders:
+            if not os.path.isdir(videos_folder):
+                continue
             try:
                 for file in os.scandir(videos_folder):
                     if file.is_dir():
@@ -319,11 +325,13 @@ class Bot(Thread):
                             self.recording = True
                             file = self.genOutFilename()
                             self.recording_filename = os.path.basename(file)
+                            nsfw_analyzer.start_monitor(self)
                             try:
                                 ret = self.getVideo(self, video_url, file)
                             except Exception as e:
                                 self.logger.exception(e)
                                 ret = False
+                            nsfw_analyzer.finish_monitor(self)
                             if not ret:
                                 self.reset_recording_progress()
                                 self.log('Recording ended with error')
@@ -344,6 +352,7 @@ class Bot(Thread):
                             record_finished_file(self, finished_name)
                 except Exception as e:
                     self.logger.exception(e)
+                    nsfw_analyzer.finish_monitor(self)
                     try:
                         self.cache_file_list()
                     except Exception as e:
@@ -486,6 +495,12 @@ class Bot(Thread):
     @property
     def outputFolder(self):
         return str(os.path.join(parameters.get_download_dir(), self.username + ' [' + self.siteslug + ']'))
+
+    @property
+    def nonAdultFolder(self):
+        # Where media_index.relocate_non_adult moves this streamer's videos
+        # classified 'non-adult'; same folder name under the non-adult dir.
+        return str(os.path.join(parameters.get_nonadult_dir(), self.username + ' [' + self.siteslug + ']'))
 
     def genOutFilename(self, create_dir=True):
         folder = self.outputFolder

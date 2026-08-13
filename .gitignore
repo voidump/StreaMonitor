@@ -11,3 +11,4 @@ stripchat_mouflon_keys.json
 .strmntr_recording_resolution.json
 .strmntr_online_history.json
 *.local_backup
+models/

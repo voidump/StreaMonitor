@@ -11,3 +11,7 @@ fake-useragent
 django-environ
 pycurl
 pycurl-requests
+# Optional: local NSFW frame analysis (STRMNTR_NSFW_ENABLED); the app runs
+# fine without these, videos are then labeled 'unknown'.
+onnxruntime
+numpy
