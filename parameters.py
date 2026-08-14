@@ -211,10 +211,11 @@ def _persist_env_key(key, formatted_value):
     os.replace(tmp_path, env_path)
 
 
-# What to do with a finished video once analysis classifies it as adult:
+# What to do with a finished video once analysis classifies it as non-adult:
 #   mark_only - only record the classification in the media index (default)
 #   recycle   - move the file into the recycle bin (kept NSFW_RECYCLE_RETENTION_DAYS days)
 #   delete    - delete the file immediately
+# Adult/unknown/unclassified videos are never moved or deleted by this policy.
 # Runtime-configurable, persisted settings (same pattern as NSFW_ENABLED):
 # read via the getters at call time so changes via the settings API take
 # effect without a restart.
@@ -272,6 +273,21 @@ def set_nsfw_scan_interval_hours(value):
 
 def persist_nsfw_scan_interval_hours(value):
     _persist_env_key('STRMNTR_NSFW_SCAN_INTERVAL_HOURS', int(value))
+
+
+# Directory the NSFW recycle bin lives in. Recycled videos keep the
+# "<username> [<siteslug>]" folder layout under it (same convention as
+# NONADULT_DIR) and are permanently removed by a daily purge once older than
+# NSFW_RECYCLE_RETENTION_DAYS. Resolved against the download dir unless an
+# absolute path is given.
+NSFW_RECYCLE_DIR = env.str("STRMNTR_NSFW_RECYCLE_DIR", "_recycle")
+
+
+def get_nsfw_recycle_dir():
+    # Resolved at call time so a runtime download-dir change is honored.
+    if os.path.isabs(NSFW_RECYCLE_DIR):
+        return NSFW_RECYCLE_DIR
+    return os.path.join(get_download_dir(), NSFW_RECYCLE_DIR)
 
 
 # Seconds between frame grabs while a recording is in progress.

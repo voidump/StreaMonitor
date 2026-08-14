@@ -338,8 +338,38 @@ class RecordingMonitor:
                 set_classification(path, label)
             logger.info(f'[{self.username}] recording classified {label} '
                         f'({len(scores)} samples, {len(finals)} file(s))')
+            if label == NON_ADULT:
+                self._apply_action(finals)
         except Exception as e:
             logger.warning(f'[{self.username}] NSFW finalization failed: {e}')
+
+    def _apply_action(self, finals):
+        # Instant trigger: apply the configured non-adult action to the files
+        # this recording produced. The engine only touches files older than
+        # its mtime grace window (shared with the library cleanup), so wait
+        # it out first; this runs in the fire-and-forget finalize thread and
+        # never blocks the bot loop. The action setting is read inside the
+        # engine at apply time, so a runtime change during the wait wins.
+        # All other guards (classification re-read from the index, active
+        # recording exclusion via self.bot) also apply there; anything
+        # skipped is picked up by the scheduled scan.
+        try:
+            if parameters.get_nsfw_action() not in ('recycle', 'delete'):
+                return
+            from streamonitor.media_index import (
+                CLEANUP_MTIME_GRACE_SECONDS, apply_nsfw_action)
+            try:
+                newest = max(os.path.getmtime(p) for p in finals if os.path.isfile(p))
+            except ValueError:
+                return
+            delay = CLEANUP_MTIME_GRACE_SECONDS - (time.time() - newest)
+            if delay > 0:
+                time.sleep(delay + 1)
+            if not parameters.get_nsfw_enabled():
+                return
+            apply_nsfw_action([self.bot], only_paths=finals)
+        except Exception as e:
+            logger.warning(f'[{self.username}] NSFW action failed: {e}')
 
 
 def start_monitor(bot):

@@ -115,17 +115,20 @@ def _recording_paths(streamers):
 
 def _list_disk_videos(downloads_dir, skip_paths):
     videos = []
-    roots = [downloads_dir]
+    roots = [os.path.abspath(downloads_dir)]
     # Relocated non-adult videos keep the "<username> [<siteslug>]" folder
     # layout under the non-adult directory; scan it too (when present) so
     # moved files stay indexed instead of being marked deleted. Scanned
     # regardless of the relocation toggle so turning it off later never
     # hides files that were already moved. The folder name "_nonadult" does
     # not match _FOLDER_RE, so a nested default location is never scanned
-    # twice via the downloads pass.
-    nonadult_root = os.path.abspath(parameters.get_nonadult_dir())
-    if nonadult_root != os.path.abspath(downloads_dir) and os.path.isdir(nonadult_root):
-        roots.append(nonadult_root)
+    # twice via the downloads pass. The NSFW recycle bin follows the same
+    # convention so recycled videos stay listed and playable until the
+    # retention purge removes them.
+    for extra in (parameters.get_nonadult_dir(), parameters.get_nsfw_recycle_dir()):
+        extra = os.path.abspath(extra)
+        if extra not in roots and os.path.isdir(extra):
+            roots.append(extra)
     for root in roots:
         try:
             folders = list(os.scandir(root))
@@ -256,7 +259,7 @@ def scan_once(streamers=None):
         conn.commit()
     if upserts or gone:
         logger.info(f'Media index scan: {len(upserts)} upserted, {len(gone)} marked deleted')
-    relocate_non_adult(streamers)
+    _nsfw_maintenance(streamers)
 
 
 def _rekey_video_caches(old_abs, new_abs, mtime):
@@ -293,8 +296,12 @@ def relocate_non_adult(streamers=None):
     except Exception as e:
         logger.warning(f'Non-adult relocation query failed: {e}')
         return 0
+    # Files already in the recycle bin are waiting for the retention purge;
+    # relocating them out would silently extend their lifetime.
+    recycle_root = os.path.abspath(parameters.get_nsfw_recycle_dir())
+    excluded = (root + os.sep, recycle_root + os.sep)
     candidates = [row for row in rows
-                  if not os.path.abspath(row[0]).startswith(root + os.sep)]
+                  if not os.path.abspath(row[0]).startswith(excluded)]
     if not candidates:
         return 0
     now = time.time()
@@ -353,6 +360,245 @@ def relocate_non_adult(streamers=None):
     if moved:
         logger.info(f'Non-adult relocation: moved {moved} video(s) to {root}')
     return moved
+
+
+def _active_recorders(streamers):
+    # (abs outputFolder, username) of streamers recording right now; any
+    # username-prefixed file in such a folder is treated as possibly being
+    # written (ffmpeg strftime segments, VR suffixes, hls _%03d parts).
+    active = []
+    for streamer in streamers or []:
+        try:
+            if getattr(streamer, 'recording', False):
+                active.append((os.path.abspath(streamer.outputFolder), streamer.username))
+        except Exception:
+            continue
+    return active
+
+
+def apply_nsfw_action(streamers=None, only_paths=None):
+    # Unified non-adult handling engine. Applies the runtime NSFW action
+    # ('recycle' or 'delete'; 'mark_only' and unknown values are a no-op) to
+    # indexed videos classified 'non-adult'. Adult/unknown/unclassified rows
+    # are never selected, so they can never be moved or deleted here. The
+    # action and all other settings are read at call time so runtime changes
+    # take effect on the next trigger. `only_paths` narrows the pass to the
+    # given files (instant trigger after classification); classification is
+    # still re-read from the index. Safety guards match relocate_non_adult:
+    # exact recording paths, username-prefixed files in a recording
+    # streamer's folder, .tmp. names and files modified within
+    # CLEANUP_MTIME_GRACE_SECONDS are never touched.
+    #   recycle: move into the recycle bin preserving the "<username>
+    #     [<siteslug>]" layout; mtime is reset to the move time so the daily
+    #     purge measures retention from the recycle moment.
+    #   delete: remove the file and mark the index row deleted.
+    # Files already under the recycle bin (waiting for the retention purge)
+    # or under the legacy non-adult archive (a previously curated library
+    # that a policy switch must not wipe) are excluded. Returns the number
+    # of files handled.
+    action = parameters.get_nsfw_action()
+    if action not in ('recycle', 'delete'):
+        return 0
+    if not parameters.get_nsfw_enabled() or not _index_readable():
+        return 0
+    downloads_root = os.path.abspath(parameters.get_download_dir())
+    recycle_root = os.path.abspath(parameters.get_nsfw_recycle_dir())
+    nonadult_root = os.path.abspath(parameters.get_nonadult_dir())
+    if action == 'recycle' and recycle_root == downloads_root:
+        return 0
+    protected = [r + os.sep for r in (recycle_root, nonadult_root)
+                 if r != downloads_root]
+    try:
+        with closing(connect()) as conn:
+            rows = conn.execute(
+                "SELECT abs_path, filename FROM media_files "
+                "WHERE deleted=0 AND classification='non-adult'").fetchall()
+    except Exception as e:
+        logger.warning(f'NSFW action query failed: {e}')
+        return 0
+    wanted = None
+    if only_paths is not None:
+        wanted = {os.path.abspath(p) for p in only_paths}
+    candidates = []
+    for abs_path, filename in rows:
+        abs_path = os.path.abspath(abs_path)
+        if wanted is not None and abs_path not in wanted:
+            continue
+        if any(abs_path.startswith(prefix) for prefix in protected):
+            continue
+        candidates.append((abs_path, filename))
+    if not candidates:
+        return 0
+    now = time.time()
+    recording_paths = _recording_paths(streamers)
+    active = _active_recorders(streamers)
+    handled = 0
+    for abs_path, filename in candidates:
+        if abs_path in recording_paths or '.tmp.' in filename:
+            continue
+        try:
+            stat = os.stat(abs_path)
+        except OSError:
+            continue  # vanished; the next scan marks it deleted
+        if now - stat.st_mtime < CLEANUP_MTIME_GRACE_SECONDS:
+            continue
+        src_folder = os.path.dirname(abs_path)
+        if any(src_folder == rec_folder and filename.startswith(rec_user)
+               for rec_folder, rec_user in active):
+            continue
+        if action == 'delete':
+            try:
+                os.remove(abs_path)
+            except OSError as e:
+                logger.warning(f'NSFW delete failed for {abs_path}: {e}')
+                continue
+            mark_deleted(abs_path)
+            logger.info(f'NSFW action: deleted non-adult video {filename}')
+            handled += 1
+            continue
+        folder_name = os.path.basename(src_folder)
+        if not _FOLDER_RE.match(folder_name):
+            continue
+        dest_dir = os.path.join(recycle_root, folder_name)
+        dest = os.path.join(dest_dir, filename)
+        if os.path.exists(dest):
+            logger.warning(f'NSFW recycle skipped, target exists: {dest}')
+            continue
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            os.rename(abs_path, dest)
+        except OSError as e:
+            logger.warning(f'NSFW recycle failed for {abs_path}: {e}')
+            continue
+        # Reset mtime so the retention purge counts from the recycle moment
+        # (an old recording recycled by a backfill scan must still get its
+        # full retention window). The old path+mtime cache keys are stale
+        # after this, so the thumb is cleared and regenerated lazily.
+        recycled_ts = int(time.time())
+        try:
+            os.utime(dest, (recycled_ts, recycled_ts))
+        except OSError:
+            recycled_ts = int(stat.st_mtime)
+        try:
+            with _db_lock, closing(connect()) as conn:
+                conn.execute(
+                    'UPDATE media_files SET abs_path=?, mtime=?, thumb_path=NULL, '
+                    'updated_ts=? WHERE abs_path=?',
+                    (dest, recycled_ts, int(time.time()), abs_path))
+                conn.commit()
+        except Exception as e:
+            # The rename already happened; the next scan self-heals by marking
+            # the old row deleted and upserting the new path.
+            logger.warning(f'NSFW recycle index update failed for {dest}: {e}')
+        logger.info(f'NSFW action: recycled non-adult video {filename}')
+        handled += 1
+    if handled:
+        logger.info(f'NSFW action ({action}): handled {handled} non-adult video(s)')
+    return handled
+
+
+def purge_recycle_bin():
+    # Daily retention purge: permanently remove recycle-bin videos older than
+    # NSFW_RECYCLE_RETENTION_DAYS (measured by mtime, which apply_nsfw_action
+    # resets to the recycle moment). Only runs while the NSFW feature is
+    # enabled so switching it off freezes the bin. Disk-based on purpose: it
+    # keeps working across index rebuilds. Empty per-streamer folders are
+    # removed afterwards. Returns the number of files removed.
+    if not parameters.get_nsfw_enabled():
+        return 0
+    root = os.path.abspath(parameters.get_nsfw_recycle_dir())
+    if root == os.path.abspath(parameters.get_download_dir()) or not os.path.isdir(root):
+        return 0
+    try:
+        days = int(parameters.get_nsfw_recycle_retention_days())
+    except Exception:
+        days = 7
+    if days <= 0:
+        return 0
+    cutoff = time.time() - days * 86400
+    removed = 0
+    try:
+        folders = [f for f in os.scandir(root) if f.is_dir()]
+    except OSError as e:
+        logger.warning(f'Cannot list recycle bin {root}: {e}')
+        return 0
+    for folder in folders:
+        try:
+            entries = list(os.scandir(folder.path))
+        except OSError:
+            continue
+        for file in entries:
+            name = file.name
+            if name.startswith('.') or '.tmp.' in name:
+                continue
+            if os.path.splitext(name)[1][1:] not in VIDEO_EXTENSIONS:
+                continue
+            try:
+                if file.is_dir():
+                    continue
+                stat = file.stat()
+            except OSError:
+                continue
+            if stat.st_mtime >= cutoff:
+                continue
+            abs_path = os.path.abspath(file.path)
+            try:
+                os.remove(abs_path)
+            except OSError as e:
+                logger.warning(f'Recycle bin purge failed for {abs_path}: {e}')
+                continue
+            mark_deleted(abs_path)
+            removed += 1
+        try:
+            os.rmdir(folder.path)  # only succeeds when empty
+        except OSError:
+            pass
+    if removed:
+        logger.info(f'Recycle bin purge: removed {removed} expired video(s)')
+    return removed
+
+
+# Scheduling state for the NSFW maintenance pass (module-level so the
+# scanner-thread cadence survives across scan_once calls; both start at 0 so
+# the first scan after startup runs immediately).
+_nsfw_last_action_ts = 0.0
+_nsfw_last_purge_ts = 0.0
+_NSFW_PURGE_INTERVAL_SECONDS = 24 * 3600
+
+
+def _nsfw_maintenance(streamers=None):
+    # Called at the end of every scan_once pass. All settings are re-read
+    # here so runtime changes apply on the next pass:
+    #   - When the NSFW feature is on and the action is recycle/delete, the
+    #     scheduled engine pass runs every NSFW_SCAN_INTERVAL_HOURS hours
+    #     (0 disables it; the instant trigger still applies the action).
+    #   - Otherwise the legacy non-adult relocation keeps its original
+    #     every-scan behavior (still gated by NONADULT_RELOCATE_ENABLED).
+    #   - The recycle-bin retention purge runs daily while the feature is on,
+    #     regardless of the current action, so files recycled under an older
+    #     policy never linger past their retention window.
+    global _nsfw_last_action_ts, _nsfw_last_purge_ts
+    try:
+        nsfw_on = parameters.get_nsfw_enabled()
+        action = parameters.get_nsfw_action()
+        if not (nsfw_on and action in ('recycle', 'delete')):
+            relocate_non_adult(streamers)
+        else:
+            try:
+                hours = int(parameters.get_nsfw_scan_interval_hours())
+            except Exception:
+                hours = 0
+            now = time.time()
+            if hours > 0 and now - _nsfw_last_action_ts >= hours * 3600:
+                _nsfw_last_action_ts = now
+                apply_nsfw_action(streamers)
+        if nsfw_on:
+            now = time.time()
+            if now - _nsfw_last_purge_ts >= _NSFW_PURGE_INTERVAL_SECONDS:
+                _nsfw_last_purge_ts = now
+                purge_recycle_bin()
+    except Exception as e:
+        logger.warning(f'NSFW maintenance failed: {e}')
 
 
 def record_finished_file(streamer, filename):

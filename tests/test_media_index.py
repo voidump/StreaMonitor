@@ -14,6 +14,14 @@ def _no_min_video_size(monkeypatch):
     monkeypatch.setattr(media_index.parameters, "MIN_VIDEO_SIZE_MB", 0)
 
 
+@pytest.fixture(autouse=True)
+def _reset_nsfw_schedule():
+    # The scheduled NSFW action/purge cadence is module state; reset it so
+    # every test starts with a due first pass.
+    media_index._nsfw_last_action_ts = 0.0
+    media_index._nsfw_last_purge_ts = 0.0
+
+
 def _make_video(tmp_path, username="alice", site="FS",
                 filename="alice-20260706-120000.mp4", data=b"0" * 1000,
                 mtime=1_700_000_000):
@@ -267,3 +275,256 @@ def test_relocate_skips_existing_target(tmp_path, monkeypatch):
     media_index.scan_once()
     assert os.path.exists(path)
     assert dest.read_bytes() == b"other"
+
+
+def _enable_nsfw(monkeypatch, action):
+    monkeypatch.setattr(media_index.parameters, "NSFW_ENABLED", True)
+    monkeypatch.setattr(media_index.parameters, "NSFW_ACTION", action)
+
+
+def test_apply_action_recycles_and_rekeys_index(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 1
+    dest = tmp_path / "downloads/_recycle/alice [FS]/alice-20260706-120000.mp4"
+    assert not os.path.exists(path)
+    assert dest.is_file()
+    # mtime is reset to the recycle moment so retention counts from the move.
+    assert time.time() - os.path.getmtime(dest) < 60
+    rows = media_index.list_videos("FS", "alice")
+    assert rows is not None and len(rows) == 1
+    assert rows[0]["abs_path"] == str(dest)
+    # A subsequent scan keeps listing the recycled file and never moves or
+    # re-recycles it (the recycle root is excluded from candidates).
+    media_index.scan_once()
+    assert media_index.apply_nsfw_action() == 0
+    rows = media_index.list_videos("FS", "alice")
+    assert rows is not None and rows[0]["abs_path"] == str(dest)
+
+
+def test_apply_action_deletes_and_marks_index(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "delete")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 1
+    assert not os.path.exists(path)
+    assert media_index.list_videos("FS", "alice") is None
+
+
+def test_apply_action_mark_only_is_noop(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "mark_only")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 0
+    assert os.path.exists(path)
+
+
+def test_apply_action_requires_nsfw_enabled(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NSFW_ENABLED", False)
+    monkeypatch.setattr(media_index.parameters, "NSFW_ACTION", "delete")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 0
+    assert os.path.exists(path)
+
+
+def test_apply_action_never_touches_adult_or_unknown(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "delete")
+    adult = _make_video(tmp_path, filename="a.mp4")
+    unknown = _make_video(tmp_path, filename="b.mp4")
+    media_index.scan_once()
+    _classify(adult, "adult")
+    # b.mp4 stays 'unknown' (the scanner default) and is passed explicitly:
+    # only_paths never overrides the classification re-read from the index.
+    assert media_index.apply_nsfw_action(only_paths=[adult, unknown]) == 0
+    assert os.path.exists(adult)
+    assert os.path.exists(unknown)
+
+
+def test_apply_action_skips_fresh_mtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "delete")
+    path = _make_video(tmp_path, mtime=int(time.time()))
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action(only_paths=[path]) == 0
+    assert os.path.exists(path)
+
+
+@pytest.mark.parametrize("filename", [
+    "alice-20260812-234947.mp4",
+    "alice-20260706-120000_LR_F180.mp4",
+    "alice-20260706-120000_001.mp4",
+])
+def test_apply_action_skips_recording_streamer_files(tmp_path, monkeypatch, filename):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "delete")
+    path = _make_video(tmp_path, filename=filename)
+    streamer = _recording_streamer(tmp_path)
+    media_index.scan_once([streamer])
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action([streamer]) == 0
+    assert os.path.exists(path)
+
+
+def test_apply_action_only_paths_narrows_pass(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "delete")
+    first = _make_video(tmp_path, filename="a.mp4")
+    second = _make_video(tmp_path, filename="b.mp4")
+    media_index.scan_once()
+    _classify(first, "non-adult")
+    _classify(second, "non-adult")
+    assert media_index.apply_nsfw_action(only_paths=[first]) == 1
+    assert not os.path.exists(first)
+    assert os.path.exists(second)
+
+
+def test_apply_action_recycle_skips_existing_target(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    dest = tmp_path / "downloads/_recycle/alice [FS]/alice-20260706-120000.mp4"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"other")
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 0
+    assert os.path.exists(path)
+    assert dest.read_bytes() == b"other"
+
+
+def test_apply_action_spares_legacy_nonadult_archive(tmp_path, monkeypatch):
+    # Files previously moved into the non-adult archive are never deleted or
+    # recycled by a later policy switch.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    media_index.scan_once()
+    dest = tmp_path / "downloads/_nonadult/alice [FS]/alice-20260706-120000.mp4"
+    assert dest.is_file()
+    _enable_nsfw(monkeypatch, "delete")
+    assert media_index.apply_nsfw_action() == 0
+    assert dest.is_file()
+
+
+def test_scan_once_runs_scheduled_action(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    media_index._nsfw_last_action_ts = 0.0  # interval elapsed since last pass
+    media_index.scan_once()
+    dest = tmp_path / "downloads/_recycle/alice [FS]/alice-20260706-120000.mp4"
+    assert not os.path.exists(path)
+    assert dest.is_file()
+
+
+def test_scan_once_scheduled_action_respects_interval(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    media_index.scan_once()  # first pass consumes the due window
+    _classify(path, "non-adult")
+    media_index.scan_once()  # within the interval: not processed yet
+    assert os.path.exists(path)
+
+
+def test_scan_once_scheduled_action_zero_interval_disables(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    monkeypatch.setattr(media_index.parameters, "NSFW_SCAN_INTERVAL_HOURS", 0)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    media_index.scan_once()
+    assert os.path.exists(path)
+
+
+def test_purge_removes_expired_recycled_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    folder = tmp_path / "downloads/_recycle/alice [FS]"
+    folder.mkdir(parents=True)
+    expired = folder / "old.mp4"
+    expired.write_bytes(b"0" * 100)
+    old_ts = time.time() - 8 * 86400
+    os.utime(expired, (old_ts, old_ts))
+    fresh = folder / "new.mp4"
+    fresh.write_bytes(b"0" * 100)
+    assert media_index.purge_recycle_bin() == 1
+    assert not expired.exists()
+    assert fresh.exists()
+
+
+def test_purge_removes_empty_folders(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    folder = tmp_path / "downloads/_recycle/alice [FS]"
+    folder.mkdir(parents=True)
+    expired = folder / "old.mp4"
+    expired.write_bytes(b"0" * 100)
+    old_ts = time.time() - 8 * 86400
+    os.utime(expired, (old_ts, old_ts))
+    assert media_index.purge_recycle_bin() == 1
+    assert not folder.exists()
+
+
+def test_purge_disabled_when_nsfw_off(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NSFW_ENABLED", False)
+    folder = tmp_path / "downloads/_recycle/alice [FS]"
+    folder.mkdir(parents=True)
+    expired = folder / "old.mp4"
+    expired.write_bytes(b"0" * 100)
+    old_ts = time.time() - 8 * 86400
+    os.utime(expired, (old_ts, old_ts))
+    assert media_index.purge_recycle_bin() == 0
+    assert expired.exists()
+
+
+def test_purge_respects_retention_days_setting(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    monkeypatch.setattr(media_index.parameters, "NSFW_RECYCLE_RETENTION_DAYS", 30)
+    folder = tmp_path / "downloads/_recycle/alice [FS]"
+    folder.mkdir(parents=True)
+    aged = folder / "old.mp4"
+    aged.write_bytes(b"0" * 100)
+    old_ts = time.time() - 8 * 86400  # older than 7 but younger than 30
+    os.utime(aged, (old_ts, old_ts))
+    assert media_index.purge_recycle_bin() == 0
+    assert aged.exists()
+
+
+def test_legacy_relocate_never_moves_recycled_files(tmp_path, monkeypatch):
+    # Switching back to mark_only + legacy relocation must not pull files out
+    # of the recycle bin (that would silently extend their lifetime).
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 1
+    recycled = tmp_path / "downloads/_recycle/alice [FS]/alice-20260706-120000.mp4"
+    assert recycled.is_file()
+    old_ts = time.time() - 3600  # age past the mtime grace window
+    os.utime(recycled, (old_ts, old_ts))
+    media_index.scan_once()
+    monkeypatch.setattr(media_index.parameters, "NSFW_ACTION", "mark_only")
+    media_index.scan_once()
+    assert recycled.is_file()
