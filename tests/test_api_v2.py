@@ -851,6 +851,19 @@ def test_get_nsfw_returns_enabled_and_readiness(tmp_path, monkeypatch, preserve_
     assert payload["modelPath"] == parameters.NSFW_MODEL_PATH
 
 
+def test_get_nsfw_broken_runtime_degrades(tmp_path, monkeypatch, preserve_nsfw):
+    # A broken installation can make find_spec raise; the endpoint must report
+    # runtimeAvailable=false instead of failing with a 500.
+    monkeypatch.chdir(tmp_path)
+    def boom(name):
+        raise ImportError(f"broken installation: {name}")
+    monkeypatch.setattr(api_v2.importlib.util, "find_spec", boom)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/nsfw", headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["runtimeAvailable"] is False
+
+
 def test_set_nsfw_enable_persists(tmp_path, monkeypatch, preserve_nsfw):
     monkeypatch.chdir(tmp_path)
     parameters.set_nsfw_enabled(False)
