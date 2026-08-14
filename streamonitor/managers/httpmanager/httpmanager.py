@@ -62,14 +62,16 @@ class HTTPManager(Manager):
             if streamer is None:
                 return 'Streamer not found', 404
             # Videos classified non-adult may have been relocated (see
-            # media_index.relocate_non_adult); fall back to the streamer's
-            # non-adult folder so their URLs keep playing after the move.
-            # send_from_directory does the safe path join in both cases.
+            # media_index.relocate_non_adult) or recycled (see
+            # media_index.apply_nsfw_action); fall back to the streamer's
+            # non-adult and recycle folders so their URLs keep playing after
+            # the move. send_from_directory does the safe path join.
             output_dir = os.path.abspath(streamer.outputFolder)
-            nonadult_dir = os.path.abspath(streamer.nonAdultFolder)
-            if (not os.path.isfile(os.path.join(output_dir, filename))
-                    and os.path.isfile(os.path.join(nonadult_dir, filename))):
-                return send_from_directory(nonadult_dir, filename)
+            for folder in (streamer.nonAdultFolder, streamer.recycleFolder):
+                folder = os.path.abspath(folder)
+                if (not os.path.isfile(os.path.join(output_dir, filename))
+                        and os.path.isfile(os.path.join(folder, filename))):
+                    return send_from_directory(folder, filename)
             return send_from_directory(output_dir, filename)
 
         register_api_v2(app, self, login_required)

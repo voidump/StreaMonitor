@@ -164,9 +164,11 @@ class Bot(Thread):
 
     def cache_file_list(self):
         # Relocated non-adult videos live under "<nonadult dir>/<same folder
-        # name>" (see media_index.relocate_non_adult); include them so the web
-        # UI keeps listing, playing, thumbnailing and deleting moved files.
-        folders = [self.outputFolder, self.nonAdultFolder]
+        # name>" (see media_index.relocate_non_adult) and recycled ones under
+        # the recycle bin (see media_index.apply_nsfw_action); include both so
+        # the web UI keeps listing, playing, thumbnailing and deleting moved
+        # files until the retention purge removes them.
+        folders = [self.outputFolder, self.nonAdultFolder, self.recycleFolder]
         _videos = []
         _total_size = 0
         for videos_folder in folders:
@@ -501,6 +503,12 @@ class Bot(Thread):
         # Where media_index.relocate_non_adult moves this streamer's videos
         # classified 'non-adult'; same folder name under the non-adult dir.
         return str(os.path.join(parameters.get_nonadult_dir(), self.username + ' [' + self.siteslug + ']'))
+
+    @property
+    def recycleFolder(self):
+        # Where media_index.apply_nsfw_action ('recycle') moves this streamer's
+        # videos; same folder name under the NSFW recycle-bin dir.
+        return str(os.path.join(parameters.get_nsfw_recycle_dir(), self.username + ' [' + self.siteslug + ']'))
 
     def genOutFilename(self, create_dir=True):
         folder = self.outputFolder
