@@ -1,0 +1,113 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - generic [ref=e9]:
+      - text: StreaMonitor
+      - generic [ref=e10]: 录播控制台
+    - navigation [ref=e11]:
+      - button "录播总览" [ref=e12] [cursor=pointer]
+      - button "设置" [ref=e19] [cursor=pointer]
+    - generic [ref=e26]:
+      - generic [ref=e27]: 磁盘
+      - generic [ref=e28]: 459.48 GB 剩余
+    - generic [ref=e31]: UI 原型 · 模拟数据
+  - generic [ref=e33]:
+    - heading "设置" [level=1] [ref=e35]
+    - generic [ref=e36]:
+      - generic [ref=e37]:
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - generic [ref=e40]: 界面语言
+            - generic [ref=e41]: 切换控制台显示语言
+          - combobox [ref=e42]:
+            - option "中文" [selected]
+            - option "English"
+        - generic [ref=e43]:
+          - generic [ref=e44]:
+            - generic [ref=e45]: 自动清理失效临时文件
+            - generic [ref=e46]: 定期删除无法修复的录制碎片
+          - generic [ref=e47]: 规划中
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e50]: 状态刷新频率
+            - generic [ref=e51]: 检查主播在线状态的间隔
+          - generic [ref=e52]: 规划中
+      - generic [ref=e54]:
+        - generic [ref=e55]:
+          - generic [ref=e56]: 已删除的主播
+          - generic [ref=e57]: 查看已彻底删除的主播记录，可重新添加或打开原页面。
+        - button "查看" [ref=e58] [cursor=pointer]
+      - generic [ref=e61]:
+        - generic [ref=e62]: 下载目录
+        - generic [ref=e63]: 服务器保存录制文件的目录。新录制立即生效，旧目录中的已有文件不会迁移。
+        - generic [ref=e64]:
+          - textbox "例如 /srv/streamonitor/downloads" [ref=e65]: /private/var/folders/t2/9yc1d22n10s83vsyds6m8q7c0000gn/T/tmp8pnlmb13/downloads
+          - button "保存" [ref=e66] [cursor=pointer]
+      - generic [ref=e69]:
+        - generic [ref=e70]: 小视频清理阈值（MB）
+        - generic [ref=e71]: 自动删除小于该大小的视频：录制结束时立即过滤，库存扫描时清理历史文件。正在录制的文件与临时文件不受影响。设为 0 表示禁用清理。
+        - generic [ref=e72]:
+          - spinbutton "例如 10" [ref=e73]: "10"
+          - button "保存" [ref=e74] [cursor=pointer]
+      - generic [ref=e76]:
+        - generic [ref=e77]:
+          - generic [ref=e78]: NSFW 内容分析
+          - generic [ref=e79]: 录制时定期抽帧、用本地模型判断内容是否为成人内容，录制结束后写入媒体索引。开启对新开始的录制立即生效；关闭后立即释放已加载的模型，进行中的采样停止且不影响录制。
+          - generic [ref=e80]: 未找到模型文件：开启后无法分析，视频将标记为「未知」。
+        - switch "NSFW 内容分析" [ref=e81] [cursor=pointer]
+      - generic [ref=e84]:
+        - generic [ref=e85]: 录制清晰度
+        - generic [ref=e86]: 录制时优先选择的画质档位。对新开始的录制生效，进行中的录制不受影响。
+        - combobox [ref=e88]:
+          - option "最高（默认）" [selected]
+          - option "1080p"
+          - option "720p"
+          - option "480p"
+          - option "360p"
+          - option "240p"
+          - option "自定义…"
+        - generic [ref=e89]: 匹配策略（高级）
+        - combobox [disabled] [ref=e91]:
+          - option "最接近" [selected]
+          - option "不低于目标中最接近"
+          - option "不高于目标中最接近"
+          - option "仅精确匹配"
+        - generic [ref=e92]: 已选「最高」，将始终录制源的最高画质，匹配策略不适用。
+      - generic [ref=e93]:
+        - generic [ref=e94]:
+          - text: 播放器快捷键
+          - button "恢复默认" [ref=e96] [cursor=pointer]
+        - generic [ref=e97]:
+          - generic [ref=e98]: 在录制详情页生效。点击键位徽章后按任意键改绑，Esc 取消。
+          - generic [ref=e99]:
+            - generic [ref=e100]: 播放 / 暂停
+            - button "Space" [ref=e101] [cursor=pointer]
+          - generic [ref=e102]:
+            - generic [ref=e103]: 后退 5 秒
+            - button "←" [ref=e104] [cursor=pointer]
+          - generic [ref=e105]:
+            - generic [ref=e106]: 前进 5 秒
+            - button "→" [ref=e107] [cursor=pointer]
+          - generic [ref=e108]:
+            - generic [ref=e109]: 后退 30 秒
+            - button "⇧ ←" [ref=e110] [cursor=pointer]
+          - generic [ref=e111]:
+            - generic [ref=e112]: 前进 30 秒
+            - button "⇧ →" [ref=e113] [cursor=pointer]
+          - generic [ref=e114]:
+            - generic [ref=e115]: 音量 +
+            - button "↑" [ref=e116] [cursor=pointer]
+          - generic [ref=e117]:
+            - generic [ref=e118]: 音量 −
+            - button "↓" [ref=e119] [cursor=pointer]
+          - generic [ref=e120]:
+            - generic [ref=e121]: 上一个视频
+            - button "PgUp" [ref=e122] [cursor=pointer]
+          - generic [ref=e123]:
+            - generic [ref=e124]: 下一个视频
+            - button "PgDn" [ref=e125] [cursor=pointer]
+          - generic [ref=e126]:
+            - generic [ref=e127]: 静音 / 取消静音
+            - button "X" [ref=e128] [cursor=pointer]
+          - generic [ref=e129]:
+            - generic [ref=e130]: 标记待删除
+            - button "M" [ref=e131] [cursor=pointer]
