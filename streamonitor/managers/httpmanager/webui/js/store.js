@@ -285,7 +285,8 @@ async function loadDetail(site, user){
       const id = v.filename; const old = oldById[id];
       return { id, dt: parseTs(v.mtime), dur: v.duration!=null ? v.duration : (old && old.dur!=null ? old.dur : null), size: v.size||0,
         watchPct: old?old.watchPct:0, marked: old?!!old.marked:false,
-        lastWatched: old?old.lastWatched:null, _filename: v.filename, _url: v.url||'', _recording: !!v.recording };
+        lastWatched: old?old.lastWatched:null, _filename: v.filename, _url: v.url||'', _recording: !!v.recording,
+        _cls: v.classification||null, _inRecycle: !!v.inRecycle };
     }).sort((a,b)=>b.dt-a.dt);
     s.temps = []; s._detailLoaded = true; s._filesSig = sig; s._detailError = false;
     if (route.view==='detail' && route.id===s.id && !player.fileId && s.files[0]) setPlayerFile(s.files[0]);

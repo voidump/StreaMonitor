@@ -7,6 +7,7 @@ import queue
 import re
 import subprocess
 import threading
+from contextlib import closing
 from time import sleep, time
 from types import SimpleNamespace
 from urllib.parse import urljoin, urlparse
@@ -1018,6 +1019,42 @@ def _validate_indexed_files(streamers):
     return changed
 
 
+def _recycle_root():
+    # Recycle-bin root used for the videos' inRecycle flag. Prefer the
+    # parameters getter once the recycle-bin engine lands it; until then follow
+    # the agreed convention: '_recycle' resolved against the download dir.
+    getter = (getattr(parameters, 'get_nsfw_recycle_dir', None)
+              or getattr(parameters, 'get_recycle_dir', None))
+    if callable(getter):
+        try:
+            return os.path.abspath(getter())
+        except Exception:
+            pass
+    d = (getattr(parameters, 'NSFW_RECYCLE_DIR', None)
+         or getattr(parameters, 'RECYCLE_DIR', None) or '_recycle')
+    if not os.path.isabs(d):
+        d = os.path.join(parameters.get_download_dir(), d)
+    return os.path.abspath(d)
+
+
+def _classification_map(siteslug, username):
+    # {filename: classification} for one streamer in a single SQLite query (no
+    # per-file disk IO). Only used while media_index.list_videos rows do not
+    # carry a classification key themselves; any miss returns an empty dict so
+    # the API reports null (not yet classified / index unavailable).
+    try:
+        if not media_index._index_readable():
+            return {}
+        with closing(media_index.connect()) as conn:
+            rows = conn.execute(
+                'SELECT filename, classification FROM media_files '
+                'WHERE deleted=0 AND site=? AND username=?',
+                (siteslug, username)).fetchall()
+        return {r[0]: r[1] for r in rows}
+    except Exception:
+        return {}
+
+
 def _recording_disk_entry(streamer):
     # (filename, abs_path, size, mtime) of the file the recorder is writing,
     # stat'ed from disk, or None. The scanner deliberately never indexes this
@@ -1082,14 +1119,22 @@ def register_api_v2(app, manager, login_required):
         # disk scan so behavior is unchanged when the index is off or cold.
         indexed = media_index.list_videos(streamer.siteslug, streamer.username)
         if indexed is not None:
+            # Classification comes from the index only (never a per-file probe):
+            # use a classification key on the rows when present, otherwise fetch
+            # the whole streamer's labels in one extra query.
+            cls_map = None
+            if not (indexed and 'classification' in indexed[0]):
+                cls_map = _classification_map(streamer.siteslug, streamer.username)
             # Externally deleted files (video_filter, temp repair, purge, manual
             # rm) are not reflected until the next scan; drop stale rows here
             # and sync the index so playback never 404s on a listed video.
             entries = []
             for row in indexed:
                 if os.path.isfile(row['abs_path']):
+                    cls = (row['classification'] if cls_map is None
+                           else cls_map.get(row['filename']))
                     entries.append((row['filename'], row['abs_path'], row['size'],
-                                    row['mtime'], row['duration']))
+                                    row['mtime'], row['duration'], cls))
                 else:
                     media_index.mark_deleted(row['abs_path'])
             # The scanner skips the file the recorder is writing, so add it
@@ -1097,13 +1142,14 @@ def register_api_v2(app, manager, login_required):
             if recording_name not in {e[0] for e in entries}:
                 rec = _recording_disk_entry(streamer)
                 if rec is not None:
-                    entries.append(rec + (None,))
+                    entries.append(rec + (None, None))
         else:
             streamer.cache_file_list()
             entries = [(v.filename, v.abs_path, v.filesize,
-                        int(v._stat.st_mtime), None) for v in streamer.video_files]
+                        int(v._stat.st_mtime), None, None) for v in streamer.video_files]
+        recycle_prefix = _recycle_root() + os.sep
         videos = []
-        for filename, abs_path, size, mtime, indexed_duration in entries:
+        for filename, abs_path, size, mtime, indexed_duration, classification in entries:
             is_recording = bool(streamer.recording and filename == recording_name)
             # Never block the response on ffprobe: use the index's duration or
             # the warm cache only, and queue uncached files for the background
@@ -1128,6 +1174,8 @@ def register_api_v2(app, manager, login_required):
                 'duration': duration,
                 'url': f'/video/{streamer.username}/{streamer.siteslug}/{filename}',
                 'recording': is_recording,
+                'classification': classification,
+                'inRecycle': os.path.abspath(abs_path).startswith(recycle_prefix),
             })
         videos.sort(key=lambda v: v['mtime'], reverse=True)
         # Opportunistically drop durations.json entries for files that no longer

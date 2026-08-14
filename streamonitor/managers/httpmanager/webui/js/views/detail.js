@@ -61,11 +61,19 @@ function renderDetail(s){
       ? apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(f._filename)+'/thumb')+'?v='+thumbVer
       : genThumb(f.id);
     const liveThumb = f._recording && liveWatchable(s);   // recording tile enters live view instead of playing the growing tmp file
-    return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}" ${liveThumb?`data-watchlive="${s.id}"`:`data-playfile="${f.id}"`}>
+    // classification badge (from the NSFW analyzer via the media index); no
+    // badge at all when the file has not been analyzed (_cls null)
+    const clsBadge = f._cls==='adult' ? `<span class="cls-badge adult" title="${t('clsAdultTip')}">${t('clsAdult')}</span>`
+      : f._cls==='non-adult' ? `<span class="cls-badge nonadult" title="${t('clsNonAdultTip')}">${t('clsNonAdult')}</span>`
+      : f._cls==='unknown' ? `<span class="cls-badge unknown" title="${t('clsUnknownTip')}">${t('clsUnknown')}</span>` : '';
+    const recycleBadge = f._inRecycle ? `<span class="recycle-badge" title="${t('inRecycleTip')}">${IC.trash||''}${t('inRecycleTag')}</span>` : '';
+    const trBadges = (clsBadge||recycleBadge) ? `<span class="tr-badges">${clsBadge}${recycleBadge}</span>` : '';
+    return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}${f._inRecycle?' inrecycle':''}" ${liveThumb?`data-watchlive="${s.id}"`:`data-playfile="${f.id}"`}>
       <div class="imgwrap">
         <img src="${thumbSrc}" alt="" loading="lazy"${useApiThumb?` data-thumb-fallback="${esc(f.id)}"`:''}>
         ${f._recording?`<span class="rec-badge">${t('recTag')}</span>`:''}
         ${f.marked?`<span class="mark-badge">${IC.markFill}${t('markedTag')}</span>`:''}
+        ${trBadges}
         <span class="dur">${fmtDur(f.dur)}</span>
         ${f.watchPct>0?`<span class="wprog" style="width:${f.watchPct}%"></span>`:''}
         <span class="hover-play">${IC.playLg}</span>

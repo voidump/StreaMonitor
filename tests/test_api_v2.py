@@ -1340,6 +1340,53 @@ def test_detail_recording_video_has_null_duration(tmp_path, monkeypatch):
     assert video["duration"] is None
 
 
+def test_detail_classification_null_and_not_in_recycle_by_default(tmp_path, monkeypatch):
+    # Disk-scan fallback (no media index db): the keys are always present,
+    # classification is null (not analyzed) and inRecycle is false.
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    video = json.loads(response.data)["videos"][0]
+    assert video["classification"] is None
+    assert video["inRecycle"] is False
+    api_v2._probe_queue.join()
+
+
+def test_detail_classification_comes_from_media_index(tmp_path, monkeypatch):
+    import streamonitor.media_index as media_index
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(media_index.parameters, "MIN_VIDEO_SIZE_MB", 0)
+    streamer, path = _make_streamer_with_video()
+    media_index.scan_once()
+    media_index.set_classification(path, "adult")
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    video = json.loads(response.data)["videos"][0]
+    assert video["classification"] == "adult"
+    assert video["inRecycle"] is False
+    api_v2._probe_queue.join()
+
+
+def test_detail_flags_video_in_recycle_bin(tmp_path, monkeypatch):
+    # An index row whose abs_path lives under downloads/_recycle is reported
+    # with inRecycle=true so the UI can gray it out.
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    recycle_dir = tmp_path / "downloads" / "_recycle" / "alice [FS]"
+    recycle_dir.mkdir(parents=True)
+    fpath = recycle_dir / "alice-20260706-120000.mp4"
+    fpath.write_bytes(b"0" * 1000)
+    rows = [{"filename": "alice-20260706-120000.mp4", "abs_path": str(fpath),
+             "size": 1000, "mtime": 1_700_000_000, "duration": 12.0}]
+    monkeypatch.setattr(api_v2.media_index, "list_videos", lambda site, user: rows)
+    manager = HTTPManager([streamer])
+    response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    video = json.loads(response.data)["videos"][0]
+    assert video["inRecycle"] is True
+    assert video["classification"] is None
+
+
 @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg/ffprobe not installed")
 def test_video_thumb_real_video_generates_and_caches(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

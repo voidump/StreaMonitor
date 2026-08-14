@@ -480,6 +480,20 @@ tr:hover .row-actions{opacity:1}
   border-radius:3px;padding:1px 6px;font-size:10px;font-weight:600;
   display:inline-flex;align-items:center;gap:3px;
 }
+
+/* classification + recycle-bin badges (top-right of the thumbnail, same
+ * geometry as .mark-badge; stacked in a flex row when both are shown) */
+.tr-badges{position:absolute;right:6px;top:6px;display:flex;gap:4px;z-index:2}
+.cls-badge,.recycle-badge{
+  border-radius:3px;padding:1px 6px;font-size:10px;font-weight:600;
+  display:inline-flex;align-items:center;gap:3px;
+}
+.cls-badge.adult{background:rgba(229,72,77,.9);color:#ffe0e1}
+.cls-badge.nonadult{background:rgba(63,185,80,.88);color:#0c2513}
+.cls-badge.unknown{background:rgba(93,106,125,.55);color:var(--text-dim)}
+.recycle-badge{background:rgba(42,53,70,.92);color:var(--text-dim);border:1px solid var(--border-strong)}
+.vthumb.inrecycle img{filter:grayscale(1);opacity:.55}
+.vthumb.inrecycle .meta{opacity:.62}
 .icon-btn.markon{color:var(--warn)}
 .icon-btn.markon:hover{color:#e8bc4a}
 .kbd-hints{margin-left:auto;color:var(--text-faint);font-size:11px;white-space:nowrap}
