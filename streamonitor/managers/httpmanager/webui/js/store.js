@@ -54,6 +54,10 @@ let settings = {hotkeys: loadHotkeys()};
 let downloadDir = {path:'', draft:'', loading:false, saving:false, error:null, loaded:false};
 /* server-side min-video-size cleanup threshold (MB); mirrors downloadDir */
 let minVid = {value:null, draft:'', loading:false, saving:false, error:null, loaded:false};
+/* server-side NSFW analysis toggle; error holds an i18n KEY (see recRes note).
+ * modelPresent/runtimeAvailable are readiness info only — the toggle stays
+ * usable without them (analysis then degrades to 'unknown' labels). */
+let nsfw = {enabled:null, modelPresent:false, runtimeAvailable:false, loading:false, saving:false, error:null, loaded:false};
 
 /* server-side recording resolution (v3.3). committed resolution/preference mirror
  * the last server-confirmed value; sel/custom/pref are the editable UI drafts,
@@ -113,7 +117,7 @@ function nav(to){
     if (s2 && !s2._schedLoaded) loadSchedule(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
-  if (to.view==='settings'){ loadDownloadDir(); loadMinVideoSize(); loadRecResolution(); }   // read the current download dir + cleanup threshold + recording resolution (mock fills demo values)
+  if (to.view==='settings'){ loadDownloadDir(); loadMinVideoSize(); loadRecResolution(); loadNsfw(); }   // read the current download dir + cleanup threshold + recording resolution + NSFW toggle (mock fills demo values)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
 }
@@ -548,6 +552,49 @@ async function saveMinVideoSize(){
     toast(t('minVidSavedToast')); render();
   } catch(e){
     minVid.saving = false; minVid.error = t('minVidErrGeneric'); render();
+  }
+}
+
+/* ---- NSFW analysis toggle (server-side): read + change-to-save ---- */
+async function loadNsfw(){
+  if (apiState.mode!=='api'){   // mock: show a representative state, no backend call
+    if (!nsfw.loaded){ Object.assign(nsfw, MOCK_NSFW); nsfw.loaded = true; }
+    return;
+  }
+  nsfw.loading = true; nsfw.error = null; render();
+  try {
+    const d = await apiGet('/settings/nsfw');
+    nsfw.enabled = !!(d && d.enabled);
+    nsfw.modelPresent = !!(d && d.modelPresent);
+    nsfw.runtimeAvailable = !!(d && d.runtimeAvailable);
+    nsfw.loaded = true; nsfw.loading = false; nsfw.error = null;
+    render();
+  } catch(e){
+    nsfw.loading = false; nsfw.error = 'nsfwLoadErr'; render();
+  }
+}
+async function saveNsfw(enabled){
+  if (apiState.mode!=='api'){   // mock: accept locally, show success toast
+    nsfw.enabled = enabled; nsfw.error = null;
+    toast(t(enabled ? 'nsfwOnToast' : 'nsfwOffToast')); render(); return;
+  }
+  nsfw.saving = true; nsfw.error = null; render();
+  try {
+    const r = await fetch(apiUrl('/settings/nsfw'), {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Accept':'application/json','Content-Type':'application/json'},
+      body: JSON.stringify({enabled}),
+    });
+    const txt = await r.text();
+    const data = txt ? JSON.parse(txt) : {};
+    if (!r.ok){ nsfw.saving = false; nsfw.error = (data && data.error) || 'nsfwErrGeneric'; render(); return; }
+    nsfw.enabled = !!data.enabled;
+    nsfw.modelPresent = !!data.modelPresent;
+    nsfw.runtimeAvailable = !!data.runtimeAvailable;
+    nsfw.saving = false; nsfw.error = null;
+    toast(t(nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast')); render();
+  } catch(e){
+    nsfw.saving = false; nsfw.error = 'nsfwErrGeneric'; render();
   }
 }
 

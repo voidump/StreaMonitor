@@ -11,9 +11,13 @@ If live sampling produced fewer than parameters.NSFW_MAX_SAMPLES scores and no
 adult frame was seen, additional frames are sampled evenly across the finished
 file as a fallback.
 
-Everything is off unless parameters.NSFW_ENABLED is True: no thread is
-started, no model is loaded and onnxruntime is never imported. All failures
-are swallowed so analysis can never affect a recording.
+Everything is off unless the NSFW_ENABLED runtime setting (read via
+parameters.get_nsfw_enabled()) is True: no thread is started, no model is
+loaded and onnxruntime is never imported. The flag can be toggled at runtime
+through the settings API; disabling it releases the loaded model
+(unload_session) and makes in-progress sampling threads exit without writing
+classifications. All failures are swallowed so analysis can never affect a
+recording.
 
 Supported models (parameters.NSFW_MODEL_PATH, bring your own file):
 - 2-class normal/nsfw classifiers with NCHW float32 input, e.g. the ViT at
@@ -44,16 +48,23 @@ _load_lock = threading.Lock()
 _infer_lock = threading.Lock()  # single-threaded inference keeps CPU usage bounded
 _session = None
 _session_failed = False
+_cli_mode = False  # the offline CLI entry works regardless of the enabled flag
 
 
 def _get_session():
     # Lazy-load onnxruntime and the model on first use; a failure (missing
     # package or model file) is logged once and everything degrades to
-    # 'unknown' labels from then on.
+    # 'unknown' labels from then on. Returns None without loading anything
+    # while the runtime toggle is off (except for the offline CLI), so a
+    # disable-then-unload cannot race a concurrent sample back into a load.
     global _session, _session_failed
+    if not _cli_mode and not parameters.get_nsfw_enabled():
+        return None
     if _session is not None or _session_failed:
         return _session
     with _load_lock:
+        if not _cli_mode and not parameters.get_nsfw_enabled():
+            return None
         if _session is not None or _session_failed:
             return _session
         try:
@@ -71,6 +82,16 @@ def _get_session():
             _session_failed = True
             logger.warning(f'NSFW analysis unavailable, videos will be labeled unknown: {e}')
         return _session
+
+
+def unload_session():
+    # Release the loaded ONNX session when the runtime toggle is switched off
+    # and reset the failure latch so the next enable retries loading. Safe to
+    # call at any time; a concurrent inference finishes on its old reference.
+    global _session, _session_failed
+    with _load_lock:
+        _session = None
+        _session_failed = False
 
 
 def _input_spec(session):
@@ -216,6 +237,8 @@ class RecordingMonitor:
     def _run(self):
         interval = max(int(parameters.NSFW_SAMPLE_INTERVAL), 5)
         while not self._stop.wait(interval):
+            if not parameters.get_nsfw_enabled():
+                return  # toggle switched off: stop sampling, recording is unaffected
             try:
                 self._sample_once()
             except Exception as e:
@@ -295,6 +318,10 @@ class RecordingMonitor:
         except Exception:
             pass
         try:
+            if not parameters.get_nsfw_enabled():
+                # Toggle switched off mid-recording: abandon the partial
+                # classification, write nothing to the media index.
+                return
             finals = self._final_files()
             if not finals:
                 return
@@ -319,7 +346,7 @@ def start_monitor(bot):
     # Attach a RecordingMonitor to the bot when the feature is enabled.
     # A no-op (no import, no model load, no thread) when disabled. Never raises.
     try:
-        if not parameters.NSFW_ENABLED or not bot.recording_filename:
+        if not parameters.get_nsfw_enabled() or not bot.recording_filename:
             return
         monitor = RecordingMonitor(bot)
         monitor.start()
@@ -340,6 +367,8 @@ def finish_monitor(bot):
 
 
 def _main(argv):
+    global _cli_mode
+    _cli_mode = True  # offline classification works regardless of the enabled flag
     if len(argv) < 2:
         print('usage: python -m streamonitor.nsfw_analyzer <video file> [...]')
         return 2

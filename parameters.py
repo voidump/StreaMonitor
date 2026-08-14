@@ -145,7 +145,46 @@ def persist_min_video_size_mb(value):
 # (default) nothing is imported, loaded or started. When analysis is not
 # possible (missing packages/model, ffmpeg errors) videos are labeled
 # 'unknown' and recording is never affected.
+# This is a runtime-configurable, persisted setting: read it via
+# get_nsfw_enabled() at call time (same pattern as get_min_video_size_mb) so
+# changes made through the settings API take effect without a restart.
 NSFW_ENABLED = env.bool("STRMNTR_NSFW_ENABLED", False)
+
+
+def get_nsfw_enabled():
+    # Read at call time so runtime changes made via the settings API take
+    # effect without restarting (same pattern as get_min_video_size_mb).
+    return NSFW_ENABLED
+
+
+def set_nsfw_enabled(value):
+    global NSFW_ENABLED
+    NSFW_ENABLED = bool(value)
+
+
+def persist_nsfw_enabled(value):
+    # Write STRMNTR_NSFW_ENABLED into the project .env, preserving other keys,
+    # using the same atomic write-then-rename as persist_download_dir.
+    env_path = '.env'
+    key = 'STRMNTR_NSFW_ENABLED'
+    new_line = f'{key}={"true" if value else "false"}'
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            lines = f.read().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
+            lines[i] = new_line
+            found = True
+            break
+    if not found:
+        lines.append(new_line)
+    tmp_path = env_path + '.tmp'
+    with open(tmp_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    os.replace(tmp_path, env_path)
 
 # Seconds between frame grabs while a recording is in progress.
 NSFW_SAMPLE_INTERVAL = env.int("STRMNTR_NSFW_SAMPLE_INTERVAL", 60)

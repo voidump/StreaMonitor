@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -207,6 +208,29 @@ def _recording_resolution_payload():
     return {
         'resolution': parameters.get_recording_resolution(),
         'preference': parameters.get_recording_resolution_preference(),
+    }
+
+
+def _nsfw_runtime_available():
+    # find_spec only locates the packages, it never imports them; it can still
+    # raise (e.g. a broken installation), which must degrade to "unavailable"
+    # rather than turning the settings endpoint into a 500.
+    try:
+        return (importlib.util.find_spec('onnxruntime') is not None
+                and importlib.util.find_spec('numpy') is not None)
+    except Exception:
+        return False
+
+
+def _nsfw_payload():
+    # Readiness is informational only: the toggle may be enabled without the
+    # model or runtime packages (analysis then degrades to 'unknown' labels).
+    model_path = parameters.NSFW_MODEL_PATH
+    return {
+        'enabled': parameters.get_nsfw_enabled(),
+        'modelPresent': os.path.isfile(model_path),
+        'modelPath': model_path,
+        'runtimeAvailable': _nsfw_runtime_available(),
     }
 
 
@@ -1505,6 +1529,29 @@ def register_api_v2(app, manager, login_required):
         parameters.set_min_video_size_mb(value)
         parameters.persist_min_video_size_mb(value)
         return _json({'minVideoSizeMb': parameters.get_min_video_size_mb()})
+
+    @app.route('/api/v2/settings/nsfw', methods=['GET'])
+    @login_required
+    def api_v2_get_nsfw():
+        return _json(_nsfw_payload())
+
+    @app.route('/api/v2/settings/nsfw', methods=['PUT', 'POST'])
+    @login_required
+    def api_v2_set_nsfw():
+        data = request.get_json(silent=True) or {}
+        enabled = data.get('enabled')
+        if not isinstance(enabled, bool):
+            return _json({'error': 'enabled must be a boolean', 'code': 'invalid'}, 400)
+        # Takes effect immediately: start_monitor reads the flag via the getter
+        # when a recording starts. Disabling releases the loaded model and
+        # makes in-progress sampling threads exit without writing
+        # classifications; recordings are never affected.
+        parameters.set_nsfw_enabled(enabled)
+        parameters.persist_nsfw_enabled(enabled)
+        if not enabled:
+            from streamonitor import nsfw_analyzer
+            nsfw_analyzer.unload_session()
+        return _json(_nsfw_payload())
 
     @app.route('/api/v2/settings/recording-resolution', methods=['GET'])
     @login_required
