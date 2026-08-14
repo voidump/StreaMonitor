@@ -57,7 +57,10 @@ let minVid = {value:null, draft:'', loading:false, saving:false, error:null, loa
 /* server-side NSFW analysis toggle; error holds an i18n KEY (see recRes note).
  * modelPresent/runtimeAvailable are readiness info only — the toggle stays
  * usable without them (analysis then degrades to 'unknown' labels). */
-let nsfw = {enabled:null, modelPresent:false, runtimeAvailable:false, loading:false, saving:false, error:null, loaded:false};
+const NSFW_ACTIONS = ['mark_only','recycle','delete'];
+let nsfw = {enabled:null, action:'mark_only', recycleRetentionDays:7, scanIntervalHours:6,
+            retentionDraft:'7', scanDraft:'6',
+            modelPresent:false, runtimeAvailable:false, loading:false, saving:false, error:null, loaded:false};
 
 /* server-side recording resolution (v3.3). committed resolution/preference mirror
  * the last server-confirmed value; sel/custom/pref are the editable UI drafts,
@@ -556,43 +559,62 @@ async function saveMinVideoSize(){
 }
 
 /* ---- NSFW analysis toggle (server-side): read + change-to-save ---- */
+function _applyNsfwPayload(d){
+  nsfw.enabled = !!(d && d.enabled);
+  if (d && NSFW_ACTIONS.includes(d.action)) nsfw.action = d.action;
+  if (d && d.recycleRetentionDays!=null) nsfw.recycleRetentionDays = d.recycleRetentionDays;
+  if (d && d.scanIntervalHours!=null) nsfw.scanIntervalHours = d.scanIntervalHours;
+  nsfw.retentionDraft = String(nsfw.recycleRetentionDays);
+  nsfw.scanDraft = String(nsfw.scanIntervalHours);
+  nsfw.modelPresent = !!(d && d.modelPresent);
+  nsfw.runtimeAvailable = !!(d && d.runtimeAvailable);
+}
 async function loadNsfw(){
   if (apiState.mode!=='api'){   // mock: show a representative state, no backend call
-    if (!nsfw.loaded){ Object.assign(nsfw, MOCK_NSFW); nsfw.loaded = true; }
+    if (!nsfw.loaded){ Object.assign(nsfw, MOCK_NSFW); nsfw.retentionDraft = String(nsfw.recycleRetentionDays); nsfw.scanDraft = String(nsfw.scanIntervalHours); nsfw.loaded = true; }
     return;
   }
   nsfw.loading = true; nsfw.error = null; render();
   try {
     const d = await apiGet('/settings/nsfw');
-    nsfw.enabled = !!(d && d.enabled);
-    nsfw.modelPresent = !!(d && d.modelPresent);
-    nsfw.runtimeAvailable = !!(d && d.runtimeAvailable);
+    _applyNsfwPayload(d);
     nsfw.loaded = true; nsfw.loading = false; nsfw.error = null;
     render();
   } catch(e){
     nsfw.loading = false; nsfw.error = 'nsfwLoadErr'; render();
   }
 }
-async function saveNsfw(enabled){
+/* patch may contain enabled / action / recycleRetentionDays / scanIntervalHours;
+ * the full current config is always sent so the server state stays coherent. */
+async function saveNsfw(patch){
+  const body = {
+    enabled: nsfw.enabled===null ? false : nsfw.enabled,
+    action: nsfw.action,
+    recycleRetentionDays: nsfw.recycleRetentionDays,
+    scanIntervalHours: nsfw.scanIntervalHours,
+  };
+  Object.assign(body, patch||{});
+  const toggled = !patch || ('enabled' in patch);
   if (apiState.mode!=='api'){   // mock: accept locally, show success toast
-    nsfw.enabled = enabled; nsfw.error = null;
-    toast(t(enabled ? 'nsfwOnToast' : 'nsfwOffToast')); render(); return;
+    Object.assign(nsfw, body);
+    nsfw.retentionDraft = String(nsfw.recycleRetentionDays);
+    nsfw.scanDraft = String(nsfw.scanIntervalHours);
+    nsfw.error = null;
+    toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render(); return;
   }
   nsfw.saving = true; nsfw.error = null; render();
   try {
     const r = await fetch(apiUrl('/settings/nsfw'), {
       method:'PUT', credentials:'same-origin',
       headers:{'Accept':'application/json','Content-Type':'application/json'},
-      body: JSON.stringify({enabled}),
+      body: JSON.stringify(body),
     });
     const txt = await r.text();
     const data = txt ? JSON.parse(txt) : {};
-    if (!r.ok){ nsfw.saving = false; nsfw.error = (data && data.error) || 'nsfwErrGeneric'; render(); return; }
-    nsfw.enabled = !!data.enabled;
-    nsfw.modelPresent = !!data.modelPresent;
-    nsfw.runtimeAvailable = !!data.runtimeAvailable;
+    if (!r.ok){ nsfw.saving = false; nsfw.error = (data && data.code==='invalid') ? 'nsfwErrInvalid' : ((data && data.error) || 'nsfwErrGeneric'); render(); return; }
+    _applyNsfwPayload(data);
     nsfw.saving = false; nsfw.error = null;
-    toast(t(nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast')); render();
+    toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render();
   } catch(e){
     nsfw.saving = false; nsfw.error = 'nsfwErrGeneric'; render();
   }

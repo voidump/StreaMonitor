@@ -109,6 +109,11 @@ function renderNsfwPanel(){
   const n = nsfw;
   const busy = n.loading || n.saving;
   const notReady = n.loaded && (!n.modelPresent || !n.runtimeAvailable);
+  const actionOpt=(v,tl,dl)=>`
+            <label class="nsfw-opt">
+              <input type="radio" name="nsfwAction" value="${v}" ${n.action===v?'checked':''} ${busy?'disabled':''} data-nsfw-action>
+              <span><span class="t">${t(tl)}</span><div class="d">${t(dl)}</div></span>
+            </label>`;
   return `
       <div class="panel settings-panel nsfw-panel">
         <div class="set-row">
@@ -118,12 +123,54 @@ function renderNsfwPanel(){
             ${notReady?`<div class="desc" style="margin-top:8px">${!n.runtimeAvailable?t('nsfwNoRuntime'):t('nsfwNoModel')}</div>`:''}
             ${n.error?`<div class="dldir-err">${t(n.error)}</div>`:''}
           </div>
-          <select class="site-select on" data-nsfw-select ${busy?'disabled':''}>
-            <option value="off" ${n.enabled?'':'selected'}>${t('nsfwOff')}</option>
-            <option value="on" ${n.enabled?'selected':''}>${t('nsfwOn')}</option>
-          </select>
+          <button class="switch" role="switch" aria-checked="${n.enabled?'true':'false'}" aria-label="${t('nsfw')}" data-nsfw-toggle ${busy?'disabled':''}></button>
         </div>
+        ${n.enabled?`
+        <div class="nsfw-sub">
+          <div>
+            <div class="k" style="font-size:12.5px">${t('nsfwAction')}</div>
+            <div class="desc">${t('nsfwActionDesc')}</div>
+          </div>
+          ${actionOpt('mark_only','nsfwActionMark','nsfwActionMarkDesc')}
+          ${actionOpt('recycle','nsfwActionRecycle','nsfwActionRecycleDesc')}
+          ${actionOpt('delete','nsfwActionDelete','nsfwActionDeleteDesc')}
+        </div>
+        ${n.action==='recycle'?`
+        <div class="nsfw-sub">
+          <div>
+            <div class="k" style="font-size:12.5px">${t('nsfwRetention')}</div>
+            <div class="desc">${t('nsfwRetentionDesc')}</div>
+          </div>
+          <div class="nsfw-num">
+            <input type="number" id="nsfwRetentionInput" class="dldir-input" value="${esc(n.retentionDraft)}" min="1" max="90" step="1" ${busy?'disabled':''}>
+            <button class="btn primary" data-nsfw-retention-save ${busy?'disabled':''}>${n.saving?t('dlDirSaving'):t('dlDirSave')}</button>
+          </div>
+        </div>`:''}
+        <div class="nsfw-sub">
+          <div>
+            <div class="k" style="font-size:12.5px">${t('nsfwScan')}</div>
+            <div class="desc">${t('nsfwScanDesc')}</div>
+          </div>
+          <div class="nsfw-num">
+            <input type="number" id="nsfwScanInput" class="dldir-input" value="${esc(n.scanDraft)}" min="0" max="168" step="1" ${busy?'disabled':''}>
+            <button class="btn primary" data-nsfw-scan-save ${busy?'disabled':''}>${n.saving?t('dlDirSaving'):t('dlDirSave')}</button>
+          </div>
+        </div>`:''}
       </div>`;
+}
+
+/* validate + save the two NSFW numeric drafts (change-to-save on button/Enter) */
+function saveNsfwRetention(){
+  const raw = (nsfw.retentionDraft||'').trim();
+  const v = Number(raw);
+  if (raw==='' || !Number.isInteger(v) || v<1 || v>90){ nsfw.error = 'nsfwErrInvalid'; render(); return; }
+  saveNsfw({recycleRetentionDays: v});
+}
+function saveNsfwScan(){
+  const raw = (nsfw.scanDraft||'').trim();
+  const v = Number(raw);
+  if (raw==='' || !Number.isInteger(v) || v<0 || v>168){ nsfw.error = 'nsfwErrInvalid'; render(); return; }
+  saveNsfw({scanIntervalHours: v});
 }
 
 /* Deleted-streamers entry: history is no longer a top-level nav item, so it is
@@ -189,6 +236,28 @@ document.addEventListener('click', e=>{
     saveMinVideoSize();
     return;
   }
+  const nToggle = e.target.closest('[data-nsfw-toggle]');
+  if (nToggle){
+    e.stopPropagation();
+    saveNsfw({enabled: !nsfw.enabled});
+    return;
+  }
+  const nRet = e.target.closest('[data-nsfw-retention-save]');
+  if (nRet){
+    e.stopPropagation();
+    const inp = document.getElementById('nsfwRetentionInput');
+    if (inp) nsfw.retentionDraft = inp.value;
+    saveNsfwRetention();
+    return;
+  }
+  const nScan = e.target.closest('[data-nsfw-scan-save]');
+  if (nScan){
+    e.stopPropagation();
+    const inp = document.getElementById('nsfwScanInput');
+    if (inp) nsfw.scanDraft = inp.value;
+    saveNsfwScan();
+    return;
+  }
   const bind = e.target.closest('[data-hkbind]');
   if (bind){
     e.stopPropagation();
@@ -224,6 +293,14 @@ document.addEventListener('input', e=>{
     recRes.custom = e.target.value;
     if (recRes.error){ recRes.error = null; render(); }
   }
+  if (e.target && e.target.id==='nsfwRetentionInput'){   // keep the NSFW drafts in sync across poll re-renders
+    nsfw.retentionDraft = e.target.value;
+    if (nsfw.error){ nsfw.error = null; render(); }
+  }
+  if (e.target && e.target.id==='nsfwScanInput'){
+    nsfw.scanDraft = e.target.value;
+    if (nsfw.error){ nsfw.error = null; render(); }
+  }
 });
 document.addEventListener('change', e=>{
   if (route.view!=='settings') return;
@@ -238,8 +315,8 @@ document.addEventListener('change', e=>{
   }
   const rpref = e.target.closest('[data-recres-pref]');
   if (rpref){ recRes.pref = rpref.value; saveRecResolution(); return; }
-  const nsel = e.target.closest('[data-nsfw-select]');
-  if (nsel){ saveNsfw(nsel.value==='on'); return; }
+  const nact = e.target.closest('[data-nsfw-action]');
+  if (nact){ saveNsfw({action: nact.value}); return; }
   const rcustom = e.target.closest('#recResCustom');
   if (rcustom){ recRes.custom = rcustom.value; saveRecResolution(); return; }
 });
@@ -259,6 +336,16 @@ document.addEventListener('keydown', e=>{
     e.preventDefault();
     recRes.custom = e.target.value;
     saveRecResolution();
+  }
+  if (e.target && e.target.id==='nsfwRetentionInput' && e.key==='Enter'){
+    e.preventDefault();
+    nsfw.retentionDraft = e.target.value;
+    saveNsfwRetention();
+  }
+  if (e.target && e.target.id==='nsfwScanInput' && e.key==='Enter'){
+    e.preventDefault();
+    nsfw.scanDraft = e.target.value;
+    saveNsfwScan();
   }
 });
 

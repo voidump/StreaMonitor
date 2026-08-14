@@ -822,10 +822,13 @@ def test_set_download_dir_unwritable_400(tmp_path, monkeypatch, preserve_downloa
 
 @pytest.fixture
 def preserve_nsfw(monkeypatch):
-    # The toggle mutates a parameters global and the analyzer's session cache;
+    # The toggle mutates parameters globals and the analyzer's session cache;
     # snapshot both so tests never leak state into the rest of the suite.
     import streamonitor.nsfw_analyzer as nsfw_analyzer
     monkeypatch.setattr(parameters, "NSFW_ENABLED", parameters.NSFW_ENABLED)
+    monkeypatch.setattr(parameters, "NSFW_ACTION", parameters.NSFW_ACTION)
+    monkeypatch.setattr(parameters, "NSFW_RECYCLE_RETENTION_DAYS", parameters.NSFW_RECYCLE_RETENTION_DAYS)
+    monkeypatch.setattr(parameters, "NSFW_SCAN_INTERVAL_HOURS", parameters.NSFW_SCAN_INTERVAL_HOURS)
     monkeypatch.setattr(nsfw_analyzer, "_session", nsfw_analyzer._session)
     monkeypatch.setattr(nsfw_analyzer, "_session_failed", nsfw_analyzer._session_failed)
     yield
@@ -909,6 +912,85 @@ def test_set_nsfw_invalid_400_no_change(tmp_path, monkeypatch, preserve_nsfw):
         assert json.loads(response.data)["code"] == "invalid"
     assert parameters.get_nsfw_enabled() is True           # state unchanged
     assert nsfw_analyzer._session is sentinel              # session untouched
+    assert not (tmp_path / ".env").exists()                # nothing persisted
+
+
+def test_get_nsfw_returns_handling_config(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/nsfw", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["action"] in parameters.NSFW_ACTIONS
+    assert 1 <= payload["recycleRetentionDays"] <= 90
+    assert 0 <= payload["scanIntervalHours"] <= 168
+
+
+def test_set_nsfw_handling_config_persists(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_enabled(False)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/nsfw",
+        json={"enabled": True, "action": "recycle",
+              "recycleRetentionDays": 14, "scanIntervalHours": 12},
+        headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["action"] == "recycle"
+    assert payload["recycleRetentionDays"] == 14
+    assert payload["scanIntervalHours"] == 12
+    assert parameters.get_nsfw_action() == "recycle"       # runtime effect
+    assert parameters.get_nsfw_recycle_retention_days() == 14
+    assert parameters.get_nsfw_scan_interval_hours() == 12
+    env_text = (tmp_path / ".env").read_text()             # persisted for restart
+    assert "STRMNTR_NSFW_ACTION=recycle" in env_text
+    assert "STRMNTR_NSFW_RECYCLE_RETENTION_DAYS=14" in env_text
+    assert "STRMNTR_NSFW_SCAN_INTERVAL_HOURS=12" in env_text
+
+
+def test_set_nsfw_enabled_only_keeps_handling_config(tmp_path, monkeypatch, preserve_nsfw):
+    # Old clients send only {enabled}; the sub-options must stay untouched.
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_action("recycle")
+    parameters.set_nsfw_recycle_retention_days(30)
+    parameters.set_nsfw_scan_interval_hours(24)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/nsfw", json={"enabled": True}, headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["action"] == "recycle"
+    assert payload["recycleRetentionDays"] == 30
+    assert payload["scanIntervalHours"] == 24
+
+
+def test_set_nsfw_handling_invalid_400_no_change(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_enabled(False)
+    parameters.set_nsfw_action("mark_only")
+    parameters.set_nsfw_recycle_retention_days(7)
+    parameters.set_nsfw_scan_interval_hours(6)
+    manager = HTTPManager([])
+    bad_payloads = [
+        {"enabled": True, "action": "shred"},
+        {"enabled": True, "recycleRetentionDays": 0},
+        {"enabled": True, "recycleRetentionDays": 91},
+        {"enabled": True, "recycleRetentionDays": 7.5},
+        {"enabled": True, "recycleRetentionDays": True},
+        {"enabled": True, "scanIntervalHours": -1},
+        {"enabled": True, "scanIntervalHours": 169},
+        {"enabled": True, "scanIntervalHours": "6"},
+    ]
+    for bad in bad_payloads:
+        response = _client(manager).put(
+            "/api/v2/settings/nsfw", json=bad, headers=AUTH)
+        assert response.status_code == 400, bad
+        assert json.loads(response.data)["code"] == "invalid"
+    assert parameters.get_nsfw_enabled() is False          # nothing applied
+    assert parameters.get_nsfw_action() == "mark_only"
+    assert parameters.get_nsfw_recycle_retention_days() == 7
+    assert parameters.get_nsfw_scan_interval_hours() == 6
     assert not (tmp_path / ".env").exists()                # nothing persisted
 
 

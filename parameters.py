@@ -186,6 +186,94 @@ def persist_nsfw_enabled(value):
         f.write('\n'.join(lines) + '\n')
     os.replace(tmp_path, env_path)
 
+
+def _persist_env_key(key, formatted_value):
+    # Write key=value into the project .env, preserving other keys, using the
+    # same atomic write-then-rename as persist_download_dir.
+    env_path = '.env'
+    new_line = f'{key}={formatted_value}'
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            lines = f.read().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
+            lines[i] = new_line
+            found = True
+            break
+    if not found:
+        lines.append(new_line)
+    tmp_path = env_path + '.tmp'
+    with open(tmp_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    os.replace(tmp_path, env_path)
+
+
+# What to do with a finished video once analysis classifies it as adult:
+#   mark_only - only record the classification in the media index (default)
+#   recycle   - move the file into the recycle bin (kept NSFW_RECYCLE_RETENTION_DAYS days)
+#   delete    - delete the file immediately
+# Runtime-configurable, persisted settings (same pattern as NSFW_ENABLED):
+# read via the getters at call time so changes via the settings API take
+# effect without a restart.
+NSFW_ACTIONS = ('mark_only', 'recycle', 'delete')
+NSFW_ACTION = env.str("STRMNTR_NSFW_ACTION", 'mark_only')
+if NSFW_ACTION not in NSFW_ACTIONS:
+    NSFW_ACTION = 'mark_only'
+
+# Days a recycled video is kept before it is permanently removed (1-90).
+NSFW_RECYCLE_RETENTION_DAYS = env.int("STRMNTR_NSFW_RECYCLE_RETENTION_DAYS", 7)
+if not 1 <= NSFW_RECYCLE_RETENTION_DAYS <= 90:
+    NSFW_RECYCLE_RETENTION_DAYS = 7
+
+# Hours between scheduled library scans that apply the configured action to
+# already-classified videos (0 disables the scheduled scan, max 168 = weekly).
+NSFW_SCAN_INTERVAL_HOURS = env.int("STRMNTR_NSFW_SCAN_INTERVAL_HOURS", 6)
+if not 0 <= NSFW_SCAN_INTERVAL_HOURS <= 168:
+    NSFW_SCAN_INTERVAL_HOURS = 6
+
+
+def get_nsfw_action():
+    return NSFW_ACTION
+
+
+def set_nsfw_action(value):
+    global NSFW_ACTION
+    NSFW_ACTION = value
+
+
+def persist_nsfw_action(value):
+    _persist_env_key('STRMNTR_NSFW_ACTION', value)
+
+
+def get_nsfw_recycle_retention_days():
+    return NSFW_RECYCLE_RETENTION_DAYS
+
+
+def set_nsfw_recycle_retention_days(value):
+    global NSFW_RECYCLE_RETENTION_DAYS
+    NSFW_RECYCLE_RETENTION_DAYS = int(value)
+
+
+def persist_nsfw_recycle_retention_days(value):
+    _persist_env_key('STRMNTR_NSFW_RECYCLE_RETENTION_DAYS', int(value))
+
+
+def get_nsfw_scan_interval_hours():
+    return NSFW_SCAN_INTERVAL_HOURS
+
+
+def set_nsfw_scan_interval_hours(value):
+    global NSFW_SCAN_INTERVAL_HOURS
+    NSFW_SCAN_INTERVAL_HOURS = int(value)
+
+
+def persist_nsfw_scan_interval_hours(value):
+    _persist_env_key('STRMNTR_NSFW_SCAN_INTERVAL_HOURS', int(value))
+
+
 # Seconds between frame grabs while a recording is in progress.
 NSFW_SAMPLE_INTERVAL = env.int("STRMNTR_NSFW_SAMPLE_INTERVAL", 60)
 

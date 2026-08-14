@@ -228,10 +228,42 @@ def _nsfw_payload():
     model_path = parameters.NSFW_MODEL_PATH
     return {
         'enabled': parameters.get_nsfw_enabled(),
+        'action': parameters.get_nsfw_action(),
+        'recycleRetentionDays': parameters.get_nsfw_recycle_retention_days(),
+        'scanIntervalHours': parameters.get_nsfw_scan_interval_hours(),
         'modelPresent': os.path.isfile(model_path),
         'modelPath': model_path,
         'runtimeAvailable': _nsfw_runtime_available(),
     }
+
+
+def _validate_nsfw_settings(data):
+    # Returns (updates, None) on success or (None, (code, message)) on
+    # failure. `enabled` is required; the sub-options are optional so old
+    # clients that only send {enabled} keep working. Nothing is applied
+    # unless the whole payload validates (400 never changes state).
+    if not isinstance(data, dict):
+        return None, ('invalid', 'enabled must be a boolean')
+    enabled = data.get('enabled')
+    if not isinstance(enabled, bool):
+        return None, ('invalid', 'enabled must be a boolean')
+    updates = {'enabled': enabled}
+    if 'action' in data:
+        action = data.get('action')
+        if action not in parameters.NSFW_ACTIONS:
+            return None, ('invalid', 'action must be one of: ' + ', '.join(parameters.NSFW_ACTIONS))
+        updates['action'] = action
+    if 'recycleRetentionDays' in data:
+        days = data.get('recycleRetentionDays')
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 90:
+            return None, ('invalid', 'recycleRetentionDays must be an integer between 1 and 90')
+        updates['recycleRetentionDays'] = days
+    if 'scanIntervalHours' in data:
+        hours = data.get('scanIntervalHours')
+        if isinstance(hours, bool) or not isinstance(hours, int) or not 0 <= hours <= 168:
+            return None, ('invalid', 'scanIntervalHours must be an integer between 0 and 168')
+        updates['scanIntervalHours'] = hours
+    return updates, None
 
 
 def _validate_recording_resolution(data):
@@ -1539,15 +1571,26 @@ def register_api_v2(app, manager, login_required):
     @login_required
     def api_v2_set_nsfw():
         data = request.get_json(silent=True) or {}
-        enabled = data.get('enabled')
-        if not isinstance(enabled, bool):
-            return _json({'error': 'enabled must be a boolean', 'code': 'invalid'}, 400)
+        updates, err = _validate_nsfw_settings(data)
+        if err:
+            code, message = err
+            return _json({'error': message, 'code': code}, 400)
         # Takes effect immediately: start_monitor reads the flag via the getter
         # when a recording starts. Disabling releases the loaded model and
         # makes in-progress sampling threads exit without writing
         # classifications; recordings are never affected.
+        enabled = updates['enabled']
         parameters.set_nsfw_enabled(enabled)
         parameters.persist_nsfw_enabled(enabled)
+        if 'action' in updates:
+            parameters.set_nsfw_action(updates['action'])
+            parameters.persist_nsfw_action(updates['action'])
+        if 'recycleRetentionDays' in updates:
+            parameters.set_nsfw_recycle_retention_days(updates['recycleRetentionDays'])
+            parameters.persist_nsfw_recycle_retention_days(updates['recycleRetentionDays'])
+        if 'scanIntervalHours' in updates:
+            parameters.set_nsfw_scan_interval_hours(updates['scanIntervalHours'])
+            parameters.persist_nsfw_scan_interval_hours(updates['scanIntervalHours'])
         if not enabled:
             from streamonitor import nsfw_analyzer
             nsfw_analyzer.unload_session()
