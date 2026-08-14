@@ -83,6 +83,9 @@ MEDIA_INDEX_SCAN_INTERVAL = env.int("STRMNTR_MEDIA_INDEX_SCAN_INTERVAL", 300)  #
 # never touched. Set to 0 to disable the filter entirely.
 MIN_VIDEO_SIZE_MB = env.float("STRMNTR_MIN_VIDEO_SIZE_MB", 10.0)
 
+# Deprecated: superseded by STRMNTR_NSFW_ACTION=recycle (the recycle bin with
+# retention-based purging). Kept for existing setups; ignored whenever the
+# NSFW action is 'recycle' or 'delete'.
 # Move finished videos classified 'non-adult' in the media index into a
 # separate directory, keeping the "<username> [<siteslug>]" folder layout so
 # the web UI keeps listing, playing and thumbnailing them after the move.

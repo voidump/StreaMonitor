@@ -32,7 +32,10 @@ CLEANUP_MTIME_GRACE_SECONDS = 300
 # next scan simply recreates it.
 _db_lock = threading.Lock()
 
-_SCHEMA = '''
+# classification is NULL until the NSFW pipeline writes a label: NULL means
+# "not analyzed" (the UI shows no badge), while 'unknown' means "analyzed but
+# undecidable" (see set_classification / nsfw_analyzer).
+_TABLE_SQL = '''
 CREATE TABLE IF NOT EXISTS media_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     site TEXT NOT NULL,
@@ -43,13 +46,17 @@ CREATE TABLE IF NOT EXISTS media_files (
     mtime INTEGER NOT NULL DEFAULT 0,
     duration REAL,
     thumb_path TEXT,
-    classification TEXT NOT NULL DEFAULT 'unknown',
+    classification TEXT,
     deleted INTEGER NOT NULL DEFAULT 0,
     updated_ts INTEGER NOT NULL DEFAULT 0
-);
+)'''
+
+_INDEX_SQL = '''
 CREATE INDEX IF NOT EXISTS idx_media_files_site_user ON media_files (site, username);
 CREATE INDEX IF NOT EXISTS idx_media_files_deleted ON media_files (deleted);
 '''
+
+_SCHEMA = _TABLE_SQL + ';' + _INDEX_SQL
 
 # classification is deliberately absent from the update clause so a re-scan
 # never clobbers a label assigned by the (future) NSFW analysis pipeline.
@@ -76,12 +83,55 @@ def index_db_path():
     return os.path.abspath(os.path.join(parameters.get_download_dir(), '.thumbs', 'media_index.db'))
 
 
+def _legacy_classification_default(conn):
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='media_files'"
+    ).fetchone()
+    return bool(row and row[0] and "DEFAULT 'unknown'" in row[0])
+
+
+def _migrate_classification_default(conn):
+    # Databases created before the nullable classification column labeled every
+    # scanned file 'unknown' by default, so never-analyzed videos were
+    # indistinguishable from real "analyzed but undecidable" results and the UI
+    # badged everything as unknown. Rebuild the table without the default and
+    # NULL out the legacy 'unknown' rows (overwhelmingly the scanner default;
+    # labels the NSFW pipeline writes from now on are preserved as-is).
+    if not _legacy_classification_default(conn):
+        return
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        if not _legacy_classification_default(conn):  # lost the migration race
+            conn.execute('ROLLBACK')
+            return
+        conn.execute('ALTER TABLE media_files RENAME TO media_files_legacy')
+        conn.execute(_TABLE_SQL)
+        conn.execute('''INSERT INTO media_files (id, site, username, filename,
+                            abs_path, size, mtime, duration, thumb_path,
+                            classification, deleted, updated_ts)
+                        SELECT id, site, username, filename, abs_path, size,
+                            mtime, duration, thumb_path,
+                            NULLIF(classification, 'unknown'), deleted, updated_ts
+                        FROM media_files_legacy''')
+        conn.execute('DROP TABLE media_files_legacy')
+        conn.commit()
+        conn.executescript(_INDEX_SQL)
+        logger.info('Media index migrated: classification default is now NULL')
+    except Exception as e:
+        try:
+            conn.execute('ROLLBACK')
+        except Exception:
+            pass
+        logger.warning(f'Media index classification migration failed: {e}')
+
+
 def connect():
     path = index_db_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.executescript(_SCHEMA)
+    _migrate_classification_default(conn)
     return conn
 
 

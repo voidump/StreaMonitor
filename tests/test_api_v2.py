@@ -431,6 +431,61 @@ def test_video_supports_range_requests(tmp_path, monkeypatch):
     assert full.headers["Accept-Ranges"] == "bytes"
 
 
+def _make_recycled_video(streamer, filename="alice-20260706-120000.mp4",
+                         data=b"0" * 1000):
+    # A file moved by the NSFW recycle action: same "<username> [<siteslug>]"
+    # folder layout under the recycle-bin dir instead of the output folder.
+    os.makedirs(streamer.recycleFolder, exist_ok=True)
+    path = os.path.join(streamer.recycleFolder, filename)
+    with open(path, "wb") as f:
+        f.write(data)
+    streamer.cache_file_list()
+    return path
+
+
+def test_video_falls_back_to_recycle_folder(tmp_path, monkeypatch):
+    # Regression: a recycled video's /video URL kept 404ing because get_video
+    # only looked in the output and non-adult folders.
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    _make_recycled_video(streamer)
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/video/alice/FS/alice-20260706-120000.mp4", headers=AUTH)
+    assert response.status_code == 200
+    assert response.data == b"0" * 1000
+
+
+def test_cache_file_list_includes_recycle_folder(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    path = _make_recycled_video(streamer)
+    assert [v.abs_path for v in streamer.video_files] == [os.path.abspath(path)]
+
+
+def test_video_thumb_recycled_file_is_found(tmp_path, monkeypatch):
+    # The thumb endpoint's disk-scan fallback must see recycled files (the
+    # cached file list includes the recycle folder), so the response is not
+    # a "Video not found" 404. Thumb generation itself is stubbed out.
+    import streamonitor.managers.httpmanager.api_v2 as api_v2_mod
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    _make_recycled_video(streamer)
+
+    def fake_generate(abs_path, thumb_path, mtime, duration=None, allow_probe=True):
+        os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+        with open(thumb_path, "wb") as f:
+            f.write(b"\xff\xd8\xff\xd9")
+        return True
+
+    monkeypatch.setattr(api_v2_mod, "_generate_thumb_limited", fake_generate)
+    manager = HTTPManager([streamer])
+    response = _client(manager).get(
+        "/api/v2/streamers/FakeSite/alice/videos/alice-20260706-120000.mp4/thumb",
+        headers=AUTH)
+    assert response.status_code == 200
+
+
 def test_api_delete_video_removes_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     streamer, path = _make_streamer_with_video()

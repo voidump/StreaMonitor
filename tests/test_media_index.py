@@ -194,6 +194,45 @@ def _classify(abs_path, label):
         conn.commit()
 
 
+def test_scanned_but_unanalyzed_video_has_null_classification(tmp_path, monkeypatch):
+    # The scanner never labels files; classification stays NULL ("not
+    # analyzed") until the NSFW pipeline writes one, so the UI shows no badge.
+    from contextlib import closing
+    monkeypatch.chdir(tmp_path)
+    _make_video(tmp_path)
+    media_index.scan_once()
+    with closing(media_index.connect()) as conn:
+        row = conn.execute("SELECT classification FROM media_files").fetchone()
+    assert row[0] is None
+
+
+def test_legacy_unknown_default_migrates_to_null(tmp_path, monkeypatch):
+    # Databases created with the old DEFAULT 'unknown' schema are rebuilt on
+    # connect: scanner-default 'unknown' rows become NULL, real labels survive.
+    import sqlite3
+    from contextlib import closing
+    monkeypatch.chdir(tmp_path)
+    db_path = media_index.index_db_path()
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    legacy_schema = media_index._TABLE_SQL.replace(
+        "classification TEXT,", "classification TEXT NOT NULL DEFAULT 'unknown',")
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(legacy_schema)
+        conn.execute("INSERT INTO media_files (site, username, filename, abs_path) "
+                     "VALUES ('FS', 'alice', 'a.mp4', '/x/a.mp4')")
+        conn.execute("INSERT INTO media_files (site, username, filename, abs_path, "
+                     "classification) VALUES ('FS', 'alice', 'b.mp4', '/x/b.mp4', 'adult')")
+        conn.commit()
+    with closing(media_index.connect()) as conn:
+        rows = dict(conn.execute(
+            "SELECT filename, classification FROM media_files").fetchall())
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='media_files'"
+        ).fetchone()[0]
+    assert rows == {"a.mp4": None, "b.mp4": "adult"}
+    assert "DEFAULT 'unknown'" not in table_sql
+
+
 def test_relocate_moves_non_adult_and_updates_index(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(media_index.parameters, "NONADULT_RELOCATE_ENABLED", True)
