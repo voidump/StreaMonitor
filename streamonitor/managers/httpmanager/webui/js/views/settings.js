@@ -105,6 +105,27 @@ function renderRecResolutionPanel(){
       </div>`;
 }
 
+function renderNsfwPanel(){
+  const n = nsfw;
+  const busy = n.loading || n.saving;
+  const notReady = n.loaded && (!n.modelPresent || !n.runtimeAvailable);
+  return `
+      <div class="panel settings-panel nsfw-panel">
+        <div class="set-row">
+          <div class="grow">
+            <div class="k">${t('nsfw')}</div>
+            <div class="desc">${t('nsfwDesc')}</div>
+            ${notReady?`<div class="desc" style="margin-top:8px">${!n.runtimeAvailable?t('nsfwNoRuntime'):t('nsfwNoModel')}</div>`:''}
+            ${n.error?`<div class="dldir-err">${t(n.error)}</div>`:''}
+          </div>
+          <select class="site-select on" data-nsfw-select ${busy?'disabled':''}>
+            <option value="off" ${n.enabled?'':'selected'}>${t('nsfwOff')}</option>
+            <option value="on" ${n.enabled?'selected':''}>${t('nsfwOn')}</option>
+          </select>
+        </div>
+      </div>`;
+}
+
 /* Deleted-streamers entry: history is no longer a top-level nav item, so it is
  * reached from here. data-nav="history" reuses the global nav click handler. */
 function renderDeletedStreamersPanel(){
@@ -142,6 +163,7 @@ function renderSettings(){
       ${renderDeletedStreamersPanel()}
       ${renderDownloadDirPanel()}
       ${renderMinVideoSizePanel()}
+      ${renderNsfwPanel()}
       ${renderRecResolutionPanel()}
       ${renderHotkeyPanel()}
     </div>
@@ -216,6 +238,8 @@ document.addEventListener('change', e=>{
   }
   const rpref = e.target.closest('[data-recres-pref]');
   if (rpref){ recRes.pref = rpref.value; saveRecResolution(); return; }
+  const nsel = e.target.closest('[data-nsfw-select]');
+  if (nsel){ saveNsfw(nsel.value==='on'); return; }
   const rcustom = e.target.closest('#recResCustom');
   if (rcustom){ recRes.custom = rcustom.value; saveRecResolution(); return; }
 });

@@ -818,6 +818,190 @@ def test_set_download_dir_unwritable_400(tmp_path, monkeypatch, preserve_downloa
         os.chmod(readonly, 0o700)   # let pytest clean up tmp_path
 
 
+# --- settings: NSFW analysis runtime toggle ---
+
+@pytest.fixture
+def preserve_nsfw(monkeypatch):
+    # The toggle mutates a parameters global and the analyzer's session cache;
+    # snapshot both so tests never leak state into the rest of the suite.
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    monkeypatch.setattr(parameters, "NSFW_ENABLED", parameters.NSFW_ENABLED)
+    monkeypatch.setattr(nsfw_analyzer, "_session", nsfw_analyzer._session)
+    monkeypatch.setattr(nsfw_analyzer, "_session_failed", nsfw_analyzer._session_failed)
+    yield
+
+
+def test_get_nsfw_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/nsfw")
+    assert response.status_code == 401
+
+
+def test_get_nsfw_returns_enabled_and_readiness(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_enabled(False)
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/nsfw", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["enabled"] is False
+    assert isinstance(payload["modelPresent"], bool)
+    assert isinstance(payload["runtimeAvailable"], bool)
+    assert payload["modelPath"] == parameters.NSFW_MODEL_PATH
+
+
+def test_set_nsfw_enable_persists(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_enabled(False)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/nsfw", json={"enabled": True}, headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["enabled"] is True
+    assert parameters.get_nsfw_enabled() is True          # runtime effect
+    env_text = (tmp_path / ".env").read_text()             # persisted for restart
+    assert "STRMNTR_NSFW_ENABLED=true" in env_text
+
+
+def test_set_nsfw_disable_unloads_session(tmp_path, monkeypatch, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_enabled(True)
+    nsfw_analyzer._session = object()          # pretend a model is loaded
+    nsfw_analyzer._session_failed = False
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/nsfw", json={"enabled": False}, headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["enabled"] is False
+    assert parameters.get_nsfw_enabled() is False
+    assert nsfw_analyzer._session is None                  # model released
+    assert nsfw_analyzer._session_failed is False          # failure latch reset
+    env_text = (tmp_path / ".env").read_text()
+    assert "STRMNTR_NSFW_ENABLED=false" in env_text
+
+
+def test_set_nsfw_invalid_400_no_change(tmp_path, monkeypatch, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_enabled(True)
+    sentinel = object()
+    nsfw_analyzer._session = sentinel
+    manager = HTTPManager([])
+    for bad in ("yes", 1, None, [True]):
+        response = _client(manager).put(
+            "/api/v2/settings/nsfw", json={"enabled": bad}, headers=AUTH)
+        assert response.status_code == 400
+        assert json.loads(response.data)["code"] == "invalid"
+    assert parameters.get_nsfw_enabled() is True           # state unchanged
+    assert nsfw_analyzer._session is sentinel              # session untouched
+    assert not (tmp_path / ".env").exists()                # nothing persisted
+
+
+# --- NSFW analyzer: runtime load/unload regression ---
+
+def test_nsfw_get_session_noop_while_disabled(preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    parameters.set_nsfw_enabled(False)
+    nsfw_analyzer._session = None
+    nsfw_analyzer._session_failed = False
+    assert nsfw_analyzer._get_session() is None
+    assert nsfw_analyzer._session is None                  # nothing was loaded
+    assert nsfw_analyzer._session_failed is False          # and nothing failed
+
+
+def test_nsfw_unload_resets_failure_latch(tmp_path, monkeypatch, preserve_nsfw):
+    # A failed load (missing model file) latches; unload_session resets the
+    # latch so the next enable retries loading instead of staying degraded.
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    monkeypatch.setattr(parameters, "NSFW_MODEL_PATH", str(tmp_path / "missing.onnx"))
+    parameters.set_nsfw_enabled(True)
+    nsfw_analyzer._session = None
+    nsfw_analyzer._session_failed = False
+    assert nsfw_analyzer._get_session() is None
+    assert nsfw_analyzer._session_failed is True           # load failed, latched
+    nsfw_analyzer.unload_session()
+    assert nsfw_analyzer._session_failed is False
+    assert nsfw_analyzer._get_session() is None            # retried (and failed again)
+    assert nsfw_analyzer._session_failed is True
+
+
+def _fake_bot(tmp_path, username="alice"):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        username=username,
+        outputFolder=str(tmp_path),
+        recording_filename=f"{username}-20260101-000000.mp4",
+    )
+
+
+def test_nsfw_monitor_thread_exits_when_disabled(tmp_path, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    parameters.set_nsfw_enabled(True)
+    monitor = nsfw_analyzer.RecordingMonitor(_fake_bot(tmp_path))
+    parameters.set_nsfw_enabled(False)
+    sampled = []
+    monitor._sample_once = lambda: sampled.append(1)
+    monitor._stop.wait = lambda timeout=None: False   # skip the interval sleep
+    monitor._run()                                    # returns instead of sampling
+    assert sampled == []
+
+
+def test_nsfw_finalize_abandons_when_disabled(tmp_path, monkeypatch, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    import streamonitor.media_index as media_index
+    parameters.set_nsfw_enabled(True)
+    monitor = nsfw_analyzer.RecordingMonitor(_fake_bot(tmp_path))
+    (tmp_path / f"{monitor.base}.mp4").write_bytes(b"x")
+    monitor.scores = [0.9]
+    monitor.adult_seen = True
+    written = []
+    monkeypatch.setattr(media_index, "set_classification",
+                        lambda path, label: written.append((path, label)))
+    parameters.set_nsfw_enabled(False)   # toggle off mid-recording
+    monitor._stop.set()
+    monitor._finalize()
+    assert written == []                 # partial classification abandoned
+
+
+def test_nsfw_finalize_writes_when_enabled(tmp_path, monkeypatch, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    import streamonitor.media_index as media_index
+    parameters.set_nsfw_enabled(True)
+    monitor = nsfw_analyzer.RecordingMonitor(_fake_bot(tmp_path))
+    final = tmp_path / f"{monitor.base}.mp4"
+    final.write_bytes(b"x")
+    monitor.scores = [0.9]
+    monitor.adult_seen = True            # skips the fallback sampling
+    written = []
+    monkeypatch.setattr(media_index, "set_classification",
+                        lambda path, label: written.append((path, label)))
+    monitor._stop.set()
+    monitor._finalize()
+    assert written == [(str(final), "adult")]
+
+
+def test_nsfw_start_monitor_noop_when_disabled(tmp_path, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    parameters.set_nsfw_enabled(False)
+    bot = _fake_bot(tmp_path)
+    nsfw_analyzer.start_monitor(bot)
+    assert getattr(bot, "_nsfw_monitor", None) is None
+
+
+def test_nsfw_start_monitor_attaches_when_enabled(tmp_path, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    parameters.set_nsfw_enabled(True)
+    bot = _fake_bot(tmp_path)
+    nsfw_analyzer.start_monitor(bot)
+    monitor = getattr(bot, "_nsfw_monitor", None)
+    assert monitor is not None
+    assert monitor._thread.is_alive()
+    monitor._stop.set()                  # stop the sampling thread right away
+
+
+
 # --- settings: recording resolution runtime setting (V33A) ---
 
 @pytest.fixture
