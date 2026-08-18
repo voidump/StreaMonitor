@@ -9,7 +9,8 @@ recording ends the produced video files are labeled in the media index:
 be analyzed (missing onnxruntime/numpy, missing model file, ffmpeg failures).
 If live sampling produced fewer than parameters.NSFW_MAX_SAMPLES scores and no
 adult frame was seen, additional frames are sampled evenly across the finished
-file as a fallback.
+file as a fallback. Once a sampled frame is adult the label is already decided,
+so the sampling thread stops.
 
 Everything is off unless the NSFW_ENABLED runtime setting (read via
 parameters.get_nsfw_enabled()) is True: no thread is started, no model is
@@ -243,6 +244,8 @@ class RecordingMonitor:
                 self._sample_once()
             except Exception as e:
                 logger.debug(f'[{self.username}] live sample failed: {e}')
+            if self.adult_seen:
+                return  # label already decided: further frames cannot change it
 
     def _sample_once(self):
         path = self._live_file()
