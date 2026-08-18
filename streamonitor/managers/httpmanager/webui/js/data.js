@@ -1,22 +1,24 @@
 'use strict';
 const NOW = new Date('2026-07-05T21:30:00');
 
-/* ---------------- sites ---------------- */
+/* ---------------- sites ----------------
+ * slug mirrors the backend Bot.siteslug exactly — it is what the API returns as
+ * `siteslug` and what POST /streamers accepts; abbr is display-only. */
 const SITES = {
-  chaturbate:{name:'Chaturbate', abbr:'CB', color:'#f5a623', hosts:['chaturbate.com'], url:u=>`https://chaturbate.com/${u}/`},
-  stripchat:{name:'StripChat', abbr:'SC', color:'#e0455a', hosts:['stripchat.com'], url:u=>`https://stripchat.com/${u}`},
-  bongacams:{name:'BongaCams', abbr:'BC', color:'#ff7a45', hosts:['bongacams.com'], url:u=>`https://bongacams.com/${u}`},
-  camsoda:{name:'CamSoda', abbr:'CS', color:'#2dd4bf', hosts:['camsoda.com'], url:u=>`https://camsoda.com/${u}`},
-  myfreecams:{name:'MyFreeCams', abbr:'MFC', color:'#6ee76e', hosts:['myfreecams.com'], url:u=>`https://myfreecams.com/#${u}`},
-  cam4:{name:'Cam4', abbr:'C4', color:'#fb923c', hosts:['cam4.com'], url:u=>`https://cam4.com/${u}`},
-  flirt4free:{name:'Flirt4Free', abbr:'F4F', color:'#ec6ba8', hosts:['flirt4free.com'], url:u=>`https://flirt4free.com/?model=${u}`},
-  amateurtv:{name:'Amateur.tv', abbr:'ATV', color:'#60a5fa', hosts:['amateur.tv'], url:u=>`https://amateur.tv/${u}`},
-  streamate:{name:'Streamate', abbr:'SM', color:'#a78bfa', hosts:['streamate.com'], url:u=>`https://streamate.com/cam/${u}`},
-  cherrytv:{name:'Cherry.tv', abbr:'CHT', color:'#f43f5e', hosts:['cherry.tv'], url:u=>`https://cherry.tv/${u}`},
-  camscom:{name:'Cams.com', abbr:'CAM', color:'#38bdf8', hosts:['cams.com'], url:u=>`https://cams.com/${u}`},
-  manyvids:{name:'ManyVids Live', abbr:'MV', color:'#e879f9', hosts:['manyvids.com','live.manyvids.com'], url:u=>`https://live.manyvids.com/stream/${u}`},
-  xlovecam:{name:'XLoveCam', abbr:'XLC', color:'#f87171', hosts:['xlovecam.com'], url:u=>`https://xlovecam.com/${u}`},
-  dreamcam:{name:'Dreamcam', abbr:'DC', color:'#818cf8', hosts:['dreamcam.com'], url:u=>`https://dreamcam.com/models/${u}`},
+  chaturbate:{name:'Chaturbate', slug:'CB', abbr:'CB', color:'#f5a623', hosts:['chaturbate.com'], url:u=>`https://chaturbate.com/${u}/`},
+  stripchat:{name:'StripChat', slug:'SC', abbr:'SC', color:'#e0455a', hosts:['stripchat.com'], url:u=>`https://stripchat.com/${u}`},
+  bongacams:{name:'BongaCams', slug:'BC', abbr:'BC', color:'#ff7a45', hosts:['bongacams.com'], url:u=>`https://bongacams.com/${u}`},
+  camsoda:{name:'CamSoda', slug:'CS', abbr:'CS', color:'#2dd4bf', hosts:['camsoda.com'], url:u=>`https://camsoda.com/${u}`},
+  myfreecams:{name:'MyFreeCams', slug:'MFC', abbr:'MFC', color:'#6ee76e', hosts:['myfreecams.com'], url:u=>`https://myfreecams.com/#${u}`},
+  cam4:{name:'Cam4', slug:'C4', abbr:'C4', color:'#fb923c', hosts:['cam4.com'], url:u=>`https://cam4.com/${u}`},
+  flirt4free:{name:'Flirt4Free', slug:'F4F', abbr:'F4F', color:'#ec6ba8', hosts:['flirt4free.com'], url:u=>`https://flirt4free.com/?model=${u}`},
+  amateurtv:{name:'Amateur.tv', slug:'ATV', abbr:'ATV', color:'#60a5fa', hosts:['amateur.tv'], url:u=>`https://amateur.tv/${u}`},
+  streamate:{name:'Streamate', slug:'SM', abbr:'SM', color:'#a78bfa', hosts:['streamate.com'], url:u=>`https://streamate.com/cam/${u}`},
+  cherrytv:{name:'Cherry.tv', slug:'CHTV', abbr:'CHT', color:'#f43f5e', hosts:['cherry.tv'], url:u=>`https://cherry.tv/${u}`},
+  camscom:{name:'Cams.com', slug:'CC', abbr:'CAM', color:'#38bdf8', hosts:['cams.com'], url:u=>`https://cams.com/${u}`},
+  manyvids:{name:'ManyVids Live', slug:'MV', abbr:'MV', color:'#e879f9', hosts:['manyvids.com','live.manyvids.com'], url:u=>`https://live.manyvids.com/stream/${u}`},
+  xlovecam:{name:'XLoveCam', slug:'XLC', abbr:'XLC', color:'#f87171', hosts:['xlovecam.com'], url:u=>`https://xlovecam.com/${u}`},
+  dreamcam:{name:'Dreamcam', slug:'DC', abbr:'DC', color:'#818cf8', hosts:['dreamcam.com'], url:u=>`https://dreamcam.com/models/${u}`},
 };
 
 /* ---------------- status meta ---------------- */

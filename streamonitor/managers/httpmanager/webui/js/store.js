@@ -355,9 +355,20 @@ async function apiSend(method, path, body){
   const opts = {method, headers:{'Accept':'application/json'}, credentials:'same-origin'};
   if (body!==undefined){ opts.headers['Content-Type']='application/json'; opts.body=JSON.stringify(body); }
   const r = await fetch(apiUrl(path), opts);
-  if (!r.ok) throw new Error('HTTP '+r.status);
   const txt = await r.text();
-  return txt ? JSON.parse(txt) : null;
+  let data = null;
+  try { data = txt ? JSON.parse(txt) : null; } catch(e){ data = null; }
+  if (!r.ok){
+    const err = new Error('HTTP '+r.status);
+    err.status = r.status; err.data = data;
+    throw err;
+  }
+  return data;
+}
+/* backend error payloads are {error:"..."} — fall back to the generic toast text */
+function apiErrText(e){
+  const msg = e && e.data && e.data.error;
+  return (typeof msg==='string' && msg.trim()) ? msg : t('apiOpError');
 }
 function streamerPath(s){ return '/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user); }
 function streamerTargets(list){ return list.map(s=>({site:s.site, user:s.user})); }
@@ -412,11 +423,15 @@ async function apiBatchTargets(action, targets, toastText, warn){
 
 /* add streamer (manual/url both resolve to site+user); re-adds an archived entry via reactivate */
 async function apiAddStreamer(siteKey, user){
-  const existing = streamers.find(s=>s.site===siteKey && s.user.toLowerCase()===user.toLowerCase());
+  // list entries carry the backend siteslug in s.site, so match on the slug
+  const meta = SITES[siteKey];
+  const slug = (meta && meta.slug) || siteKey;
+  const siteName = (meta && meta.name) || slug;
+  const existing = streamers.find(s=>s.site.toLowerCase()===String(slug).toLowerCase() && s.user.toLowerCase()===user.toLowerCase());
   if (existing){
     if (existing.status==='stopped'){
       try { await apiSend('POST', streamerPath(existing)+'/reactivate'); toast(t('addDupResumed')(existing.user)); await refreshStreamers(); }
-      catch(e){ toast(t('apiOpError'), 'err'); }
+      catch(e){ toast(apiErrText(e), 'err'); }
     } else {
       toast(t('addDup')(existing.user), 'warn');
     }
@@ -425,11 +440,11 @@ async function apiAddStreamer(siteKey, user){
     return;
   }
   try {
-    await apiSend('POST', '/streamers', {site:siteKey, username:user});
+    await apiSend('POST', '/streamers', {site:slug, username:user});
     addMsg = null; addDraft = {url:'', user:''};
-    toast(t('addOk')(user, SITES[siteKey].name));
+    toast(t('addOk')(user, siteName));
     await refreshStreamers();
-  } catch(e){ toast(t('apiOpError'), 'err'); render(); }
+  } catch(e){ addMsg = {type:'err', text:apiErrText(e)}; toast(apiErrText(e), 'err'); render(); }
 }
 
 /* ---- history (GET list, readd, delete) ---- */
