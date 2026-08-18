@@ -17,7 +17,7 @@ from flask import Response, request, send_file
 
 import parameters
 import streamonitor.config as config
-from parameters import WEB_LIST_FREQUENCY, FFMPEG_PATH
+from parameters import WEB_LIST_FREQUENCY, FFMPEG_PATH, WEBSERVER_PASSWORD
 from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.enums import Status
 import streamonitor.media_index as media_index
@@ -1422,6 +1422,8 @@ def register_api_v2(app, manager, login_required):
             'sites': sites,
             'status': statuses,
             'webListFrequency': WEB_LIST_FREQUENCY,
+            # Lets the frontend show the logout entry only when a password is set.
+            'authEnabled': WEBSERVER_PASSWORD != "",
             'diskSpace': {
                 'total': usage.total,
                 'free': usage.free,
