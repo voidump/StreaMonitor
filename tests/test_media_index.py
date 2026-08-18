@@ -567,3 +567,133 @@ def test_legacy_relocate_never_moves_recycled_files(tmp_path, monkeypatch):
     monkeypatch.setattr(media_index.parameters, "NSFW_ACTION", "mark_only")
     media_index.scan_once()
     assert recycled.is_file()
+
+
+
+def _read_row(abs_path):
+    from contextlib import closing
+    with closing(media_index.connect()) as conn:
+        return conn.execute(
+            "SELECT classification, classification_source, abs_path, filename "
+            "FROM media_files WHERE abs_path=?",
+            (os.path.abspath(abs_path),)).fetchone()
+
+
+def test_reclassify_manual_writes_manual_source(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    result = media_index.reclassify_manual(path, "adult")
+    assert result == {"ok": True, "restored": False, "path": os.path.abspath(path)}
+    assert _read_row(path)[:2] == ("adult", "manual")
+
+
+def test_reclassify_manual_rejects_invalid_label(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    result = media_index.reclassify_manual(path, "porn")
+    assert result["status"] == 400
+    assert _read_row(path)[0] is None
+
+
+def test_reclassify_manual_rejects_unknown_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _make_video(tmp_path)
+    media_index.scan_once()
+    result = media_index.reclassify_manual(str(tmp_path / "nope.mp4"), "adult")
+    assert result["status"] == 404
+
+
+def test_manual_label_survives_automatic_analysis(tmp_path, monkeypatch):
+    # set_classification is the single automatic writer (recording finalize and
+    # the backfill both go through it); a manual label must never be replaced.
+    monkeypatch.chdir(tmp_path)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    media_index.reclassify_manual(path, "adult")
+    media_index.set_classification(path, "non-adult")
+    assert _read_row(path)[:2] == ("adult", "manual")
+    media_index.scan_once()
+    assert _read_row(path)[:2] == ("adult", "manual")
+
+
+def test_set_classification_keeps_auto_source(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    media_index.set_classification(path, "non-adult")
+    assert _read_row(path)[:2] == ("non-adult", "auto")
+
+
+def test_reclassify_manual_restores_recycled_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 1
+    recycled = tmp_path / "downloads/_recycle/alice [FS]/alice-20260706-120000.mp4"
+    assert recycled.is_file()
+    result = media_index.reclassify_manual(str(recycled), "adult")
+    assert result["ok"] and result["restored"] is True
+    assert result["path"] == os.path.abspath(path)
+    assert os.path.isfile(path) and not recycled.exists()
+    row = _read_row(path)
+    assert row[:2] == ("adult", "manual")
+    assert row[3] == "alice-20260706-120000.mp4"
+    rows = media_index.list_videos("FS", "alice")
+    assert rows is not None and rows[0]["abs_path"] == os.path.abspath(path)
+
+
+def test_reclassify_manual_keeps_non_adult_in_recycle(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 1
+    recycled = tmp_path / "downloads/_recycle/alice [FS]/alice-20260706-120000.mp4"
+    result = media_index.reclassify_manual(str(recycled), "non-adult")
+    assert result["ok"] and result["restored"] is False
+    assert recycled.is_file()
+    assert _read_row(recycled)[:2] == ("non-adult", "manual")
+
+
+def test_reclassify_manual_restore_dedupes_target_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _enable_nsfw(monkeypatch, "recycle")
+    path = _make_video(tmp_path)
+    media_index.scan_once()
+    _classify(path, "non-adult")
+    assert media_index.apply_nsfw_action() == 1
+    recycled = tmp_path / "downloads/_recycle/alice [FS]/alice-20260706-120000.mp4"
+    # A different file took the original name while the video sat in the bin.
+    squatter = _make_video(tmp_path, data=b"1" * 500)
+    result = media_index.reclassify_manual(str(recycled), "unknown")
+    assert result["restored"] is True
+    restored = tmp_path / "downloads/alice [FS]/alice-20260706-120000 (1).mp4"
+    assert restored.is_file()
+    assert open(squatter, "rb").read() == b"1" * 500
+    row = _read_row(restored)
+    assert row[:2] == ("unknown", "manual")
+    assert row[3] == "alice-20260706-120000 (1).mp4"
+
+
+def test_classification_source_migration_marks_existing_labels_auto(tmp_path, monkeypatch):
+    # A database created before the manual-relabel feature has no
+    # classification_source column; connect() adds it and backfills 'auto'.
+    from contextlib import closing
+    monkeypatch.chdir(tmp_path)
+    labeled = _make_video(tmp_path)
+    unlabeled = _make_video(tmp_path, filename="alice-20260706-130000.mp4")
+    media_index.scan_once()
+    _classify(labeled, "adult")
+    with closing(media_index.connect()) as conn:
+        conn.execute("ALTER TABLE media_files DROP COLUMN classification_source")
+        conn.commit()
+    with closing(media_index.connect()) as conn:
+        rows = dict(conn.execute(
+            "SELECT abs_path, classification_source FROM media_files").fetchall())
+    assert rows[os.path.abspath(labeled)] == "auto"
+    assert rows[os.path.abspath(unlabeled)] is None

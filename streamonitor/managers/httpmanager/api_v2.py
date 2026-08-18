@@ -1346,6 +1346,38 @@ def register_api_v2(app, manager, login_required):
         streamer.cache_file_list()
         return _json({'ok': True, 'deleted': deleted, 'skipped': skipped, 'freed': freed})
 
+    @app.route('/api/v2/videos/classification', methods=['POST'])
+    @login_required
+    def api_v2_set_video_classification():
+        # Manual re-labeling. The file is addressed either by its absolute
+        # path or by site/user/filename (what the video list carries); either
+        # way it must resolve to an indexed row, so an unknown or crafted path
+        # is a 404 and can never touch a file outside the index. Writes
+        # classification_source='manual', which no automatic path overwrites,
+        # and restores recycled files whose new label is not 'non-adult'.
+        data = request.get_json(silent=True) or {}
+        label = data.get('label')
+        if label not in media_index.CLASSIFICATION_LABELS:
+            return _json({'error': 'Invalid label', 'code': 'label'}, 400)
+        path = data.get('path')
+        if not path:
+            site = data.get('site')
+            user = data.get('user')
+            filename = data.get('filename')
+            if not (site and user and filename):
+                return _json({'error': 'Missing path', 'code': 'path'}, 400)
+            row = media_index.get_video(site, user, filename)
+            if row is None:
+                return _json({'error': 'Video not found'}, 404)
+            path = row['abs_path']
+        if not isinstance(path, str):
+            return _json({'error': 'Missing path', 'code': 'path'}, 400)
+        result = media_index.reclassify_manual(path, label)
+        if 'error' in result:
+            return _json({'error': result['error']}, result.get('status', 400))
+        return _json({'ok': True, 'restored': result['restored'],
+                      'classification': label})
+
     @app.route('/api/v2/streamers/<site>/<user>/videos/<path:filename>/thumb', methods=['GET'])
     @login_required
     def api_v2_video_thumb(site, user, filename):

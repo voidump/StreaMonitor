@@ -503,6 +503,91 @@ def test_video_thumb_recycled_file_is_found(tmp_path, monkeypatch):
     assert response.status_code == 200
 
 
+def test_api_classification_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).post("/api/v2/videos/classification",
+                                     json={"path": "x", "label": "adult"})
+    assert response.status_code == 401
+
+
+def test_api_classification_rejects_invalid_label(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, path = _make_streamer_with_video()
+    manager = HTTPManager([streamer])
+    response = _client(manager).post("/api/v2/videos/classification",
+                                     json={"path": path, "label": "porn"},
+                                     headers=AUTH)
+    assert response.status_code == 400
+
+
+def test_api_classification_unknown_path_404(tmp_path, monkeypatch):
+    import streamonitor.media_index as media_index
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    media_index.scan_once()
+    manager = HTTPManager([streamer])
+    response = _client(manager).post(
+        "/api/v2/videos/classification",
+        json={"path": str(tmp_path / "elsewhere.mp4"), "label": "adult"},
+        headers=AUTH)
+    assert response.status_code == 404
+
+
+def test_api_classification_writes_manual_label(tmp_path, monkeypatch):
+    import streamonitor.media_index as media_index
+    monkeypatch.chdir(tmp_path)
+    streamer, path = _make_streamer_with_video()
+    media_index.scan_once()
+    manager = HTTPManager([streamer])
+    response = _client(manager).post("/api/v2/videos/classification",
+                                     json={"path": path, "label": "adult"},
+                                     headers=AUTH)
+    assert response.status_code == 200
+    body = json.loads(response.data)
+    assert body == {"ok": True, "restored": False, "classification": "adult"}
+    # Automatic analysis must not be able to overwrite it afterwards.
+    media_index.set_classification(path, "non-adult")
+    detail = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
+    videos = json.loads(detail.data)["videos"]
+    assert videos[0]["classification"] == "adult"
+
+
+def test_api_classification_accepts_site_user_filename(tmp_path, monkeypatch):
+    import streamonitor.media_index as media_index
+    monkeypatch.chdir(tmp_path)
+    streamer, path = _make_streamer_with_video()
+    media_index.scan_once()
+    manager = HTTPManager([streamer])
+    response = _client(manager).post(
+        "/api/v2/videos/classification",
+        json={"site": "FS", "user": "alice",
+              "filename": "alice-20260706-120000.mp4", "label": "unknown"},
+        headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["classification"] == "unknown"
+
+
+def test_api_classification_restores_recycled_video(tmp_path, monkeypatch):
+    import streamonitor.media_index as media_index
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    recycled = _make_recycled_video(streamer)
+    media_index.scan_once()
+    manager = HTTPManager([streamer])
+    response = _client(manager).post("/api/v2/videos/classification",
+                                     json={"path": recycled, "label": "adult"},
+                                     headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["restored"] is True
+    restored = os.path.join(streamer.outputFolder, "alice-20260706-120000.mp4")
+    assert os.path.isfile(restored) and not os.path.exists(recycled)
+    streamer.cache_file_list()
+    playback = _client(manager).get(
+        "/video/alice/FS/alice-20260706-120000.mp4", headers=AUTH)
+    assert playback.status_code == 200
+
+
 def test_api_delete_video_removes_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     streamer, path = _make_streamer_with_video()

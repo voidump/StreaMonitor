@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS media_files (
     duration REAL,
     thumb_path TEXT,
     classification TEXT,
+    classification_source TEXT,
     deleted INTEGER NOT NULL DEFAULT 0,
     updated_ts INTEGER NOT NULL DEFAULT 0
 )'''
@@ -108,10 +109,13 @@ def _migrate_classification_default(conn):
         conn.execute(_TABLE_SQL)
         conn.execute('''INSERT INTO media_files (id, site, username, filename,
                             abs_path, size, mtime, duration, thumb_path,
-                            classification, deleted, updated_ts)
+                            classification, classification_source, deleted, updated_ts)
                         SELECT id, site, username, filename, abs_path, size,
                             mtime, duration, thumb_path,
-                            NULLIF(classification, 'unknown'), deleted, updated_ts
+                            NULLIF(classification, 'unknown'),
+                            CASE WHEN classification = 'unknown' THEN NULL
+                                 ELSE classification_source END,
+                            deleted, updated_ts
                         FROM media_files_legacy''')
         conn.execute('DROP TABLE media_files_legacy')
         conn.commit()
@@ -125,12 +129,32 @@ def _migrate_classification_default(conn):
         logger.warning(f'Media index classification migration failed: {e}')
 
 
+def _migrate_classification_source(conn):
+    # Databases created before manual re-labeling have no classification_source
+    # column. Add it and mark every existing label 'auto' (they can only have
+    # come from the analysis pipeline); rows without a label stay NULL.
+    try:
+        columns = {row[1] for row in conn.execute('PRAGMA table_info(media_files)')}
+        if 'classification_source' in columns:
+            return
+        conn.execute('ALTER TABLE media_files ADD COLUMN classification_source TEXT')
+        conn.execute("UPDATE media_files SET classification_source='auto' "
+                     "WHERE classification IS NOT NULL")
+        conn.commit()
+        logger.info('Media index migrated: classification_source column added')
+    except Exception as e:
+        logger.warning(f'Media index classification_source migration failed: {e}')
+
+
 def connect():
     path = index_db_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.executescript(_SCHEMA)
+    # Order matters: the column must exist before the legacy-default rebuild
+    # copies it into the new table.
+    _migrate_classification_source(conn)
     _migrate_classification_default(conn)
     return conn
 
@@ -789,11 +813,13 @@ CLASSIFICATION_LABELS = ('adult', 'non-adult', 'unknown')
 
 
 def set_classification(abs_path, classification):
-    # Sole writer of the classification column (NSFW analysis pipeline). Uses
-    # an upsert so labeling works even when the row has not been inserted yet
-    # by the scanner or the finished-recording hook; a later re-scan never
-    # clobbers the label (classification is absent from _UPSERT's update
-    # clause). Never raises.
+    # Sole automatic writer of the classification column (NSFW analysis
+    # pipeline: recording finalize and the backfill). Uses an upsert so
+    # labeling works even when the row has not been inserted yet by the
+    # scanner or the finished-recording hook; a later re-scan never clobbers
+    # the label (classification is absent from _UPSERT's update clause). Rows
+    # labeled by hand (classification_source='manual') are never overwritten,
+    # so the guard covers every automatic path at once. Never raises.
     try:
         if classification not in CLASSIFICATION_LABELS:
             return
@@ -808,17 +834,119 @@ def set_classification(abs_path, classification):
         stat = os.stat(abs_path)
         with _db_lock, closing(connect()) as conn:
             conn.execute('''INSERT INTO media_files (site, username, filename, abs_path,
-                                                     size, mtime, classification, deleted, updated_ts)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                                                     size, mtime, classification,
+                                                     classification_source, deleted, updated_ts)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 'auto', 0, ?)
                             ON CONFLICT(abs_path) DO UPDATE SET
                                 classification=excluded.classification,
-                                updated_ts=excluded.updated_ts''',
+                                classification_source='auto',
+                                updated_ts=excluded.updated_ts
+                            WHERE COALESCE(media_files.classification_source, '') <> 'manual' ''',
                          (match.group('site'), match.group('username'),
                           os.path.basename(abs_path), abs_path, stat.st_size,
                           int(stat.st_mtime), classification, int(time.time())))
             conn.commit()
     except Exception as e:
         logger.warning(f'Failed to set classification for {abs_path}: {e}')
+
+
+def _unique_destination(dest):
+    # "name.mp4" -> "name (1).mp4" until the path is free, so restoring never
+    # overwrites an unrelated file that took the original name meanwhile.
+    if not os.path.exists(dest):
+        return dest
+    base, ext = os.path.splitext(dest)
+    for i in range(1, 1000):
+        candidate = f'{base} ({i}){ext}'
+        if not os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _restore_from_recycle(abs_path, filename):
+    # Move a recycled file back to <downloads>/<username> [<siteslug>]/ (the
+    # recycle bin mirrors that layout, so the original folder name is simply
+    # the parent folder's name). Returns the new absolute path, or None when
+    # nothing was restored. Best effort; never raises.
+    folder_name = os.path.basename(os.path.dirname(abs_path))
+    if not _FOLDER_RE.match(folder_name):
+        return None
+    dest_dir = os.path.join(os.path.abspath(parameters.get_download_dir()), folder_name)
+    dest = _unique_destination(os.path.join(dest_dir, filename))
+    if dest is None:
+        logger.warning(f'Restore skipped, no free target name for {abs_path}')
+        return None
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        os.rename(abs_path, dest)
+    except OSError as e:
+        logger.warning(f'Restore failed for {abs_path}: {e}')
+        return None
+    return dest
+
+
+def reclassify_manual(abs_path, classification):
+    # Manual re-labeling from the web UI. Writes the label with
+    # classification_source='manual' (never overwritten by any automatic
+    # path) and, when the file currently sits in the recycle bin and the new
+    # label is not 'non-adult', restores it to its original download folder
+    # with the index, mtime and thumbnail cache kept in sync.
+    # Returns {'ok': True, 'restored': bool, 'path': str} or an
+    # {'error': ..., 'status': int} dict.
+    if classification not in CLASSIFICATION_LABELS:
+        return {'error': 'Invalid label', 'status': 400}
+    if not _index_readable():
+        return {'error': 'Media index unavailable', 'status': 404}
+    abs_path = os.path.abspath(abs_path)
+    try:
+        with closing(connect()) as conn:
+            row = conn.execute(
+                'SELECT filename FROM media_files WHERE deleted=0 AND abs_path=?',
+                (abs_path,)).fetchone()
+    except Exception as e:
+        logger.warning(f'Manual reclassification lookup failed for {abs_path}: {e}')
+        return {'error': 'Media index unavailable', 'status': 404}
+    if row is None:
+        return {'error': 'Video not found', 'status': 404}
+    filename = row[0]
+    recycle_root = os.path.abspath(parameters.get_nsfw_recycle_dir())
+    in_recycle = (recycle_root != os.path.abspath(parameters.get_download_dir())
+                  and abs_path.startswith(recycle_root + os.sep))
+    new_path = abs_path
+    restored = False
+    if in_recycle and classification != 'non-adult' and os.path.isfile(abs_path):
+        dest = _restore_from_recycle(abs_path, filename)
+        if dest is not None:
+            new_path = dest
+            restored = True
+    try:
+        mtime = int(os.stat(new_path).st_mtime)
+    except OSError:
+        mtime = None
+    thumb_path = None
+    if restored:
+        thumb_path = _rekey_video_caches(abs_path, new_path, mtime)
+    try:
+        with _db_lock, closing(connect()) as conn:
+            if restored:
+                conn.execute(
+                    'UPDATE media_files SET abs_path=?, filename=?, mtime=?, '
+                    'thumb_path=?, classification=?, classification_source=?, '
+                    'updated_ts=? WHERE abs_path=?',
+                    (new_path, os.path.basename(new_path), mtime, thumb_path,
+                     classification, 'manual', int(time.time()), abs_path))
+            else:
+                conn.execute(
+                    'UPDATE media_files SET classification=?, '
+                    'classification_source=?, updated_ts=? WHERE abs_path=?',
+                    (classification, 'manual', int(time.time()), abs_path))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f'Manual reclassification failed for {abs_path}: {e}')
+        return {'error': 'Failed to update classification', 'status': 500}
+    logger.info(f'Manual classification {classification} for {filename}'
+                + (' (restored from recycle bin)' if restored else ''))
+    return {'ok': True, 'restored': restored, 'path': new_path}
 
 
 class MediaIndexScanner(Thread):
