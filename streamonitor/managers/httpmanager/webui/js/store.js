@@ -24,7 +24,7 @@ let detailState = {fileFilter:'all'};   // 'all'|'marked'
 function pushHistory(s){
   const added = new Date(NOW); if (s.addedDaysAgo!=null) added.setDate(added.getDate()-s.addedDaysAgo);
   history.unshift({
-    user:s.user, site:s.site, url: s.url || SITES[s.site].url(s.user),
+    user:s.user, site:s.site, url: s.url || siteMeta(s.site).url(s.user),
     avatarDataUrl: genAvatar(s.seed, s.user),
     addedDate: added, removedDate: new Date(NOW),
   });
@@ -120,6 +120,7 @@ function nav(to){
     if (s2 && !s2._schedLoaded) loadSchedule(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
+  if (to.view!=='settings') stopNsfwBackfillPoll();   // never keep polling the backfill worker from another view
   if (to.view==='settings'){ loadDownloadDir(); loadMinVideoSize(); loadRecResolution(); loadNsfw(); }   // read the current download dir + cleanup threshold + recording resolution + NSFW toggle (mock fills demo values)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
@@ -237,10 +238,13 @@ function resolveStatus(item){
   if (item.recording) return 'recording';
   return normStatus(item.status);
 }
+/* Keeps item.site/siteslug as the entry's site id (the backend slug — what every
+ * API path expects). Only sites with no SITES entry at all get a dynamic one, so a
+ * known slug like "SC" no longer duplicates the static StripChat entry. */
 function ensureSite(item){
   const slug = item.siteslug || item.site || 'unknown';
-  if (!SITES[slug]){   // register unknown sites so rendering never crashes
-    SITES[slug] = { name:item.site||slug, abbr:String(slug).slice(0,3).toUpperCase(), color:'#6b7688', hosts:[], url:()=>'#', _dynamic:true };
+  if (!siteKeyOf(slug)){   // register unknown sites so rendering never crashes
+    registerDynamicSite(slug, item.site);
   }
   return slug;
 }
@@ -467,7 +471,8 @@ async function apiBatchTargets(action, targets, toastText, warn){
 /* add streamer (manual/url both resolve to site+user); re-adds an archived entry via reactivate */
 async function apiAddStreamer(siteKey, user){
   // list entries carry the backend siteslug in s.site, so match on the slug
-  const meta = SITES[siteKey];
+  const key = siteKeyOf(siteKey);
+  const meta = key ? SITES[key] : null;
   const slug = (meta && meta.slug) || siteKey;
   const siteName = (meta && meta.name) || slug;
   const existing = streamers.find(s=>s.site.toLowerCase()===String(slug).toLowerCase() && s.user.toLowerCase()===user.toLowerCase());
@@ -631,6 +636,7 @@ function _applyNsfwPayload(d){
 async function loadNsfw(){
   if (apiState.mode!=='api'){   // mock: show a representative state, no backend call
     if (!nsfw.loaded){ Object.assign(nsfw, MOCK_NSFW); nsfw.retentionDraft = String(nsfw.recycleRetentionDays); nsfw.scanDraft = String(nsfw.scanIntervalHours); nsfw.loaded = true; }
+    if (nsfw.enabled) loadNsfwBackfill();
     return;
   }
   nsfw.loading = true; nsfw.error = null; render();
@@ -639,6 +645,7 @@ async function loadNsfw(){
     _applyNsfwPayload(d);
     nsfw.loaded = true; nsfw.loading = false; nsfw.error = null;
     render();
+    if (nsfw.enabled) loadNsfwBackfill();   // backfill block is only shown while NSFW is on
   } catch(e){
     nsfw.loading = false; nsfw.error = 'nsfwLoadErr'; render();
   }
@@ -659,6 +666,7 @@ async function saveNsfw(patch){
     nsfw.retentionDraft = String(nsfw.recycleRetentionDays);
     nsfw.scanDraft = String(nsfw.scanIntervalHours);
     nsfw.error = null;
+    if (toggled){ if (nsfw.enabled) loadNsfwBackfill(); else { stopNsfwBackfillPoll(); finishMockNsfwBackfill(); } }
     toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render(); return;
   }
   nsfw.saving = true; nsfw.error = null; render();
@@ -673,10 +681,116 @@ async function saveNsfw(patch){
     if (!r.ok){ checkUnauthorized(r); nsfw.saving = false; nsfw.error = (data && data.code==='invalid') ? 'nsfwErrInvalid' : ((data && data.error) || 'nsfwErrGeneric'); render(); return; }
     _applyNsfwPayload(data);
     nsfw.saving = false; nsfw.error = null;
+    if (toggled){   // switching NSFW off stops the worker server-side too
+      if (nsfw.enabled) loadNsfwBackfill();
+      else { stopNsfwBackfillPoll(); nsfwBackfill.running = false; nsfwBackfill.currentFile = null; }
+    }
     toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render();
   } catch(e){
     nsfw.saving = false; nsfw.error = 'nsfwErrGeneric'; render();
   }
+}
+
+/* ---- NSFW backfill (historic-file analysis) ----
+ * Server-owned serial worker; the console only starts/cancels it and polls the
+ * progress payload {running,total,done,failed,current_file,started_ts,pending}.
+ * The poll timer only lives while the settings view is open (see nav/stopNsfwBackfillPoll)
+ * so leaving the page never keeps requesting. error holds an i18n KEY. */
+const NSFW_BACKFILL_PATH = '/settings/nsfw/backscan';
+let nsfwBackfill = {running:false, total:0, done:0, failed:0, currentFile:null, pending:null,
+                    starting:false, cancelling:false, error:null, loaded:false, timer:null, mockTimer:null};
+function _applyBackfillPayload(d){
+  nsfwBackfill.running = !!(d && d.running);
+  nsfwBackfill.total = (d && d.total!=null) ? d.total : 0;
+  nsfwBackfill.done = (d && d.done!=null) ? d.done : 0;
+  nsfwBackfill.failed = (d && d.failed!=null) ? d.failed : 0;
+  nsfwBackfill.currentFile = (d && d.current_file) ? d.current_file : null;
+  nsfwBackfill.pending = (d && d.pending!=null) ? d.pending : null;
+  nsfwBackfill.loaded = true;
+}
+async function loadNsfwBackfill(){
+  if (apiState.mode!=='api'){   // mock: representative pending count, no backend call
+    if (!nsfwBackfill.loaded){ nsfwBackfill.pending = MOCK_NSFW_BACKFILL_PENDING; nsfwBackfill.loaded = true; }
+    syncNsfwBackfillPoll();
+    return;
+  }
+  try {
+    _applyBackfillPayload(await apiGet(NSFW_BACKFILL_PATH+'/progress'));
+    nsfwBackfill.error = null;
+  } catch(e){
+    nsfwBackfill.loaded = true; nsfwBackfill.error = 'nsfwBackfillLoadErr';
+  }
+  syncNsfwBackfillPoll();
+  render();
+}
+async function startNsfwBackfill(){
+  if (nsfwBackfill.starting || nsfwBackfill.running) return;
+  if (apiState.mode!=='api'){   // mock: walk a fake queue so the UI can be exercised standalone
+    const total = nsfwBackfill.pending || 0;
+    if (!total){ toast(t('nsfwBackfillNoneToast')); return; }
+    nsfwBackfill.running = true; nsfwBackfill.total = total; nsfwBackfill.done = 0; nsfwBackfill.failed = 0;
+    nsfwBackfill.currentFile = 'mock_' + (total) + '.mp4'; nsfwBackfill.error = null;
+    if (nsfwBackfill.mockTimer) clearInterval(nsfwBackfill.mockTimer);
+    nsfwBackfill.mockTimer = setInterval(()=>{
+      nsfwBackfill.done++;
+      nsfwBackfill.currentFile = 'mock_' + (nsfwBackfill.total - nsfwBackfill.done) + '.mp4';
+      if (nsfwBackfill.done>=nsfwBackfill.total) finishMockNsfwBackfill();
+      render();
+    }, 1200);
+    render(); return;
+  }
+  nsfwBackfill.starting = true; nsfwBackfill.error = null; render();
+  try {
+    _applyBackfillPayload(await apiSend('POST', NSFW_BACKFILL_PATH+'/start'));
+    nsfwBackfill.starting = false;
+    syncNsfwBackfillPoll(); render();
+  } catch(e){
+    nsfwBackfill.starting = false;
+    nsfwBackfill.error = (e && e.data && e.data.code==='disabled') ? 'nsfwBackfillDisabledErr' : 'nsfwBackfillErrGeneric';
+    render();
+  }
+}
+async function cancelNsfwBackfill(){
+  if (nsfwBackfill.cancelling) return;
+  if (apiState.mode!=='api'){ finishMockNsfwBackfill(); toast(t('nsfwBackfillCancelledToast'), 'warn'); render(); return; }
+  nsfwBackfill.cancelling = true; nsfwBackfill.error = null; render();
+  try {
+    _applyBackfillPayload(await apiSend('POST', NSFW_BACKFILL_PATH+'/cancel'));
+    nsfwBackfill.cancelling = false;
+    syncNsfwBackfillPoll(); render();
+  } catch(e){
+    nsfwBackfill.cancelling = false; nsfwBackfill.error = 'nsfwBackfillErrGeneric'; render();
+  }
+}
+function finishMockNsfwBackfill(){
+  if (nsfwBackfill.mockTimer){ clearInterval(nsfwBackfill.mockTimer); nsfwBackfill.mockTimer = null; }
+  nsfwBackfill.pending = Math.max(0, (nsfwBackfill.total||0) - (nsfwBackfill.done||0));
+  nsfwBackfill.running = false; nsfwBackfill.currentFile = null;
+}
+/* poll while a backfill is running and the settings view is open; the same call
+ * also refreshes the pending count once the worker settles. */
+function syncNsfwBackfillPoll(){
+  const want = route.view==='settings' && nsfw.enabled && nsfwBackfill.running && apiState.mode==='api';
+  if (want && !nsfwBackfill.timer){
+    nsfwBackfill.timer = setInterval(pollNsfwBackfill, 2000);
+  } else if (!want && nsfwBackfill.timer){
+    clearInterval(nsfwBackfill.timer); nsfwBackfill.timer = null;
+  }
+}
+async function pollNsfwBackfill(){
+  if (route.view!=='settings'){ stopNsfwBackfillPoll(); return; }
+  const wasRunning = nsfwBackfill.running;
+  try {
+    _applyBackfillPayload(await apiGet(NSFW_BACKFILL_PATH+'/progress'));
+    nsfwBackfill.error = null;
+  } catch(e){ return; }   // transient failure: keep the last known state and retry on the next tick
+  if (wasRunning && !nsfwBackfill.running) toast(t('nsfwBackfillDoneToast'));
+  syncNsfwBackfillPoll();
+  render();
+}
+function stopNsfwBackfillPoll(){
+  if (nsfwBackfill.timer){ clearInterval(nsfwBackfill.timer); nsfwBackfill.timer = null; }
+  if (nsfwBackfill.mockTimer){ clearInterval(nsfwBackfill.mockTimer); nsfwBackfill.mockTimer = null; }
 }
 
 /* ---- recording resolution (server-side, v3.3): read + change-to-save ---- */
