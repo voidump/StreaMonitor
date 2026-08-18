@@ -58,7 +58,9 @@ let minVid = {value:null, draft:'', loading:false, saving:false, error:null, loa
 /* login password change (server-side). The drafts are never persisted anywhere
  * and are cleared as soon as a save succeeds; error holds an i18n KEY. */
 const PWD_MIN_LENGTH = 4, PWD_MAX_LENGTH = 128;
+const USER_MIN_LENGTH = 1, USER_MAX_LENGTH = 64;
 let pwd = {current:'', next:'', confirm:'', minLength:PWD_MIN_LENGTH, maxLength:PWD_MAX_LENGTH,
+           username:'', usernameDraft:'', usernameMinLength:USER_MIN_LENGTH, usernameMaxLength:USER_MAX_LENGTH,
            saving:false, error:null, loaded:false};
 /* server-side NSFW analysis toggle; error holds an i18n KEY (see recRes note).
  * modelPresent/runtimeAvailable are readiness info only — the toggle stays
@@ -631,35 +633,55 @@ async function saveMinVideoSize(){
   }
 }
 
-/* ---- login password change (server-side) ----
- * GET only reports whether auth is on plus the length bounds — the password
- * itself never leaves the backend. The three inputs are validated locally so a
- * typo never reaches the API. */
+/* ---- account (user name + password) change (server-side) ----
+ * GET reports the current user name, whether auth is on and the length bounds —
+ * the password itself never leaves the backend. The inputs are validated
+ * locally so a typo never reaches the API. */
 async function loadPasswordSettings(){
   if (apiState.mode!=='api'){ pwd.loaded = true; return; }   // mock: bounds stay at the defaults
   try {
     const d = await apiGet('/settings/password');
     if (d && d.minLength!=null) pwd.minLength = d.minLength;
     if (d && d.maxLength!=null) pwd.maxLength = d.maxLength;
+    if (d && d.usernameMinLength!=null) pwd.usernameMinLength = d.usernameMinLength;
+    if (d && d.usernameMaxLength!=null) pwd.usernameMaxLength = d.usernameMaxLength;
+    if (d && typeof d.username==='string'){
+      pwd.username = d.username;
+      if (!pwd.usernameDraft) pwd.usernameDraft = d.username;   // never clobber what is being typed
+    }
     if (d && d.authEnabled!=null) auth.enabled = d.authEnabled===true;
     pwd.loaded = true; render();
   } catch(e){ /* the panel keeps working with the default bounds */ }
 }
 async function savePassword(){
   const cur = pwd.current, next = pwd.next, confirm = pwd.confirm;
+  const user = (pwd.usernameDraft||'').trim();
+  const userChanged = user !== pwd.username;
+  const pwdChanged = !!(next || confirm);
   if (!cur){ pwd.error = 'pwdErrCurrentRequired'; render(); return; }
-  if (next.length < pwd.minLength || next.length > pwd.maxLength){ pwd.error = 'pwdErrLength'; render(); return; }
-  if (next !== confirm){ pwd.error = 'pwdErrMismatch'; render(); return; }
+  if (!userChanged && !pwdChanged){ pwd.error = 'pwdErrNothing'; render(); return; }
+  if (userChanged && (user.length < pwd.usernameMinLength || user.length > pwd.usernameMaxLength)){
+    pwd.error = 'pwdErrUsername'; render(); return;
+  }
+  if (pwdChanged){
+    if (next.length < pwd.minLength || next.length > pwd.maxLength){ pwd.error = 'pwdErrLength'; render(); return; }
+    if (next !== confirm){ pwd.error = 'pwdErrMismatch'; render(); return; }
+  }
   if (apiState.mode!=='api'){   // mock: accept locally, show success toast
+    if (userChanged) pwd.username = user;
+    pwd.usernameDraft = pwd.username;
     pwd.current = pwd.next = pwd.confirm = ''; pwd.error = null;
     toast(t('pwdSavedToast')); render(); return;
   }
+  const body = {currentPassword: cur};
+  if (userChanged) body.newUsername = user;
+  if (pwdChanged) body.newPassword = next;
   pwd.saving = true; pwd.error = null; render();
   try {
     const r = await fetch(apiUrl('/settings/password'), {
       method:'PUT', credentials:'same-origin',
       headers:{'Accept':'application/json','Content-Type':'application/json'},
-      body: JSON.stringify({currentPassword: cur, newPassword: next}),
+      body: JSON.stringify(body),
     });
     const txt = await r.text();
     const data = txt ? JSON.parse(txt) : {};
@@ -669,9 +691,13 @@ async function savePassword(){
       const code = data && data.code;
       pwd.error = code==='wrong_password' ? 'pwdErrWrongCurrent'
                 : code==='invalid' ? 'pwdErrLength'
+                : code==='invalid_username' ? 'pwdErrUsername'
                 : code==='disabled' ? 'pwdErrDisabled' : 'pwdErrGeneric';
       toast(t(pwd.error), 'err'); render(); return;
     }
+    if (data && typeof data.username==='string') pwd.username = data.username;
+    else if (userChanged) pwd.username = user;
+    pwd.usernameDraft = pwd.username;
     pwd.current = pwd.next = pwd.confirm = '';
     pwd.saving = false; pwd.error = null;
     toast(t('pwdSavedToast')); render();

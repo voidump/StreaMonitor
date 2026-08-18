@@ -486,15 +486,24 @@ WEB_THEATER_MODE = env.bool("STRMNTR_THEATER_MODE", False)
 WEB_CONFIRM_DELETES = env.str("STRMNTR_CONFIRM_DEL", "MOBILE")
 
 # Password for the web server
-# If empty no auth required, else username admin and choosen password
+# If empty no auth required, else the configured username and choosen password
 # Runtime-configurable, persisted setting: read it via get_webserver_password()
 # at call time (same pattern as get_min_video_size_mb) so a change made through
 # the settings API takes effect without a restart.
 WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "admin")
 
+# Login user name. Blank falls back to the historical fixed "admin" so an empty
+# value can never lock the console out. Same runtime-configurable pattern as the
+# password: always read it through get_webserver_username().
+WEBSERVER_USERNAME = env.str("STRMNTR_USERNAME", "admin").strip() or "admin"
+
 # Length bounds enforced by the change-password API.
 WEBSERVER_PASSWORD_MIN_LENGTH = 4
 WEBSERVER_PASSWORD_MAX_LENGTH = 128
+
+# Length bounds enforced by the change-username API (after stripping).
+WEBSERVER_USERNAME_MIN_LENGTH = 1
+WEBSERVER_USERNAME_MAX_LENGTH = 64
 
 
 def get_webserver_password():
@@ -506,6 +515,15 @@ def set_webserver_password(value):
     WEBSERVER_PASSWORD = value
 
 
+def get_webserver_username():
+    return WEBSERVER_USERNAME
+
+
+def set_webserver_username(value):
+    global WEBSERVER_USERNAME
+    WEBSERVER_USERNAME = value
+
+
 def _env_quote(value):
     # Double-quote the value so spaces and '#' survive the .env round-trip;
     # backslashes and quotes are escaped the way read_env unescapes them.
@@ -515,6 +533,10 @@ def _env_quote(value):
 
 def persist_webserver_password(value):
     _persist_env_key('STRMNTR_PASSWORD', _env_quote(value))
+
+
+def persist_webserver_username(value):
+    _persist_env_key('STRMNTR_USERNAME', _env_quote(value))
 
 # ZMQ (external console) configuration
 

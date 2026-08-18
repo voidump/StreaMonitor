@@ -247,10 +247,10 @@ function renderLogoutPanel(){
       </div>`;
 }
 
-/* Change-password panel — only rendered when the backend reports a password is
- * configured (auth.enabled from /basesettings); with auth off there is nothing
- * to change. The three drafts live in the store so timer-driven re-renders do
- * not wipe what is being typed. */
+/* Account panel (user name + password) — only rendered when the backend reports
+ * a password is configured (auth.enabled from /basesettings); with auth off
+ * there is nothing to change. The drafts live in the store so timer-driven
+ * re-renders do not wipe what is being typed. */
 function renderPasswordPanel(){
   if (!auth.enabled) return '';
   const p = pwd;
@@ -259,8 +259,11 @@ function renderPasswordPanel(){
       <div class="panel settings-panel dldir-panel">
         <div class="set-row dldir-row">
           <div class="grow">
-            <div class="k">${t('pwdTitle')}</div>
-            <div class="desc">${t('pwdDesc')(p.minLength, p.maxLength)}</div>
+            <div class="k">${t('acctTitle')}</div>
+            <div class="desc">${t('acctDesc')(p.minLength, p.maxLength, p.usernameMaxLength)}</div>
+            <div class="dldir-edit">
+              <input type="text" id="pwdUsername" class="dldir-input" value="${esc(p.usernameDraft)}" placeholder="${t('pwdUsernamePh')}" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="${p.usernameMaxLength}" ${busy?'disabled':''}>
+            </div>
             <div class="dldir-edit">
               <input type="password" id="pwdCurrent" class="dldir-input" value="${esc(p.current)}" placeholder="${t('pwdCurrentPh')}" autocomplete="current-password" ${busy?'disabled':''}>
             </div>
@@ -311,22 +314,24 @@ function renderSettings(){
   </div>`;
 }
 
-/* Read the three password inputs back into the store before saving; the DOM is
- * the source of truth while typing (they are not re-rendered per keystroke). */
+/* Read the account inputs back into the store before saving; the DOM is the
+ * source of truth while typing (they are not re-rendered per keystroke). */
 function syncPasswordDrafts(){
+  const user = document.getElementById('pwdUsername');
   const cur = document.getElementById('pwdCurrent');
   const next = document.getElementById('pwdNew');
   const confirm = document.getElementById('pwdConfirm');
+  if (user) pwd.usernameDraft = user.value;
   if (cur) pwd.current = cur.value;
   if (next) pwd.next = next.value;
   if (confirm) pwd.confirm = confirm.value;
 }
 
 /* Keep the store in sync while typing so a timer-driven re-render never wipes
- * the two fields that do not currently hold focus. */
+ * the fields that do not currently hold focus. */
 document.addEventListener('input', e=>{
   if (route.view!=='settings') return;
-  if (e.target && ['pwdCurrent','pwdNew','pwdConfirm'].includes(e.target.id)) syncPasswordDrafts();
+  if (e.target && ['pwdUsername','pwdCurrent','pwdNew','pwdConfirm'].includes(e.target.id)) syncPasswordDrafts();
 });
 
 /* ---- hotkey editor interactions (settings.js owns its own delegated listeners) ---- */
@@ -478,7 +483,7 @@ document.addEventListener('keydown', e=>{
     minVid.draft = e.target.value;
     saveMinVideoSize();
   }
-  if (e.target && ['pwdCurrent','pwdNew','pwdConfirm'].includes(e.target.id) && e.key==='Enter'){
+  if (e.target && ['pwdUsername','pwdCurrent','pwdNew','pwdConfirm'].includes(e.target.id) && e.key==='Enter'){
     e.preventDefault();
     syncPasswordDrafts();
     savePassword();

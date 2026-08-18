@@ -89,8 +89,14 @@ class HTTPManager(Manager):
         def check_auth(username, password):
             if not password_enabled():
                 return True
-            return (username == 'admin' and isinstance(password, str)
-                    and compare_digest(password, parameters.get_webserver_password()))
+            if not isinstance(username, str) or not isinstance(password, str):
+                return False
+            # Both halves go through compare_digest and both are always
+            # evaluated, so a wrong user name is not distinguishable from a
+            # wrong password by timing.
+            user_ok = compare_digest(username, parameters.get_webserver_username())
+            password_ok = compare_digest(password, parameters.get_webserver_password())
+            return user_ok and password_ok
 
         def authenticated():
             if not password_enabled():
@@ -133,7 +139,15 @@ class HTTPManager(Manager):
             password = data.get('password')
             if password is None:
                 password = request.form.get('password', '')
-            if check_auth('admin', password if isinstance(password, str) else ''):
+            username = data.get('username')
+            if username is None:
+                username = request.form.get('username')
+            if username is None:
+                # Older JSON clients only send a password; keep them working by
+                # assuming the configured user name.
+                username = parameters.get_webserver_username()
+            if check_auth(username if isinstance(username, str) else '',
+                          password if isinstance(password, str) else ''):
                 flask_session.permanent = True
                 flask_session['authenticated'] = True
                 if request.is_json:
@@ -141,9 +155,10 @@ class HTTPManager(Manager):
                 return redirect('/')
             sleep(LOGIN_FAILURE_DELAY)
             if request.is_json:
-                return jsonify({'error': 'invalid_password'}), 401
+                # Deliberately does not say which half was wrong.
+                return jsonify({'error': 'invalid_credentials'}), 401
             # Plain form post: stay on the login page, the ?error flag makes it
-            # show the "wrong password" hint.
+            # show the "wrong user name or password" hint.
             return redirect('/login?error=1')
 
         @app.route('/logout', methods=['POST'])

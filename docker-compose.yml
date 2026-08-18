@@ -7,6 +7,8 @@ services:
     environment:
       # set timezone
       TZ: Asia/Shanghai
+      # login user name (admin by default)
+      #STRMNTR_USERNAME: 'admin'
       # unset password (admin by default)
       #STRMNTR_PASSWORD: ''
       # unbind web interface (bound to 127.0.0.1 by default)

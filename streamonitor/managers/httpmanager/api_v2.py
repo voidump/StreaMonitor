@@ -1746,12 +1746,15 @@ def register_api_v2(app, manager, login_required):
     @app.route('/api/v2/settings/password', methods=['GET'])
     @login_required
     def api_v2_get_password_settings():
-        # Never returns the password itself, only whether auth is on and the
-        # length bounds the UI validates against.
+        # Never returns the password itself, only the user name, whether auth is
+        # on and the length bounds the UI validates against.
         return _json({
             'authEnabled': parameters.get_webserver_password() != "",
+            'username': parameters.get_webserver_username(),
             'minLength': parameters.WEBSERVER_PASSWORD_MIN_LENGTH,
             'maxLength': parameters.WEBSERVER_PASSWORD_MAX_LENGTH,
+            'usernameMinLength': parameters.WEBSERVER_USERNAME_MIN_LENGTH,
+            'usernameMaxLength': parameters.WEBSERVER_USERNAME_MAX_LENGTH,
         })
 
     @app.route('/api/v2/settings/password', methods=['PUT', 'POST'])
@@ -1763,16 +1766,35 @@ def register_api_v2(app, manager, login_required):
         data = request.get_json(silent=True) or {}
         supplied = data.get('currentPassword')
         new_password = data.get('newPassword')
-        if not isinstance(new_password, str) or not new_password:
-            return _json({'error': 'New password is required', 'code': 'invalid'}, 400)
-        if not (parameters.WEBSERVER_PASSWORD_MIN_LENGTH <= len(new_password)
-                <= parameters.WEBSERVER_PASSWORD_MAX_LENGTH):
-            return _json({'error': 'New password length is out of range', 'code': 'invalid'}, 400)
+        new_username = data.get('newUsername')
+        # The user name is optional: omit it to only change the password, send
+        # it without a newPassword to only rename the account.
+        changing_username = new_username is not None
+        if changing_username:
+            if not isinstance(new_username, str):
+                return _json({'error': 'New user name is invalid', 'code': 'invalid_username'}, 400)
+            new_username = new_username.strip()
+            if not (parameters.WEBSERVER_USERNAME_MIN_LENGTH <= len(new_username)
+                    <= parameters.WEBSERVER_USERNAME_MAX_LENGTH):
+                return _json({'error': 'New user name length is out of range',
+                              'code': 'invalid_username'}, 400)
+        changing_password = new_password is not None or not changing_username
+        if changing_password:
+            if not isinstance(new_password, str) or not new_password:
+                return _json({'error': 'New password is required', 'code': 'invalid'}, 400)
+            if not (parameters.WEBSERVER_PASSWORD_MIN_LENGTH <= len(new_password)
+                    <= parameters.WEBSERVER_PASSWORD_MAX_LENGTH):
+                return _json({'error': 'New password length is out of range', 'code': 'invalid'}, 400)
         if not isinstance(supplied, str) or not compare_digest(supplied, current):
             sleep(PASSWORD_FAILURE_DELAY)   # cheap brute-force deterrent
             return _json({'error': 'Current password is incorrect', 'code': 'wrong_password'}, 403)
-        # Takes effect immediately: check_auth reads the password via the getter
+        # Takes effect immediately: check_auth reads both halves via the getters
         # at call time. The current session cookie stays valid.
-        parameters.set_webserver_password(new_password)
-        parameters.persist_webserver_password(new_password)
-        return _json({'ok': True, 'authEnabled': True})
+        if changing_username:
+            parameters.set_webserver_username(new_username)
+            parameters.persist_webserver_username(new_username)
+        if changing_password:
+            parameters.set_webserver_password(new_password)
+            parameters.persist_webserver_password(new_password)
+        return _json({'ok': True, 'authEnabled': True,
+                      'username': parameters.get_webserver_username()})

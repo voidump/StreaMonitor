@@ -2137,10 +2137,12 @@ class _FrozenNow:
 
 @pytest.fixture
 def preserve_webserver_password(monkeypatch):
-    # set_webserver_password mutates the module global; snapshot so tests never
-    # leak a changed password into the rest of the suite.
+    # set_webserver_password/set_webserver_username mutate the module globals;
+    # snapshot so tests never leak changed credentials into the rest of the suite.
     monkeypatch.setattr(
         parameters, "WEBSERVER_PASSWORD", parameters.WEBSERVER_PASSWORD)
+    monkeypatch.setattr(
+        parameters, "WEBSERVER_USERNAME", parameters.WEBSERVER_USERNAME)
     monkeypatch.setattr(api_v2, "PASSWORD_FAILURE_DELAY", 0)
     yield
 
@@ -2150,15 +2152,20 @@ def test_get_password_settings_requires_auth():
     assert response.status_code == 401
 
 
-def test_get_password_settings_never_returns_the_password():
+def test_get_password_settings_never_returns_the_password(
+        preserve_webserver_password):
+    parameters.set_webserver_password("s3cret-password")
     response = _client(HTTPManager([])).get(
-        "/api/v2/settings/password", headers=AUTH)
+        "/api/v2/settings/password", headers=basic_auth("admin", "s3cret-password"))
     assert response.status_code == 200
     payload = json.loads(response.data)
     assert payload["authEnabled"] is True
+    assert payload["username"] == parameters.get_webserver_username()
     assert payload["minLength"] == parameters.WEBSERVER_PASSWORD_MIN_LENGTH
     assert payload["maxLength"] == parameters.WEBSERVER_PASSWORD_MAX_LENGTH
-    assert b"admin" not in response.data
+    assert payload["usernameMinLength"] == parameters.WEBSERVER_USERNAME_MIN_LENGTH
+    assert payload["usernameMaxLength"] == parameters.WEBSERVER_USERNAME_MAX_LENGTH
+    assert b"s3cret-password" not in response.data
 
 
 def test_set_password_requires_auth():
@@ -2237,3 +2244,127 @@ def test_set_password_keeps_current_session_logged_in(
     assert response.status_code == 200
     # The session cookie survives the change: no credentials header needed.
     assert client.get("/api/v2/streamers").status_code == 200
+
+
+# --- login: user name + password ---
+
+import streamonitor.managers.httpmanager.httpmanager as httpmanager
+
+
+def test_login_accepts_the_configured_username(preserve_webserver_password):
+    client = _client(HTTPManager([]))
+    assert client.post(
+        "/login", json={"username": "admin", "password": "admin"}).status_code == 200
+
+
+def test_login_rejects_a_wrong_username(monkeypatch, preserve_webserver_password):
+    monkeypatch.setattr(httpmanager, "LOGIN_FAILURE_DELAY", 0)
+    response = _client(HTTPManager([])).post(
+        "/login", json={"username": "nope", "password": "admin"})
+    assert response.status_code == 401
+    # The error never says which half was wrong.
+    assert json.loads(response.data)["error"] == "invalid_credentials"
+
+
+def test_login_rejects_a_wrong_password(monkeypatch, preserve_webserver_password):
+    monkeypatch.setattr(httpmanager, "LOGIN_FAILURE_DELAY", 0)
+    response = _client(HTTPManager([])).post(
+        "/login", json={"username": "admin", "password": "nope"})
+    assert response.status_code == 401
+    assert json.loads(response.data)["error"] == "invalid_credentials"
+
+
+def test_login_is_skipped_entirely_when_no_password_is_set(
+        preserve_webserver_password):
+    parameters.set_webserver_password("")
+    client = _client(HTTPManager([]))
+    assert client.get("/api/v2/streamers").status_code == 200
+
+
+def test_set_username_persists_and_takes_effect(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("STRMNTR_PORT=5000\n")
+    client = _client(HTTPManager([]))
+    response = client.put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newUsername": "  operator  "},
+        headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["ok"] is True and payload["username"] == "operator"
+    assert parameters.get_webserver_username() == "operator"
+    # The password is untouched, only the user name changed.
+    assert parameters.get_webserver_password() == "admin"
+    env_text = (tmp_path / ".env").read_text()
+    assert "STRMNTR_PORT=5000" in env_text
+    assert 'STRMNTR_USERNAME="operator"' in env_text
+    # No restart needed: the old user name stops working immediately.
+    assert client.get("/api/v2/streamers", headers=AUTH).status_code == 401
+    assert client.get(
+        "/api/v2/streamers",
+        headers=basic_auth("operator", "admin")).status_code == 200
+
+
+def test_set_username_and_password_together(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.chdir(tmp_path)
+    client = _client(HTTPManager([]))
+    response = client.put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newUsername": "operator",
+              "newPassword": "newpass"},
+        headers=AUTH)
+    assert response.status_code == 200
+    assert parameters.get_webserver_username() == "operator"
+    assert parameters.get_webserver_password() == "newpass"
+    assert client.get(
+        "/api/v2/streamers",
+        headers=basic_auth("operator", "newpass")).status_code == 200
+
+
+@pytest.mark.parametrize("new_username", ["", "   ", "x" * 65, 12345])
+def test_set_username_rejects_invalid_values(
+        tmp_path, monkeypatch, preserve_webserver_password, new_username):
+    monkeypatch.chdir(tmp_path)
+    response = _client(HTTPManager([])).put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newUsername": new_username},
+        headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "invalid_username"
+    assert parameters.get_webserver_username() == "admin"
+    assert not (tmp_path / ".env").exists()
+
+
+def test_set_username_requires_the_current_password(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.chdir(tmp_path)
+    response = _client(HTTPManager([])).put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "nope", "newUsername": "operator"},
+        headers=AUTH)
+    assert response.status_code == 403
+    assert json.loads(response.data)["code"] == "wrong_password"
+    assert parameters.get_webserver_username() == "admin"
+    assert not (tmp_path / ".env").exists()
+
+
+def test_set_username_keeps_current_session_and_new_username_can_log_in(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.setattr(httpmanager, "LOGIN_FAILURE_DELAY", 0)
+    monkeypatch.chdir(tmp_path)
+    client = _client(HTTPManager([]))
+    assert client.post(
+        "/login", json={"username": "admin", "password": "admin"}).status_code == 200
+    assert client.put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newUsername": "operator"},
+    ).status_code == 200
+    # The session cookie survives the rename.
+    assert client.get("/api/v2/streamers").status_code == 200
+    fresh = _client(HTTPManager([]))
+    assert fresh.post(
+        "/login", json={"username": "admin", "password": "admin"}).status_code == 401
+    assert fresh.post(
+        "/login", json={"username": "operator", "password": "admin"}).status_code == 200

@@ -38,12 +38,13 @@ body{
 h1{font-size:15px;font-weight:600;margin-bottom:4px}
 .hint{color:var(--text-dim);font-size:12px;margin-bottom:16px}
 label{display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px}
-input[type=password]{
+label + input{margin-bottom:12px}
+input[type=password],input[type=text]{
   width:100%;background:var(--bg-raised);color:var(--text);
   border:1px solid var(--border-strong);border-radius:var(--radius);
   padding:8px 10px;font-family:inherit;font-size:13px;
 }
-input[type=password]:focus{outline:none;border-color:var(--accent)}
+input[type=password]:focus,input[type=text]:focus{outline:none;border-color:var(--accent)}
 button{
   width:100%;margin-top:14px;padding:9px 12px;cursor:pointer;
   font-family:inherit;font-size:13px;font-weight:500;
@@ -74,8 +75,10 @@ button:hover{background:var(--accent)}
     <h1 data-i18n="title"></h1>
     <div class="hint" data-i18n="hint"></div>
     <div class="error" id="error" data-i18n="errWrong"></div>
+    <label for="username" data-i18n="userLabel"></label>
+    <input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>
     <label for="password" data-i18n="pwLabel"></label>
-    <input type="password" id="password" name="password" autocomplete="current-password" autofocus>
+    <input type="password" id="password" name="password" autocomplete="current-password">
     <button type="submit" data-i18n="submit"></button>
   </form>
   <div class="foot"><button type="button" class="lang" id="langBtn"></button></div>
@@ -86,21 +89,23 @@ var I18N = {
   zh: {
     tagline:'录播控制台',
     title:'登录',
-    hint:'请输入访问密码以继续。',
+    hint:'请输入用户名和密码以继续。',
+    userLabel:'用户名',
     pwLabel:'密码',
     submit:'登录',
-    errWrong:'密码错误，请重试。',
-    errEmpty:'请输入密码。',
+    errWrong:'用户名或密码错误，请重试。',
+    errEmpty:'请输入用户名和密码。',
     langBtn:'English'
   },
   en: {
     tagline:'Recording console',
     title:'Sign in',
-    hint:'Enter the access password to continue.',
+    hint:'Enter your user name and password to continue.',
+    userLabel:'User name',
     pwLabel:'Password',
     submit:'Sign in',
-    errWrong:'Wrong password, please try again.',
-    errEmpty:'Please enter the password.',
+    errWrong:'Wrong user name or password, please try again.',
+    errEmpty:'Please enter your user name and password.',
     langBtn:'中文'
   }
 };
@@ -128,7 +133,7 @@ document.getElementById('langBtn').addEventListener('click', function(){
 });
 
 document.querySelector('form').addEventListener('submit', function(e){
-  if (!document.getElementById('password').value) {
+  if (!document.getElementById('username').value.trim() || !document.getElementById('password').value) {
     e.preventDefault();
     errKey = 'errEmpty';
     errEl.classList.add('show');

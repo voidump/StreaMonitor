@@ -96,7 +96,7 @@ from the network. You can change this with environment variables:
 #### Web interface
 
 You can access the web interface on port 5000.
-If set password in parameters.py username is admin, password admin, empty password is also allowed.
+The default credentials are username `admin` / password `admin`; set `STRMNTR_USERNAME` and `STRMNTR_PASSWORD` (or change them in the settings page) to override, an empty password is also allowed and disables the login.
 When you set the WEBSERVER_HOST it is also accesible to from other computers in the network
 
 ##### v2 recording console (`webui`)
