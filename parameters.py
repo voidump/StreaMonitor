@@ -298,8 +298,25 @@ NSFW_SAMPLE_INTERVAL = env.int("STRMNTR_NSFW_SAMPLE_INTERVAL", 60)
 
 # A frame whose adult confidence (0..1) is at or above this threshold marks
 # the whole video as adult; a video is non-adult only if every sampled frame
-# stays below it.
+# stays below it. Runtime-configurable, persisted setting: read it via
+# get_nsfw_threshold() at call time so a change made through the settings API
+# applies to in-progress and later sampling without a restart.
 NSFW_THRESHOLD = env.float("STRMNTR_NSFW_THRESHOLD", 0.7)
+if not 0.0 <= NSFW_THRESHOLD <= 1.0:
+    NSFW_THRESHOLD = 0.7
+
+
+def get_nsfw_threshold():
+    return NSFW_THRESHOLD
+
+
+def set_nsfw_threshold(value):
+    global NSFW_THRESHOLD
+    NSFW_THRESHOLD = float(value)
+
+
+def persist_nsfw_threshold(value):
+    _persist_env_key('STRMNTR_NSFW_THRESHOLD', f'{float(value):g}')
 
 # Path to the ONNX classifier model file (bring your own model, it is not
 # downloaded automatically; see streamonitor/nsfw_analyzer.py for options).

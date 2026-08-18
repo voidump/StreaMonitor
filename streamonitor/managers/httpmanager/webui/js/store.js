@@ -64,8 +64,8 @@ let pwd = {current:'', next:'', confirm:'', minLength:PWD_MIN_LENGTH, maxLength:
  * modelPresent/runtimeAvailable are readiness info only — the toggle stays
  * usable without them (analysis then degrades to 'unknown' labels). */
 const NSFW_ACTIONS = ['mark_only','recycle','delete'];
-let nsfw = {enabled:null, action:'mark_only', recycleRetentionDays:7, scanIntervalHours:6,
-            retentionDraft:'7', scanDraft:'6',
+let nsfw = {enabled:null, action:'mark_only', recycleRetentionDays:7, scanIntervalHours:6, threshold:0.7,
+            retentionDraft:'7', scanDraft:'6', thresholdDraft:'0.7',
             modelPresent:false, runtimeAvailable:false, loading:false, saving:false, error:null, loaded:false};
 
 /* server-side recording resolution (v3.3). committed resolution/preference mirror
@@ -686,14 +686,16 @@ function _applyNsfwPayload(d){
   if (d && NSFW_ACTIONS.includes(d.action)) nsfw.action = d.action;
   if (d && d.recycleRetentionDays!=null) nsfw.recycleRetentionDays = d.recycleRetentionDays;
   if (d && d.scanIntervalHours!=null) nsfw.scanIntervalHours = d.scanIntervalHours;
+  if (d && d.threshold!=null) nsfw.threshold = d.threshold;
   nsfw.retentionDraft = String(nsfw.recycleRetentionDays);
   nsfw.scanDraft = String(nsfw.scanIntervalHours);
+  nsfw.thresholdDraft = String(nsfw.threshold);
   nsfw.modelPresent = !!(d && d.modelPresent);
   nsfw.runtimeAvailable = !!(d && d.runtimeAvailable);
 }
 async function loadNsfw(){
   if (apiState.mode!=='api'){   // mock: show a representative state, no backend call
-    if (!nsfw.loaded){ Object.assign(nsfw, MOCK_NSFW); nsfw.retentionDraft = String(nsfw.recycleRetentionDays); nsfw.scanDraft = String(nsfw.scanIntervalHours); nsfw.loaded = true; }
+    if (!nsfw.loaded){ Object.assign(nsfw, MOCK_NSFW); nsfw.retentionDraft = String(nsfw.recycleRetentionDays); nsfw.scanDraft = String(nsfw.scanIntervalHours); nsfw.thresholdDraft = String(nsfw.threshold); nsfw.loaded = true; }
     if (nsfw.enabled) loadNsfwBackfill();
     return;
   }
@@ -716,18 +718,20 @@ async function ensureNsfwLoaded(){
     Object.assign(nsfw, MOCK_NSFW);
     nsfw.retentionDraft = String(nsfw.recycleRetentionDays);
     nsfw.scanDraft = String(nsfw.scanIntervalHours);
+    nsfw.thresholdDraft = String(nsfw.threshold);
     nsfw.loaded = true; return;
   }
   try { _applyNsfwPayload(await apiGet('/settings/nsfw')); nsfw.loaded = true; } catch(e){ /* keep defaults; the warning just won't show */ }
 }
-/* patch may contain enabled / action / recycleRetentionDays / scanIntervalHours;
- * the full current config is always sent so the server state stays coherent. */
+/* patch may contain enabled / action / recycleRetentionDays / scanIntervalHours /
+ * threshold; the full current config is always sent so the server state stays coherent. */
 async function saveNsfw(patch){
   const body = {
     enabled: nsfw.enabled===null ? false : nsfw.enabled,
     action: nsfw.action,
     recycleRetentionDays: nsfw.recycleRetentionDays,
     scanIntervalHours: nsfw.scanIntervalHours,
+    threshold: nsfw.threshold,
   };
   Object.assign(body, patch||{});
   const toggled = !patch || ('enabled' in patch);
@@ -735,6 +739,7 @@ async function saveNsfw(patch){
     Object.assign(nsfw, body);
     nsfw.retentionDraft = String(nsfw.recycleRetentionDays);
     nsfw.scanDraft = String(nsfw.scanIntervalHours);
+    nsfw.thresholdDraft = String(nsfw.threshold);
     nsfw.error = null;
     if (toggled){ if (nsfw.enabled) loadNsfwBackfill(); else { stopNsfwBackfillPoll(); finishMockNsfwBackfill(); } }
     toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render(); return;

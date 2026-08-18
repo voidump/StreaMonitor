@@ -238,6 +238,7 @@ def _nsfw_payload():
         'action': parameters.get_nsfw_action(),
         'recycleRetentionDays': parameters.get_nsfw_recycle_retention_days(),
         'scanIntervalHours': parameters.get_nsfw_scan_interval_hours(),
+        'threshold': parameters.get_nsfw_threshold(),
         'modelPresent': os.path.isfile(model_path),
         'modelPath': model_path,
         'runtimeAvailable': _nsfw_runtime_available(),
@@ -270,6 +271,15 @@ def _validate_nsfw_settings(data):
         if isinstance(hours, bool) or not isinstance(hours, int) or not 0 <= hours <= 168:
             return None, ('invalid', 'scanIntervalHours must be an integer between 0 and 168')
         updates['scanIntervalHours'] = hours
+    if 'threshold' in data:
+        threshold = data.get('threshold')
+        _bad_threshold = ('invalid', 'threshold must be a number between 0 and 1')
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+            return None, _bad_threshold
+        threshold = float(threshold)
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            return None, _bad_threshold
+        updates['threshold'] = threshold
     return updates, None
 
 
@@ -1679,6 +1689,9 @@ def register_api_v2(app, manager, login_required):
         if 'scanIntervalHours' in updates:
             parameters.set_nsfw_scan_interval_hours(updates['scanIntervalHours'])
             parameters.persist_nsfw_scan_interval_hours(updates['scanIntervalHours'])
+        if 'threshold' in updates:
+            parameters.set_nsfw_threshold(updates['threshold'])
+            parameters.persist_nsfw_threshold(updates['threshold'])
         if not enabled:
             from streamonitor import nsfw_analyzer
             nsfw_analyzer.unload_session()

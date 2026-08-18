@@ -206,7 +206,7 @@ def _label_for(scores, threshold):
 def analyze_file(path, max_samples=None):
     # Offline entry: classify one finished video file. Returns (label, scores).
     scores = sample_file(path, max_samples or parameters.NSFW_MAX_SAMPLES)
-    return _label_for(scores, parameters.NSFW_THRESHOLD), scores
+    return _label_for(scores, parameters.get_nsfw_threshold()), scores
 
 
 class RecordingMonitor:
@@ -261,7 +261,7 @@ class RecordingMonitor:
             score = _score_frame(path)
         if score is not None:
             self.scores.append(score)
-            if score >= parameters.NSFW_THRESHOLD:
+            if score >= parameters.get_nsfw_threshold():
                 self.adult_seen = True
 
     def _live_file(self):
@@ -329,7 +329,7 @@ class RecordingMonitor:
             if not finals:
                 return
             scores = list(self.scores)
-            threshold = parameters.NSFW_THRESHOLD
+            threshold = parameters.get_nsfw_threshold()
             # Fallback: not enough live samples and nothing adult yet -> sample
             # more frames evenly across the biggest finished file.
             if not self.adult_seen and len(scores) < parameters.NSFW_MAX_SAMPLES:
@@ -412,7 +412,7 @@ def _main(argv):
         label, scores = analyze_file(path)
         top = f'{max(scores):.3f}' if scores else 'n/a'
         print(f'{path}: {label} (samples={len(scores)}, max adult score={top}, '
-              f'threshold={parameters.NSFW_THRESHOLD})')
+              f'threshold={parameters.get_nsfw_threshold()})')
     return 0
 
 

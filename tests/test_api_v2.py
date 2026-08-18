@@ -986,6 +986,7 @@ def preserve_nsfw(monkeypatch):
     monkeypatch.setattr(parameters, "NSFW_ACTION", parameters.NSFW_ACTION)
     monkeypatch.setattr(parameters, "NSFW_RECYCLE_RETENTION_DAYS", parameters.NSFW_RECYCLE_RETENTION_DAYS)
     monkeypatch.setattr(parameters, "NSFW_SCAN_INTERVAL_HOURS", parameters.NSFW_SCAN_INTERVAL_HOURS)
+    monkeypatch.setattr(parameters, "NSFW_THRESHOLD", parameters.NSFW_THRESHOLD)
     monkeypatch.setattr(nsfw_analyzer, "_session", nsfw_analyzer._session)
     monkeypatch.setattr(nsfw_analyzer, "_session_failed", nsfw_analyzer._session_failed)
     yield
@@ -1081,6 +1082,7 @@ def test_get_nsfw_returns_handling_config(tmp_path, monkeypatch, preserve_nsfw):
     assert payload["action"] in parameters.NSFW_ACTIONS
     assert 1 <= payload["recycleRetentionDays"] <= 90
     assert 0 <= payload["scanIntervalHours"] <= 168
+    assert 0.0 <= payload["threshold"] <= 1.0
 
 
 def test_set_nsfw_handling_config_persists(tmp_path, monkeypatch, preserve_nsfw):
@@ -1112,6 +1114,7 @@ def test_set_nsfw_enabled_only_keeps_handling_config(tmp_path, monkeypatch, pres
     parameters.set_nsfw_action("recycle")
     parameters.set_nsfw_recycle_retention_days(30)
     parameters.set_nsfw_scan_interval_hours(24)
+    parameters.set_nsfw_threshold(0.4)
     manager = HTTPManager([])
     response = _client(manager).put(
         "/api/v2/settings/nsfw", json={"enabled": True}, headers=AUTH)
@@ -1120,6 +1123,7 @@ def test_set_nsfw_enabled_only_keeps_handling_config(tmp_path, monkeypatch, pres
     assert payload["action"] == "recycle"
     assert payload["recycleRetentionDays"] == 30
     assert payload["scanIntervalHours"] == 24
+    assert payload["threshold"] == 0.4
 
 
 def test_set_nsfw_handling_invalid_400_no_change(tmp_path, monkeypatch, preserve_nsfw):
@@ -1128,6 +1132,7 @@ def test_set_nsfw_handling_invalid_400_no_change(tmp_path, monkeypatch, preserve
     parameters.set_nsfw_action("mark_only")
     parameters.set_nsfw_recycle_retention_days(7)
     parameters.set_nsfw_scan_interval_hours(6)
+    parameters.set_nsfw_threshold(0.7)
     manager = HTTPManager([])
     bad_payloads = [
         {"enabled": True, "action": "shred"},
@@ -1138,6 +1143,13 @@ def test_set_nsfw_handling_invalid_400_no_change(tmp_path, monkeypatch, preserve
         {"enabled": True, "scanIntervalHours": -1},
         {"enabled": True, "scanIntervalHours": 169},
         {"enabled": True, "scanIntervalHours": "6"},
+        {"enabled": True, "threshold": 1.5},
+        {"enabled": True, "threshold": -0.1},
+        {"enabled": True, "threshold": True},
+        {"enabled": True, "threshold": "0.5"},
+        {"enabled": True, "threshold": float("nan")},
+        {"enabled": True, "threshold": float("inf")},
+        {"enabled": True, "threshold": None},
     ]
     for bad in bad_payloads:
         response = _client(manager).put(
@@ -1148,7 +1160,33 @@ def test_set_nsfw_handling_invalid_400_no_change(tmp_path, monkeypatch, preserve
     assert parameters.get_nsfw_action() == "mark_only"
     assert parameters.get_nsfw_recycle_retention_days() == 7
     assert parameters.get_nsfw_scan_interval_hours() == 6
+    assert parameters.get_nsfw_threshold() == 0.7
     assert not (tmp_path / ".env").exists()                # nothing persisted
+
+
+def test_set_nsfw_threshold_persists(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    parameters.set_nsfw_threshold(0.7)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/nsfw", json={"enabled": True, "threshold": 0.35},
+        headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["threshold"] == 0.35
+    assert parameters.get_nsfw_threshold() == 0.35         # runtime effect
+    env_text = (tmp_path / ".env").read_text()             # persisted for restart
+    assert "STRMNTR_NSFW_THRESHOLD=0.35" in env_text
+
+
+@pytest.mark.parametrize("value", [0, 1, 0.5])
+def test_set_nsfw_threshold_accepts_bounds(tmp_path, monkeypatch, preserve_nsfw, value):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).put(
+        "/api/v2/settings/nsfw", json={"enabled": True, "threshold": value},
+        headers=AUTH)
+    assert response.status_code == 200
+    assert parameters.get_nsfw_threshold() == float(value)
 
 
 # --- NSFW analyzer: runtime load/unload regression ---

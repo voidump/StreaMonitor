@@ -62,3 +62,19 @@ def test_run_keeps_sampling_while_not_adult(tmp_path, monkeypatch):
         monitor._run()
 
     assert len(calls) == 3
+
+
+def test_label_uses_runtime_threshold(monkeypatch):
+    # A runtime threshold change must move the adult/non-adult boundary for
+    # subsequent classifications without a restart.
+    monkeypatch.setattr(parameters, 'NSFW_THRESHOLD', parameters.NSFW_THRESHOLD)
+    monkeypatch.setattr(nsfw_analyzer, 'sample_file', lambda path, count: [0.5])
+
+    parameters.set_nsfw_threshold(0.7)
+    assert nsfw_analyzer.analyze_file('video.mp4')[0] == nsfw_analyzer.NON_ADULT
+
+    parameters.set_nsfw_threshold(0.4)
+    assert nsfw_analyzer.analyze_file('video.mp4')[0] == nsfw_analyzer.ADULT
+
+    parameters.set_nsfw_threshold(0.5)   # boundary is inclusive
+    assert nsfw_analyzer.analyze_file('video.mp4')[0] == nsfw_analyzer.ADULT
