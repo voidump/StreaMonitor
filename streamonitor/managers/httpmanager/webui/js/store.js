@@ -54,6 +54,11 @@ let settings = {hotkeys: loadHotkeys()};
 let downloadDir = {path:'', draft:'', loading:false, saving:false, error:null, loaded:false};
 /* server-side min-video-size cleanup threshold (MB); mirrors downloadDir */
 let minVid = {value:null, draft:'', loading:false, saving:false, error:null, loaded:false};
+/* login password change (server-side). The drafts are never persisted anywhere
+ * and are cleared as soon as a save succeeds; error holds an i18n KEY. */
+const PWD_MIN_LENGTH = 4, PWD_MAX_LENGTH = 128;
+let pwd = {current:'', next:'', confirm:'', minLength:PWD_MIN_LENGTH, maxLength:PWD_MAX_LENGTH,
+           saving:false, error:null, loaded:false};
 /* server-side NSFW analysis toggle; error holds an i18n KEY (see recRes note).
  * modelPresent/runtimeAvailable are readiness info only — the toggle stays
  * usable without them (analysis then degrades to 'unknown' labels). */
@@ -121,7 +126,7 @@ function nav(to){
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
   if (to.view!=='settings') stopNsfwBackfillPoll();   // never keep polling the backfill worker from another view
-  if (to.view==='settings'){ loadDownloadDir(); loadMinVideoSize(); loadRecResolution(); loadNsfw(); }   // read the current download dir + cleanup threshold + recording resolution + NSFW toggle (mock fills demo values)
+  if (to.view==='settings'){ loadDownloadDir(); loadMinVideoSize(); loadRecResolution(); loadNsfw(); if (auth.enabled) loadPasswordSettings(); }   // read the current download dir + cleanup threshold + recording resolution + NSFW toggle + password bounds (mock fills demo values)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
 }
@@ -619,6 +624,55 @@ async function saveMinVideoSize(){
     toast(t('minVidSavedToast')); render();
   } catch(e){
     minVid.saving = false; minVid.error = t('minVidErrGeneric'); render();
+  }
+}
+
+/* ---- login password change (server-side) ----
+ * GET only reports whether auth is on plus the length bounds — the password
+ * itself never leaves the backend. The three inputs are validated locally so a
+ * typo never reaches the API. */
+async function loadPasswordSettings(){
+  if (apiState.mode!=='api'){ pwd.loaded = true; return; }   // mock: bounds stay at the defaults
+  try {
+    const d = await apiGet('/settings/password');
+    if (d && d.minLength!=null) pwd.minLength = d.minLength;
+    if (d && d.maxLength!=null) pwd.maxLength = d.maxLength;
+    if (d && d.authEnabled!=null) auth.enabled = d.authEnabled===true;
+    pwd.loaded = true; render();
+  } catch(e){ /* the panel keeps working with the default bounds */ }
+}
+async function savePassword(){
+  const cur = pwd.current, next = pwd.next, confirm = pwd.confirm;
+  if (!cur){ pwd.error = 'pwdErrCurrentRequired'; render(); return; }
+  if (next.length < pwd.minLength || next.length > pwd.maxLength){ pwd.error = 'pwdErrLength'; render(); return; }
+  if (next !== confirm){ pwd.error = 'pwdErrMismatch'; render(); return; }
+  if (apiState.mode!=='api'){   // mock: accept locally, show success toast
+    pwd.current = pwd.next = pwd.confirm = ''; pwd.error = null;
+    toast(t('pwdSavedToast')); render(); return;
+  }
+  pwd.saving = true; pwd.error = null; render();
+  try {
+    const r = await fetch(apiUrl('/settings/password'), {
+      method:'PUT', credentials:'same-origin',
+      headers:{'Accept':'application/json','Content-Type':'application/json'},
+      body: JSON.stringify({currentPassword: cur, newPassword: next}),
+    });
+    const txt = await r.text();
+    const data = txt ? JSON.parse(txt) : {};
+    if (!r.ok){
+      checkUnauthorized(r);
+      pwd.saving = false;
+      const code = data && data.code;
+      pwd.error = code==='wrong_password' ? 'pwdErrWrongCurrent'
+                : code==='invalid' ? 'pwdErrLength'
+                : code==='disabled' ? 'pwdErrDisabled' : 'pwdErrGeneric';
+      toast(t(pwd.error), 'err'); render(); return;
+    }
+    pwd.current = pwd.next = pwd.confirm = '';
+    pwd.saving = false; pwd.error = null;
+    toast(t('pwdSavedToast')); render();
+  } catch(e){
+    pwd.saving = false; pwd.error = 'pwdErrGeneric'; toast(t('pwdErrGeneric'), 'err'); render();
   }
 }
 

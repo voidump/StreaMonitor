@@ -8,6 +8,7 @@ import re
 import subprocess
 import threading
 from contextlib import closing
+from secrets import compare_digest
 from time import sleep, time
 from types import SimpleNamespace
 from urllib.parse import urljoin, urlparse
@@ -17,7 +18,7 @@ from flask import Response, request, send_file
 
 import parameters
 import streamonitor.config as config
-from parameters import WEB_LIST_FREQUENCY, FFMPEG_PATH, WEBSERVER_PASSWORD
+from parameters import WEB_LIST_FREQUENCY, FFMPEG_PATH
 from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.enums import Status
 import streamonitor.media_index as media_index
@@ -56,6 +57,11 @@ _LIVE_TAIL_BYTES = 1 << 20  # ~1 MB backoff from the write head
 _LIVE_READ_CHUNK = 64 * 1024
 _LIVE_POLL_INTERVAL = 0.5  # seconds between reads when caught up to the tail
 _LIVE_MAX_IDLE_ITERS = 60  # give up after this many empty reads (~30s)
+
+# Delay after a change-password attempt with the wrong current password, the
+# same cheap brute-force deterrent the login route uses. Module-level so tests
+# can shrink it.
+PASSWORD_FAILURE_DELAY = 1
 
 
 def _fmp4_init_end(f):
@@ -1423,7 +1429,7 @@ def register_api_v2(app, manager, login_required):
             'status': statuses,
             'webListFrequency': WEB_LIST_FREQUENCY,
             # Lets the frontend show the logout entry only when a password is set.
-            'authEnabled': WEBSERVER_PASSWORD != "",
+            'authEnabled': parameters.get_webserver_password() != "",
             'diskSpace': {
                 'total': usage.total,
                 'free': usage.free,
@@ -1691,3 +1697,37 @@ def register_api_v2(app, manager, login_required):
         parameters.set_recording_resolution(resolution, preference)
         parameters.persist_recording_resolution(resolution, preference)
         return _json(_recording_resolution_payload())
+
+    @app.route('/api/v2/settings/password', methods=['GET'])
+    @login_required
+    def api_v2_get_password_settings():
+        # Never returns the password itself, only whether auth is on and the
+        # length bounds the UI validates against.
+        return _json({
+            'authEnabled': parameters.get_webserver_password() != "",
+            'minLength': parameters.WEBSERVER_PASSWORD_MIN_LENGTH,
+            'maxLength': parameters.WEBSERVER_PASSWORD_MAX_LENGTH,
+        })
+
+    @app.route('/api/v2/settings/password', methods=['PUT', 'POST'])
+    @login_required
+    def api_v2_set_password():
+        current = parameters.get_webserver_password()
+        if current == "":
+            return _json({'error': 'Password auth is disabled', 'code': 'disabled'}, 409)
+        data = request.get_json(silent=True) or {}
+        supplied = data.get('currentPassword')
+        new_password = data.get('newPassword')
+        if not isinstance(new_password, str) or not new_password:
+            return _json({'error': 'New password is required', 'code': 'invalid'}, 400)
+        if not (parameters.WEBSERVER_PASSWORD_MIN_LENGTH <= len(new_password)
+                <= parameters.WEBSERVER_PASSWORD_MAX_LENGTH):
+            return _json({'error': 'New password length is out of range', 'code': 'invalid'}, 400)
+        if not isinstance(supplied, str) or not compare_digest(supplied, current):
+            sleep(PASSWORD_FAILURE_DELAY)   # cheap brute-force deterrent
+            return _json({'error': 'Current password is incorrect', 'code': 'wrong_password'}, 403)
+        # Takes effect immediately: check_auth reads the password via the getter
+        # at call time. The current session cookie stays valid.
+        parameters.set_webserver_password(new_password)
+        parameters.persist_webserver_password(new_password)
+        return _json({'ok': True, 'authEnabled': True})

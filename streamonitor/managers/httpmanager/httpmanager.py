@@ -9,7 +9,8 @@ import os
 import logging
 from time import sleep
 
-from parameters import WEBSERVER_HOST, WEBSERVER_PORT, WEBSERVER_PASSWORD, WEBSERVER_SKIN
+import parameters
+from parameters import WEBSERVER_HOST, WEBSERVER_PORT, WEBSERVER_SKIN
 import streamonitor.log as log
 from functools import wraps
 from secrets import compare_digest, token_hex
@@ -81,13 +82,15 @@ class HTTPManager(Manager):
         )
 
         def password_enabled():
-            return WEBSERVER_PASSWORD != ""
+            # Read at call time so a change made through the settings API takes
+            # effect without a restart.
+            return parameters.get_webserver_password() != ""
 
         def check_auth(username, password):
             if not password_enabled():
                 return True
             return (username == 'admin' and isinstance(password, str)
-                    and compare_digest(password, WEBSERVER_PASSWORD))
+                    and compare_digest(password, parameters.get_webserver_password()))
 
         def authenticated():
             if not password_enabled():

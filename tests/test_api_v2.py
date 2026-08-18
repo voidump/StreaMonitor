@@ -141,12 +141,7 @@ def test_basesettings_auth_enabled_when_password_set(client):
 def test_basesettings_auth_disabled_when_password_empty(monkeypatch):
     # An empty password disables auth entirely, so the frontend must hide the
     # logout entry.
-    monkeypatch.setattr(
-        "streamonitor.managers.httpmanager.httpmanager.WEBSERVER_PASSWORD", ""
-    )
-    monkeypatch.setattr(
-        "streamonitor.managers.httpmanager.api_v2.WEBSERVER_PASSWORD", ""
-    )
+    monkeypatch.setattr(parameters, "WEBSERVER_PASSWORD", "")
     client = HTTPManager([]).create_app().test_client()
     response = client.get("/api/v2/basesettings")
     assert response.status_code == 200
@@ -2013,3 +2008,109 @@ class _FrozenNow:
 
     def fromtimestamp(self, ts):
         return self._dt.fromtimestamp(ts)
+
+
+# --- settings: web server password ---
+
+@pytest.fixture
+def preserve_webserver_password(monkeypatch):
+    # set_webserver_password mutates the module global; snapshot so tests never
+    # leak a changed password into the rest of the suite.
+    monkeypatch.setattr(
+        parameters, "WEBSERVER_PASSWORD", parameters.WEBSERVER_PASSWORD)
+    monkeypatch.setattr(api_v2, "PASSWORD_FAILURE_DELAY", 0)
+    yield
+
+
+def test_get_password_settings_requires_auth():
+    response = _client(HTTPManager([])).get("/api/v2/settings/password")
+    assert response.status_code == 401
+
+
+def test_get_password_settings_never_returns_the_password():
+    response = _client(HTTPManager([])).get(
+        "/api/v2/settings/password", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["authEnabled"] is True
+    assert payload["minLength"] == parameters.WEBSERVER_PASSWORD_MIN_LENGTH
+    assert payload["maxLength"] == parameters.WEBSERVER_PASSWORD_MAX_LENGTH
+    assert b"admin" not in response.data
+
+
+def test_set_password_requires_auth():
+    response = _client(HTTPManager([])).put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newPassword": "newpass"})
+    assert response.status_code == 401
+
+
+def test_set_password_success_persists_and_takes_effect(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("STRMNTR_PORT=5000\nSTRMNTR_PASSWORD=admin\n")
+    client = _client(HTTPManager([]))
+    response = client.put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newPassword": "newpass"}, headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["ok"] is True
+    assert parameters.get_webserver_password() == "newpass"
+    # Other keys survive the atomic rewrite and the new password is stored.
+    env_text = (tmp_path / ".env").read_text()
+    assert "STRMNTR_PORT=5000" in env_text
+    assert 'STRMNTR_PASSWORD="newpass"' in env_text
+    assert not (tmp_path / ".env.tmp").exists()
+    # No restart needed: the old password stops working immediately.
+    assert client.get("/api/v2/streamers", headers=AUTH).status_code == 401
+    assert client.get(
+        "/api/v2/streamers", headers=basic_auth("admin", "newpass")).status_code == 200
+
+
+def test_set_password_wrong_current_is_rejected(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.chdir(tmp_path)
+    response = _client(HTTPManager([])).put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "nope", "newPassword": "newpass"}, headers=AUTH)
+    assert response.status_code == 403
+    assert json.loads(response.data)["code"] == "wrong_password"
+    assert parameters.get_webserver_password() == "admin"
+    assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.parametrize("new_password", ["", "abc", "x" * 129, None, 12345])
+def test_set_password_rejects_invalid_new_password(
+        tmp_path, monkeypatch, preserve_webserver_password, new_password):
+    monkeypatch.chdir(tmp_path)
+    response = _client(HTTPManager([])).put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newPassword": new_password}, headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "invalid"
+    assert parameters.get_webserver_password() == "admin"
+    assert not (tmp_path / ".env").exists()
+
+
+def test_set_password_refused_when_auth_disabled(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.chdir(tmp_path)
+    parameters.set_webserver_password("")
+    response = _client(HTTPManager([])).put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "", "newPassword": "newpass"})
+    assert response.status_code == 409
+    assert json.loads(response.data)["code"] == "disabled"
+
+
+def test_set_password_keeps_current_session_logged_in(
+        tmp_path, monkeypatch, preserve_webserver_password):
+    monkeypatch.chdir(tmp_path)
+    client = _client(HTTPManager([]))
+    assert client.post("/login", json={"password": "admin"}).status_code == 200
+    response = client.put(
+        "/api/v2/settings/password",
+        json={"currentPassword": "admin", "newPassword": "newpass"})
+    assert response.status_code == 200
+    # The session cookie survives the change: no credentials header needed.
+    assert client.get("/api/v2/streamers").status_code == 200

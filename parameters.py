@@ -470,7 +470,34 @@ WEB_CONFIRM_DELETES = env.str("STRMNTR_CONFIRM_DEL", "MOBILE")
 
 # Password for the web server
 # If empty no auth required, else username admin and choosen password
+# Runtime-configurable, persisted setting: read it via get_webserver_password()
+# at call time (same pattern as get_min_video_size_mb) so a change made through
+# the settings API takes effect without a restart.
 WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "admin")
+
+# Length bounds enforced by the change-password API.
+WEBSERVER_PASSWORD_MIN_LENGTH = 4
+WEBSERVER_PASSWORD_MAX_LENGTH = 128
+
+
+def get_webserver_password():
+    return WEBSERVER_PASSWORD
+
+
+def set_webserver_password(value):
+    global WEBSERVER_PASSWORD
+    WEBSERVER_PASSWORD = value
+
+
+def _env_quote(value):
+    # Double-quote the value so spaces and '#' survive the .env round-trip;
+    # backslashes and quotes are escaped the way read_env unescapes them.
+    escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def persist_webserver_password(value):
+    _persist_env_key('STRMNTR_PASSWORD', _env_quote(value))
 
 # ZMQ (external console) configuration
 
