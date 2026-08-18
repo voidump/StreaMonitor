@@ -132,6 +132,28 @@ def test_basesettings_includes_web_list_frequency(client):
     assert isinstance(payload["webListFrequency"], int)
 
 
+def test_basesettings_auth_enabled_when_password_set(client):
+    response = client.get("/api/v2/basesettings", headers=AUTH)
+    payload = json.loads(response.data)
+    assert payload["authEnabled"] is True
+
+
+def test_basesettings_auth_disabled_when_password_empty(monkeypatch):
+    # An empty password disables auth entirely, so the frontend must hide the
+    # logout entry.
+    monkeypatch.setattr(
+        "streamonitor.managers.httpmanager.httpmanager.WEBSERVER_PASSWORD", ""
+    )
+    monkeypatch.setattr(
+        "streamonitor.managers.httpmanager.api_v2.WEBSERVER_PASSWORD", ""
+    )
+    client = HTTPManager([]).create_app().test_client()
+    response = client.get("/api/v2/basesettings")
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["authEnabled"] is False
+
+
 # --- monitorState persistence round-trip ---
 
 def test_monitor_state_export_fromconfig_roundtrip():
