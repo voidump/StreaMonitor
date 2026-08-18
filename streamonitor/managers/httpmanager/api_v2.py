@@ -1646,6 +1646,32 @@ def register_api_v2(app, manager, login_required):
             nsfw_analyzer.unload_session()
         return _json(_nsfw_payload())
 
+    @app.route('/api/v2/settings/nsfw/backscan/progress', methods=['GET'])
+    @login_required
+    def api_v2_get_nsfw_backscan():
+        from streamonitor import nsfw_backfill
+        return _json(nsfw_backfill.progress(manager.streamers))
+
+    @app.route('/api/v2/settings/nsfw/backscan/start', methods=['POST'])
+    @login_required
+    def api_v2_start_nsfw_backscan():
+        # Labels every unanalyzed indexed video serially in one background
+        # thread. Refused while the NSFW feature is off; an already running
+        # session is never restarted, its current state is returned instead.
+        from streamonitor import nsfw_backfill
+        if not parameters.get_nsfw_enabled():
+            return _json({'error': 'NSFW analysis is disabled', 'code': 'disabled'}, 409)
+        state, started = nsfw_backfill.start(manager.streamers)
+        state['started'] = started
+        return _json(state)
+
+    @app.route('/api/v2/settings/nsfw/backscan/cancel', methods=['POST'])
+    @login_required
+    def api_v2_cancel_nsfw_backscan():
+        # Stops after the file being analyzed finishes; a no-op when idle.
+        from streamonitor import nsfw_backfill
+        return _json(nsfw_backfill.cancel(manager.streamers))
+
     @app.route('/api/v2/settings/recording-resolution', methods=['GET'])
     @login_required
     def api_v2_get_recording_resolution():
