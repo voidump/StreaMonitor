@@ -5,8 +5,8 @@ const NOW = new Date('2026-07-05T21:30:00');
  * slug mirrors the backend Bot.siteslug exactly — it is what the API returns as
  * `siteslug` and what POST /streamers accepts; abbr is display-only. */
 const SITES = {
-  chaturbate:{name:'Chaturbate', slug:'CB', abbr:'CB', color:'#f5a623', hosts:['chaturbate.com'], url:u=>`https://chaturbate.com/${u}/`},
   stripchat:{name:'StripChat', slug:'SC', abbr:'SC', color:'#e0455a', hosts:['stripchat.com'], url:u=>`https://stripchat.com/${u}`},
+  chaturbate:{name:'Chaturbate', slug:'CB', abbr:'CB', color:'#f5a623', hosts:['chaturbate.com'], url:u=>`https://chaturbate.com/${u}/`},
   bongacams:{name:'BongaCams', slug:'BC', abbr:'BC', color:'#ff7a45', hosts:['bongacams.com'], url:u=>`https://bongacams.com/${u}`},
   camsoda:{name:'CamSoda', slug:'CS', abbr:'CS', color:'#2dd4bf', hosts:['camsoda.com'], url:u=>`https://camsoda.com/${u}`},
   myfreecams:{name:'MyFreeCams', slug:'MFC', abbr:'MFC', color:'#6ee76e', hosts:['myfreecams.com'], url:u=>`https://myfreecams.com/#${u}`},
