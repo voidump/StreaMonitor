@@ -151,13 +151,52 @@ function apiUrl(path){
   // "Request cannot be constructed from a URL that includes credentials".
   return new URL(base + path, location.origin).toString();
 }
+/* Session auth (v3.4): the backend answers 401 JSON {"error":"unauthorized"} on
+ * /api/v2/* once the session Cookie is gone. Any API response carrying a 401
+ * sends the console to the login page, guarded so concurrent in-flight requests
+ * (and the poll timer) can't queue up repeated navigations or bounce us while
+ * already sitting on /login. */
+const LOGIN_PATH = '/login';
+const LOGOUT_PATH = '/logout';
+const auth = { enabled:false, redirecting:false, loggingOut:false };
+function handleUnauthorized(){
+  if (auth.redirecting) return true;
+  auth.redirecting = true;
+  stopPolling();
+  if (location.pathname !== LOGIN_PATH) location.replace(LOGIN_PATH);
+  return true;
+}
+/* returns true when the response was a 401 and a redirect was triggered */
+function checkUnauthorized(r){ return r && r.status===401 ? handleUnauthorized() : false; }
 async function apiGet(path){
   const r = await fetch(apiUrl(path), {headers:{'Accept':'application/json'}, credentials:'same-origin'});
-  if (!r.ok) throw new Error('HTTP '+r.status);
+  if (!r.ok){
+    checkUnauthorized(r);
+    const err = new Error('HTTP '+r.status); err.status = r.status; throw err;
+  }
   return r.json();
 }
+/* settings page "log out": POST /logout, then back to the login page. */
+async function doLogout(){
+  if (auth.loggingOut) return;
+  auth.loggingOut = true; render();
+  try {
+    const r = await fetch(new URL(LOGOUT_PATH, location.origin).toString(), {
+      method:'POST', credentials:'same-origin', headers:{'Accept':'application/json'},
+    });
+    if (!r.ok && r.status!==401){ auth.loggingOut = false; toast(t('logoutErr'), 'err'); render(); return; }
+    auth.redirecting = true; stopPolling();
+    location.replace(LOGIN_PATH);
+  } catch(e){
+    auth.loggingOut = false; toast(t('logoutErr'), 'err'); render();
+  }
+}
 async function probeApi(){
-  try { const r = await fetch(apiUrl('/streamers'), {headers:{'Accept':'application/json'}, credentials:'same-origin'}); return r.ok; }
+  try {
+    const r = await fetch(apiUrl('/streamers'), {headers:{'Accept':'application/json'}, credentials:'same-origin'});
+    checkUnauthorized(r);   // session gone: go to /login instead of silently falling back to mock
+    return r.ok;
+  }
   catch(e){ return false; }
 }
 
@@ -340,6 +379,9 @@ async function loadBaseSettings(){
     }
     const f = b.listFrequency!=null ? b.listFrequency : (b.webListFrequency!=null ? b.webListFrequency : b.WEB_LIST_FREQUENCY);
     if (f!=null && !isNaN(Number(f))){ const n = Number(f); apiState.pollMs = n>1000 ? n : n*1000; }
+    // Only show the settings "log out" entry when the backend actually requires
+    // a password; missing flag (older backend / no password) means no button.
+    auth.enabled = b.authEnabled===true;
   } catch(e){ /* basesettings is optional */ }
 }
 function startPolling(){ stopPolling(); apiState.timer = setInterval(refreshStreamers, apiState.pollMs); }
@@ -359,6 +401,7 @@ async function apiSend(method, path, body){
   let data = null;
   try { data = txt ? JSON.parse(txt) : null; } catch(e){ data = null; }
   if (!r.ok){
+    checkUnauthorized(r);
     const err = new Error('HTTP '+r.status);
     err.status = r.status; err.data = data;
     throw err;
@@ -521,7 +564,7 @@ async function saveDownloadDir(){
     });
     const txt = await r.text();
     const data = txt ? JSON.parse(txt) : {};
-    if (!r.ok){ downloadDir.saving = false; downloadDir.error = dlDirErrText(data); render(); return; }
+    if (!r.ok){ checkUnauthorized(r); downloadDir.saving = false; downloadDir.error = dlDirErrText(data); render(); return; }
     downloadDir.path = data.path || val; downloadDir.draft = downloadDir.path;
     downloadDir.saving = false; downloadDir.error = null;
     toast(t('dlDirSavedToast')); render();
@@ -564,7 +607,7 @@ async function saveMinVideoSize(){
     });
     const txt = await r.text();
     const data = txt ? JSON.parse(txt) : {};
-    if (!r.ok){ minVid.saving = false; minVid.error = (data && data.code==='invalid') ? t('minVidErrInvalid') : ((data && data.error) || t('minVidErrGeneric')); render(); return; }
+    if (!r.ok){ checkUnauthorized(r); minVid.saving = false; minVid.error = (data && data.code==='invalid') ? t('minVidErrInvalid') : ((data && data.error) || t('minVidErrGeneric')); render(); return; }
     minVid.value = (data && data.minVideoSizeMb!=null) ? data.minVideoSizeMb : n;
     minVid.draft = String(minVid.value);
     minVid.saving = false; minVid.error = null;
@@ -627,7 +670,7 @@ async function saveNsfw(patch){
     });
     const txt = await r.text();
     const data = txt ? JSON.parse(txt) : {};
-    if (!r.ok){ nsfw.saving = false; nsfw.error = (data && data.code==='invalid') ? 'nsfwErrInvalid' : ((data && data.error) || 'nsfwErrGeneric'); render(); return; }
+    if (!r.ok){ checkUnauthorized(r); nsfw.saving = false; nsfw.error = (data && data.code==='invalid') ? 'nsfwErrInvalid' : ((data && data.error) || 'nsfwErrGeneric'); render(); return; }
     _applyNsfwPayload(data);
     nsfw.saving = false; nsfw.error = null;
     toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render();
@@ -691,7 +734,7 @@ async function saveRecResolution(){
     });
     const txt = await r.text();
     const data = txt ? JSON.parse(txt) : {};
-    if (!r.ok){ recRes.saving = false; recRes.error = recResErrKey(data); recResSyncUi(); render(); return; }   // roll displayed value back to committed
+    if (!r.ok){ checkUnauthorized(r); recRes.saving = false; recRes.error = recResErrKey(data); recResSyncUi(); render(); return; }   // roll displayed value back to committed
     recRes.resolution = (data && data.resolution!=null) ? data.resolution : payload.resolution;
     recRes.preference = (data && data.preference) || payload.preference;
     recResSyncUi();

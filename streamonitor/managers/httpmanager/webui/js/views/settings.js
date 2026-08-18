@@ -185,6 +185,20 @@ function renderDeletedStreamersPanel(){
       </div>`;
 }
 
+/* Session log-out entry — only rendered when the backend reports a password is
+ * configured (auth.enabled from /basesettings); otherwise there is no session
+ * to end and the row would be meaningless. */
+function renderLogoutPanel(){
+  if (!auth.enabled) return '';
+  return `
+      <div class="panel settings-panel">
+        <div class="set-row">
+          <div class="grow"><div class="k">${t('logout')}</div><div class="desc">${t('logoutDesc')}</div></div>
+          <button class="btn" data-logout ${auth.loggingOut?'disabled':''}>${auth.loggingOut?t('logoutBusy'):t('logout')}</button>
+        </div>
+      </div>`;
+}
+
 function renderSettings(){
   return `
   <div class="view">
@@ -213,6 +227,7 @@ function renderSettings(){
       ${renderNsfwPanel()}
       ${renderRecResolutionPanel()}
       ${renderHotkeyPanel()}
+      ${renderLogoutPanel()}
     </div>
   </div>`;
 }
@@ -256,6 +271,11 @@ document.addEventListener('click', e=>{
     const inp = document.getElementById('nsfwScanInput');
     if (inp) nsfw.scanDraft = inp.value;
     saveNsfwScan();
+    return;
+  }
+  if (e.target.closest('[data-logout]')){
+    e.stopPropagation();
+    doLogout();
     return;
   }
   const bind = e.target.closest('[data-hkbind]');
