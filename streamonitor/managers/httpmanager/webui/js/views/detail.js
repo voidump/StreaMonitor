@@ -42,8 +42,26 @@ function renderDetail(s){
     : `${week7h/10} ${t('hoursUnit')}`;
   const markedFiles = s.files.filter(f=>f.marked);
   const ff = detailState.fileFilter;
-  const displayFiles = ff==='marked' ? markedFiles : s.files;
+  const cf = detailState.clsFilter;
+  const clsBucket = f=>f._inRecycle ? 'recycle' : (f._cls==='adult'||f._cls==='non-adult'||f._cls==='unknown' ? f._cls : 'unanalyzed');
+  const clsPool = ff==='marked' ? markedFiles : s.files;   // classification filter narrows whatever the marked filter left
+  const displayFiles = cf==='all' ? clsPool : clsPool.filter(f=>clsBucket(f)===cf);
   const displaySize = displayFiles.reduce((a,f)=>a+f.size,0);
+  // per-bucket counts + sizes over the current source (marked filter applied), so the
+  // stats row and the filter counters always describe the same data set
+  const CLS_BUCKETS = ['non-adult','adult','unknown','unanalyzed','recycle'];
+  const clsStats = {};
+  CLS_BUCKETS.forEach(k=>{ clsStats[k] = {n:0, size:0}; });
+  clsPool.forEach(f=>{ const b = clsStats[clsBucket(f)]; b.n++; b.size += f.size; });
+  const clsLabel = k=>k==='non-adult'?t('clsNonAdult'):k==='adult'?t('clsAdult'):k==='unknown'?t('clsUnknown'):k==='unanalyzed'?t('clsUnanalyzed'):t('clsFilterRecycle');
+  const clsFilterBar = clsPool.length ? `<div class="seg clsfilter">
+    <button class="${cf==='all'?'on':''}" data-clsfilter="all">${t('filterAll')}<span class="cnt">${clsPool.length}</span></button>
+    ${CLS_BUCKETS.map(k=>`<button class="${cf===k?'on':''}" data-clsfilter="${k}">${clsLabel(k)}<span class="cnt">${clsStats[k].n}</span></button>`).join('')}
+  </div>` : '';
+  const clsStatsBar = clsPool.length ? `<div class="cls-stats">
+    <span class="k">${t('clsStatsTitle')}</span>
+    ${CLS_BUCKETS.map(k=>`<span class="cs-item${clsStats[k].n?'':' zero'}"><i class="dot ${k}"></i>${clsLabel(k)}<b>${clsStats[k].n}</b><em>${fmtSize(clsStats[k].size)}</em></span>`).join('')}
+  </div>` : '';
 
   const heatRows = s.schedule.map((row,d)=>`
     <div class="hm-lab">${wd[d]}</div>
@@ -68,12 +86,21 @@ function renderDetail(s){
       : f._cls==='unknown' ? `<span class="cls-badge unknown" title="${t('clsUnknownTip')}">${t('clsUnknown')}</span>` : '';
     const recycleBadge = f._inRecycle ? `<span class="recycle-badge" title="${t('inRecycleTip')}">${IC.trash||''}${t('inRecycleTag')}</span>` : '';
     const trBadges = (clsBadge||recycleBadge) ? `<span class="tr-badges">${clsBadge}${recycleBadge}</span>` : '';
+    // manual override menu (改判). Never offered for the file the recorder is
+    // still writing — it has no media-index row yet, so the backend would 404.
+    const clsMenu = clsMenuFileId===f.id && !f._recording
+      ? `<span class="cls-menu">
+           <span class="cm-h">${t('clsChangeTo')}</span>
+           ${['adult','non-adult','unknown'].map(l=>`<button class="${f._cls===l?'on':''}" data-clsset="${l}" data-clsfile="${esc(f.id)}">${l==='adult'?t('clsAdult'):l==='non-adult'?t('clsNonAdult'):t('clsUnknown')}</button>`).join('')}
+         </span>`
+      : '';
     return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}${f._inRecycle?' inrecycle':''}" ${liveThumb?`data-watchlive="${s.id}"`:`data-playfile="${f.id}"`}>
       <div class="imgwrap">
         <img src="${thumbSrc}" alt="" loading="lazy"${useApiThumb?` data-thumb-fallback="${esc(f.id)}"`:''}>
         ${f._recording?`<span class="rec-badge">${t('recTag')}</span>`:''}
         ${f.marked?`<span class="mark-badge">${IC.markFill}${t('markedTag')}</span>`:''}
         ${trBadges}
+        ${clsMenu}
         <span class="dur">${fmtDur(f.dur)}</span>
         ${f.watchPct>0?`<span class="wprog" style="width:${f.watchPct}%"></span>`:''}
         <span class="hover-play">${IC.playLg}</span>
@@ -90,6 +117,7 @@ function renderDetail(s){
                  <button class="icon-btn" data-play="${f.id}" title="${t('play')}">${IC.play}</button>
                  <button class="icon-btn ${f.marked?'markon':''}" data-mark="${f.id}" title="${f.marked?t('unmark'):t('mark')}">${f.marked?IC.markFill:IC.mark}</button>
                  <button class="icon-btn" data-dl="${f.id}" title="${t('download')}">${IC.down}</button>
+                 ${f._recording ? '' : `<button class="icon-btn ${clsMenuFileId===f.id?'markon':''}" data-clsmenu="${esc(f.id)}" title="${t('clsChange')}">${IC.tag}</button>`}
                  ${f._recording
                    ? `<button class="icon-btn danger" disabled title="${t('recDelBlocked')}">${IC.trash}</button>`
                    : `<button class="icon-btn danger" data-del="${f.id}" title="${t('del')}">${IC.trash}</button>`}
@@ -172,10 +200,12 @@ function renderDetail(s){
             <button class="${ff==='marked'?'on':''}" data-filefilter="marked">${t('filterMarked')}<span class="cnt">${markedFiles.length}</span></button>
           </div></div>`:''}
         </div>
+        ${clsStatsBar}
+        ${clsFilterBar?`<div class="cls-filter-row">${clsFilterBar}</div>`:''}
         ${s.files.length
           ? (displayFiles.length
               ? `<div class="thumb-grid">${thumbs}</div>`
-              : `<div class="empty" style="padding:30px">${t('noMarked')}</div>`)
+              : `<div class="empty" style="padding:30px">${clsPool.length?t('noClsMatch'):t('noMarked')}</div>`)
           : (apiState.mode==='api' && s._detailError
               ? `<div class="empty" style="padding:30px">${IC.alert} ${t('detailLoadError')}
                   <button class="btn" style="margin-left:10px" onclick="retryDetail()">${IC.wrench}${t('apiRetry')}</button></div>`

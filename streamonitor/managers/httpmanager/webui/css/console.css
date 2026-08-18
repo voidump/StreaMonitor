@@ -494,6 +494,45 @@ tr:hover .row-actions{opacity:1}
 .recycle-badge{background:rgba(42,53,70,.92);color:var(--text-dim);border:1px solid var(--border-strong)}
 .vthumb.inrecycle img{filter:grayscale(1);opacity:.55}
 .vthumb.inrecycle .meta{opacity:.62}
+
+/* manual classification override menu (overlays the thumbnail) */
+.cls-menu{
+  position:absolute;inset:0;z-index:3;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:5px;padding:8px;
+  background:rgba(10,14,20,.88);cursor:default;
+}
+.cls-menu .cm-h{font-size:10.5px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.4px}
+.cls-menu button{
+  width:100%;max-width:150px;padding:4px 10px;font-size:12px;color:var(--text-dim);
+  background:var(--bg-panel);border:1px solid var(--border-strong);border-radius:var(--radius);
+  transition:border-color .12s,color .12s;
+}
+.cls-menu button:hover{border-color:var(--accent);color:var(--text)}
+.cls-menu button.on{border-color:var(--accent);color:var(--accent)}
+.vthumb:hover .cls-menu~.hover-play{opacity:0}
+
+/* classification stats + filter row above the recordings grid */
+.cls-stats{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  margin:0 0 10px;padding:8px 12px;font-size:11.5px;
+  background:var(--bg-panel);border:1px solid var(--border);border-radius:var(--radius);
+}
+.cls-stats .k{color:var(--text-faint);font-size:11px}
+.cls-stats .cs-item{display:inline-flex;align-items:center;gap:6px;color:var(--text-dim)}
+.cls-stats .cs-item.zero{opacity:.5}
+.cls-stats .cs-item b{font-family:var(--mono);font-size:12px;color:var(--text)}
+.cls-stats .cs-item em{font-family:var(--mono);font-size:11px;color:var(--text-faint);font-style:normal}
+.cls-stats .dot{width:8px;height:8px;border-radius:2px;flex:none;display:inline-block}
+.cls-stats .dot.adult{background:rgba(229,72,77,.9)}
+.cls-stats .dot.non-adult{background:rgba(63,185,80,.88)}
+.cls-stats .dot.unknown{background:rgba(93,106,125,.7)}
+.cls-stats .dot.unanalyzed{background:var(--border-strong)}
+.cls-stats .dot.recycle{background:rgba(42,53,70,.92);border:1px solid var(--border-strong)}
+.cls-filter-row{margin:0 0 12px}
+.cls-filter-row .clsfilter{flex-wrap:wrap}
+.cls-filter-row .clsfilter button{padding:4px 12px}
+.cls-filter-row .clsfilter .cnt{font-family:var(--mono);font-size:11px;margin-left:6px;color:var(--text-faint)}
+.cls-filter-row .clsfilter button.on .cnt{color:var(--accent)}
 .icon-btn.markon{color:var(--warn)}
 .icon-btn.markon:hover{color:#e8bc4a}
 .kbd-hints{margin-left:auto;color:var(--text-faint);font-size:11px;white-space:nowrap}

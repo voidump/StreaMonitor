@@ -319,4 +319,5 @@ const IC = {
   mark:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.2L6 21z"/></svg>',
   markFill:'<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M6 3h12v18l-6-4.2L6 21z"/></svg>',
   filmX:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="12" height="14" rx="2"/><path d="M2.5 8.5h3M2.5 13.5h3M11.5 8.5h3M11.5 13.5h3M8.5 4v14"/><path d="m15.5 15.5 5 5M20.5 15.5l-5 5"/></svg>',
+  tag:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 2.8 12V4.8A2 2 0 0 1 4.8 2.8H12a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.8Z"/><path d="M7.5 7.5h.01"/></svg>',
 };

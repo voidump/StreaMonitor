@@ -18,7 +18,8 @@ let viewMode = loadViewMode();   // dashboard 'list'|'card' view preference (per
 
 /* ---------------- extended state (v2 scaffolding — data only, no UI yet) ---------------- */
 let history = [];   // {user, site, url, avatarDataUrl, addedDate, removedDate}
-let detailState = {fileFilter:'all'};   // 'all'|'marked'
+let detailState = {fileFilter:'all', clsFilter:'all'};   // fileFilter 'all'|'marked'; clsFilter 'all'|'non-adult'|'adult'|'unknown'|'unanalyzed'|'recycle'
+let clsMenuFileId = null;   // detail: file whose classification menu is open (null = none)
 
 /* ---------------- history ops ---------------- */
 function pushHistory(s){
@@ -108,6 +109,8 @@ function nav(to){
   confirmDelId = null;
   selected.clear();
   detailState.fileFilter = 'all';
+  detailState.clsFilter = 'all';
+  clsMenuFileId = null;
   if (to.view==='detail'){
     const s = streamers.find(x=>x.id===to.id);
     const latest = s && s.files[0];
@@ -119,6 +122,7 @@ function nav(to){
   route = to;
   if (typeof writeRouteHash==='function') writeRouteHash(to);   // keep the URL hash in sync so views are linkable / refresh-safe
   render();
+  if (to.view==='detail') ensureNsfwLoaded();   // the manual-override warning needs the current handling policy
   if (apiState.mode==='api' && to.view==='detail'){   // pull real videos + on-line pattern on entering a detail
     const s2 = streamers.find(x=>x.id===to.id);
     if (s2 && !s2._detailLoaded) loadDetail(s2.site, s2.user);
@@ -704,6 +708,18 @@ async function loadNsfw(){
     nsfw.loading = false; nsfw.error = 'nsfwLoadErr'; render();
   }
 }
+/* the detail view needs the current handling policy to warn before a manual
+ * non-adult override; pull it once (settings payload only, no backfill poll) */
+async function ensureNsfwLoaded(){
+  if (nsfw.loaded) return;
+  if (apiState.mode!=='api'){
+    Object.assign(nsfw, MOCK_NSFW);
+    nsfw.retentionDraft = String(nsfw.recycleRetentionDays);
+    nsfw.scanDraft = String(nsfw.scanIntervalHours);
+    nsfw.loaded = true; return;
+  }
+  try { _applyNsfwPayload(await apiGet('/settings/nsfw')); nsfw.loaded = true; } catch(e){ /* keep defaults; the warning just won't show */ }
+}
 /* patch may contain enabled / action / recycleRetentionDays / scanIntervalHours;
  * the full current config is always sent so the server state stays coherent. */
 async function saveNsfw(patch){
@@ -944,6 +960,36 @@ async function apiBatchDeleteMarked(s){
   if (failN) toast(t('apiOpError'), 'err');
   if (skipped) toast(t('recDelSkipped')(skipped), 'warn');
   await loadDetail(s.site, s.user);
+}
+/* ---- manual classification override (改判) ----
+ * Writes a manual label for one video. The backend stores it with
+ * source='manual' (never overwritten by the analyzer) and, when the file sits
+ * in the recycle bin and the new label is not 'non-adult', restores it to the
+ * original directory and answers restored=true. Marking a file non-adult only
+ * changes the label — the configured NSFW action runs on the next scheduled
+ * scan (the caller warns about that before getting here). */
+async function apiSetClassification(s, file, label){
+  clsMenuFileId = null;
+  const labelText = label==='adult' ? t('clsAdult') : label==='non-adult' ? t('clsNonAdult') : t('clsUnknown');
+  if (apiState.mode!=='api'){   // mock: flip the local label, un-grey a recycled entry
+    file._cls = label;
+    const restored = file._inRecycle && label!=='non-adult';
+    if (restored) file._inRecycle = false;
+    toast(restored ? t('clsRestoredToast')(labelText) : t('clsSetToast')(labelText));
+    render(); return;
+  }
+  try {
+    const res = await apiSend('POST', '/videos/classification',
+      {site:s.site, user:s.user, filename:file._filename||file.id, label});
+    const restored = !!(res && res.restored);
+    file._cls = label;
+    if (restored) file._inRecycle = false;
+    toast(restored ? t('clsRestoredToast')(labelText) : t('clsSetToast')(labelText));
+    render();
+    await loadDetail(s.site, s.user);   // authoritative refresh (new path/mtime after a restore)
+  } catch(e){
+    toast(apiErrText(e), 'err'); render();
+  }
 }
 /* purge: delete every recorded video for one streamer (recording-file protected server-side) */
 async function apiPurgeStreamerVideos(s){

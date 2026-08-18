@@ -98,6 +98,22 @@ function renderModalInner(){
   }
   const s = streamers.find(x=>x.id===modalState.id);
   if (!s){ modalState=null; root.innerHTML=''; return; }
+  // manual non-adult override under a recycle/delete policy: the file is not
+  // touched now, but the next scheduled scan will act on it — say so explicitly
+  if (modalState.type==='clsManual'){
+    root.innerHTML = `
+    <div class="modal-backdrop" id="modalBk">
+      <div class="modal">
+        <div class="modal-h">${t('clsManualTitle')}</div>
+        <div class="modal-b" style="padding-bottom:14px">${nsfw.action==='delete'?t('clsManualDescDelete'):t('clsManualDescRecycle')}</div>
+        <div class="modal-f">
+          <button class="btn" id="modalCancel">${t('cancel')}</button>
+          <button class="btn ${nsfw.action==='delete'?'danger-solid':'primary'}" id="modalConfirm">${t('clsManualBtn')}</button>
+        </div>
+      </div>
+    </div>`;
+    return;
+  }
   if (modalState.type==='purgeVideos'){
     const n = fileCount(s);
     const sz = fmtSize(sizeOf(s));
