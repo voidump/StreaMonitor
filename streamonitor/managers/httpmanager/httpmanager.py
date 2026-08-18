@@ -1,17 +1,53 @@
 from typing import cast, Union
 
-from flask import Flask, request, send_from_directory
+from datetime import timedelta
+# The session proxy is aliased so it is not mistaken for a requests session
+# (see tests/test_http_timeouts.py, which requires an explicit timeout on every
+# `session.get(...)` call).
+from flask import Flask, jsonify, redirect, request, send_from_directory, session as flask_session
 import os
 import logging
+from time import sleep
 
 from parameters import WEBSERVER_HOST, WEBSERVER_PORT, WEBSERVER_PASSWORD, WEBSERVER_SKIN
 import streamonitor.log as log
 from functools import wraps
-from secrets import compare_digest
+from secrets import compare_digest, token_hex
 from streamonitor.bot import Bot
 from streamonitor.manager import Manager
 
 from .api_v2 import register_api_v2
+
+
+# The Flask secret key is persisted here so session cookies (and therefore
+# logins) stay valid across restarts.
+SESSION_SECRET_FILE = '.session_secret'
+# Sessions are permanent and slide forward on every request, so a login lasts
+# as long as the browser keeps the cookie.
+SESSION_LIFETIME_DAYS = 365
+# Delay after a failed login attempt, a cheap brute-force deterrent.
+LOGIN_FAILURE_DELAY = 1
+
+
+def load_or_create_secret_key(path=SESSION_SECRET_FILE):
+    # Reuse the stored key when present, otherwise generate one and write it
+    # with 0600 permissions. If the file cannot be read or written we fall back
+    # to an in-memory key: logins then only survive until the next restart.
+    try:
+        with open(path, 'r') as f:
+            key = f.read().strip()
+        if key:
+            return key
+    except OSError:
+        pass
+    key = token_hex(32)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(key + '\n')
+    except OSError:
+        pass
+    return key
 
 
 class HTTPManager(Manager):
@@ -34,21 +70,85 @@ class HTTPManager(Manager):
         werkzeug_logger = logging.getLogger('werkzeug')
         werkzeug_logger.disabled = True
 
+        app.secret_key = load_or_create_secret_key()
+        app.config.update(
+            PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_LIFETIME_DAYS),
+            # Every response re-sends the cookie, so an active user is never
+            # logged out by the lifetime expiring.
+            SESSION_REFRESH_EACH_REQUEST=True,
+            SESSION_COOKIE_HTTPONLY=True,
+            SESSION_COOKIE_SAMESITE='Lax',
+        )
+
+        def password_enabled():
+            return WEBSERVER_PASSWORD != ""
+
         def check_auth(username, password):
-            return WEBSERVER_PASSWORD == "" or (username == 'admin' and compare_digest(password, WEBSERVER_PASSWORD))
+            if not password_enabled():
+                return True
+            return (username == 'admin' and isinstance(password, str)
+                    and compare_digest(password, WEBSERVER_PASSWORD))
+
+        def authenticated():
+            if not password_enabled():
+                return True
+            if flask_session.get('authenticated') is True:
+                return True
+            # Basic Auth stays supported for scripts/curl, but no
+            # WWW-Authenticate header is ever returned so browsers do not show
+            # the native credentials prompt anymore.
+            auth = request.authorization
+            return bool(auth and check_auth(auth.username, auth.password))
 
         def login_required(f):
             @wraps(f)
             def wrapped_view(**kwargs):
-                auth = request.authorization
-                if WEBSERVER_PASSWORD != "" and not (auth and check_auth(auth.username, auth.password)):
-                    return ('Unauthorized', 401, {
-                        'WWW-Authenticate': 'Basic realm="Login Required"'
-                    })
+                if not authenticated():
+                    # Resources the frontend or a script fetches get a
+                    # machine-readable 401 (never a WWW-Authenticate header, so
+                    # browsers no longer show the native credentials prompt);
+                    # page requests are redirected to the login page.
+                    resource = (request.path.startswith('/api/')
+                                or request.path.startswith('/video/'))
+                    if request.method == 'GET' and not resource:
+                        return redirect('/login')
+                    return jsonify({'error': 'unauthorized'}), 401
 
                 return f(**kwargs)
 
             return wrapped_view
+
+        @app.route('/login', methods=['GET', 'POST'])
+        def login():
+            if not password_enabled():
+                return redirect('/')
+            if request.method == 'GET':
+                if flask_session.get('authenticated') is True:
+                    return redirect('/')
+                return send_from_directory(webui_dir, 'login.html')
+            data = request.get_json(silent=True) or {}
+            password = data.get('password')
+            if password is None:
+                password = request.form.get('password', '')
+            if check_auth('admin', password if isinstance(password, str) else ''):
+                flask_session.permanent = True
+                flask_session['authenticated'] = True
+                if request.is_json:
+                    return jsonify({'ok': True})
+                return redirect('/')
+            sleep(LOGIN_FAILURE_DELAY)
+            if request.is_json:
+                return jsonify({'error': 'invalid_password'}), 401
+            # Plain form post: stay on the login page, the ?error flag makes it
+            # show the "wrong password" hint.
+            return redirect('/login?error=1')
+
+        @app.route('/logout', methods=['POST'])
+        def logout():
+            flask_session.clear()
+            if request.is_json:
+                return jsonify({'ok': True})
+            return redirect('/login')
 
         @app.route('/', methods=['GET'])
         @login_required
