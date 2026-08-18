@@ -21,6 +21,36 @@ const SITES = {
   dreamcam:{name:'Dreamcam', slug:'DC', abbr:'DC', color:'#818cf8', hosts:['dreamcam.com'], url:u=>`https://dreamcam.com/models/${u}`},
 };
 
+/* Resolve any site identifier the app may hold — a SITES key ("stripchat"), a
+ * backend slug ("SC"), or a full site name ("StripChat") — to its SITES key,
+ * case-insensitively. Returns null when nothing matches. Entries created by
+ * registerDynamicSite are keyed by their slug, so they resolve here too. */
+function siteKeyOf(ident){
+  if (ident==null) return null;
+  if (SITES[ident]) return ident;
+  const lc = String(ident).toLowerCase();
+  for (const [k,s] of Object.entries(SITES)){
+    if (k.toLowerCase()===lc) return k;
+    if (s.slug && String(s.slug).toLowerCase()===lc) return k;
+    if (s.name && String(s.name).toLowerCase()===lc) return k;
+  }
+  return null;
+}
+/* Site metadata for rendering. Never returns undefined so badges/chips can't crash
+ * on a site the frontend has no static entry for. */
+const SITE_UNKNOWN = {name:'—', slug:'', abbr:'?', color:'#6b7688', hosts:[], url:()=>'#'};
+function siteMeta(ident){
+  const k = siteKeyOf(ident);
+  return k ? SITES[k] : SITE_UNKNOWN;
+}
+/* Register a site the backend reports but the frontend doesn't know statically.
+ * Keyed by the backend slug so ids stay usable in API paths. */
+function registerDynamicSite(slug, name){
+  SITES[slug] = {name:name||slug, slug, abbr:String(slug).slice(0,3).toUpperCase(),
+                 color:'#6b7688', hosts:[], url:()=>'#', _dynamic:true};
+  return SITES[slug];
+}
+
 /* ---------------- status meta ---------------- */
 /* keys mirror streamonitor Status enum semantics */
 const STATUS = {
@@ -150,6 +180,7 @@ const DISK = {total: 2*1024*1024*1024*1024, used: 1.37*1024*1024*1024*1024};
 const MOCK_DOWNLOAD_DIR = '/srv/streamonitor/downloads';   // shown by the settings panel in mock mode (no backend)
 const MOCK_MIN_VIDEO_SIZE_MB = 10;   // shown by the min-video-size settings panel in mock mode
 const MOCK_NSFW = {enabled:false, action:'mark_only', recycleRetentionDays:7, scanIntervalHours:6, modelPresent:true, runtimeAvailable:true};   // shown by the NSFW settings panel in mock mode
+const MOCK_NSFW_BACKFILL_PENDING = 12;   // unclassified-file count shown by the NSFW backfill block in mock mode
 
 /* ---------------- formatting ---------------- */
 function fmtSize(b){

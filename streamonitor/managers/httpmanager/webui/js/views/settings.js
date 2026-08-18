@@ -155,8 +155,40 @@ function renderNsfwPanel(){
             <input type="number" id="nsfwScanInput" class="dldir-input" value="${esc(n.scanDraft)}" min="0" max="168" step="1" ${busy?'disabled':''}>
             <button class="btn primary" data-nsfw-scan-save ${busy?'disabled':''}>${n.saving?t('dlDirSaving'):t('dlDirSave')}</button>
           </div>
-        </div>`:''}
+        </div>
+        ${renderNsfwBackfillBlock(notReady)}`:''}
       </div>`;
+}
+
+/* Historic-file analysis (backfill): idle shows the pending count + start button,
+ * running shows a progress bar, x/y counts, the current file and a cancel button.
+ * The worker lives server-side; this block only reflects the polled progress. */
+function renderNsfwBackfillBlock(notReady){
+  const b = nsfwBackfill;
+  const pct = b.total>0 ? Math.min(100, Math.round(b.done/b.total*100)) : 0;
+  const body = b.running ? `
+          <div class="nsfw-bf-bar"><i style="width:${pct}%"></i></div>
+          <div class="nsfw-bf-status">
+            <span>${t('nsfwBackfillProgress')(b.done, b.total)}${b.failed?` · ${t('nsfwBackfillFailed')(b.failed)}`:''}</span>
+            ${b.currentFile?`<span class="nsfw-bf-file" title="${esc(b.currentFile)}">${t('nsfwBackfillCurrent')}${esc(b.currentFile)}</span>`:''}
+          </div>
+          <div class="nsfw-num">
+            <button class="btn" data-nsfw-backfill-cancel ${b.cancelling?'disabled':''}>${b.cancelling?t('nsfwBackfillCancelling'):t('nsfwBackfillCancel')}</button>
+          </div>` : `
+          <div class="nsfw-bf-status"><span>${b.pending==null?t('nsfwBackfillPendingUnknown'):t('nsfwBackfillPending')(b.pending)}</span></div>
+          <div class="nsfw-num">
+            <button class="btn primary" data-nsfw-backfill-start ${(notReady||b.starting||b.pending===0)?'disabled':''}>${b.starting?t('nsfwBackfillStarting'):t('nsfwBackfillStart')}</button>
+          </div>`;
+  return `
+        <div class="nsfw-sub">
+          <div>
+            <div class="k" style="font-size:12.5px">${t('nsfwBackfill')}</div>
+            <div class="desc">${t('nsfwBackfillDesc')}</div>
+          </div>
+          ${notReady?`<div class="desc">${t('nsfwBackfillNotReady')}</div>`:''}
+          ${body}
+          ${b.error?`<div class="dldir-err">${t(b.error)}</div>`:''}
+        </div>`;
 }
 
 /* validate + save the two NSFW numeric drafts (change-to-save on button/Enter) */
@@ -271,6 +303,16 @@ document.addEventListener('click', e=>{
     const inp = document.getElementById('nsfwScanInput');
     if (inp) nsfw.scanDraft = inp.value;
     saveNsfwScan();
+    return;
+  }
+  if (e.target.closest('[data-nsfw-backfill-start]')){
+    e.stopPropagation();
+    startNsfwBackfill();
+    return;
+  }
+  if (e.target.closest('[data-nsfw-backfill-cancel]')){
+    e.stopPropagation();
+    cancelNsfwBackfill();
     return;
   }
   if (e.target.closest('[data-logout]')){
