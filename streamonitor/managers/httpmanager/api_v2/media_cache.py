@@ -143,6 +143,21 @@ def _get_duration_cache_only(abs_path, mtime):
         return _durations_cache.get(key)
 
 
+def get_duration_cache_entry(abs_path, mtime):
+    # Like _get_duration_cache_only, but distinguishes a cache miss from a
+    # cached probe FAILURE (null): returns (found, duration). The media index
+    # scanner needs the difference — treating both as "unknown" made it
+    # rewrite every unprobed/broken row on every scan cycle.
+    key = _cache_key(abs_path, int(mtime))
+    path = _durations_path()
+    with _durations_lock:
+        if _durations_cache is None or _durations_cache_path != path:
+            _load_durations_locked(path)
+        if key in _durations_cache:
+            return True, _durations_cache[key]
+        return False, None
+
+
 def rekey_video_caches(old_abs, new_abs, mtime):
     # A moved file (same content, same mtime) gets a new cache key because the
     # key hashes abs_path+mtime. Migrate the cached duration entry and rename

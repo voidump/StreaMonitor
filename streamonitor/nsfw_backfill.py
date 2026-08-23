@@ -92,11 +92,29 @@ def pending_paths(streamers=None):
             if not _excluded(p, recording_paths, active, protected, now)]
 
 
+def pending_count():
+    # Cheap approximation for UI polling: one COUNT(*) instead of fetching
+    # every unlabeled row and stat()ing each file (the exclusion rules are
+    # applied when a scan actually runs). The old full pending_paths() walk
+    # made each 2s progress poll cost thousands of stats on a large library.
+    if not media_index._index_readable():
+        return 0
+    try:
+        with closing(media_index.connect()) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM media_files "
+                "WHERE deleted=0 AND classification IS NULL").fetchone()
+        return int(row[0])
+    except Exception as e:
+        logger.warning(f'NSFW backfill count failed: {e}')
+        return 0
+
+
 def progress(streamers=None):
     # Snapshot of the current session plus the number of files still waiting.
     with _lock:
         snapshot = dict(_state)
-    snapshot['pending'] = len(pending_paths(streamers))
+    snapshot['pending'] = pending_count()
     return snapshot
 
 

@@ -160,8 +160,10 @@ def _favicon_mime(path):
         return 'image/webp'
     if head.startswith(b'\xff\xd8\xff'):
         return 'image/jpeg'
-    if head.lstrip()[:4] == b'<svg' or head.startswith(b'<?xml'):
-        return 'image/svg+xml'
+    # Never image/svg+xml: an SVG can carry script, and these bytes come from
+    # third-party sites. Served as x-icon (plus nosniff/sandbox headers in
+    # _send_image) an SVG simply fails to render and the frontend falls back
+    # to its generated placeholder.
     return 'image/x-icon'
 
 

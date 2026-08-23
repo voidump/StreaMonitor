@@ -93,6 +93,11 @@ def _json(payload, status_code=200):
 def _send_image(path, mimetype, cache_control):
     resp = send_file(path, mimetype=mimetype)
     resp.headers['Cache-Control'] = cache_control
+    # The avatar/favicon caches hold third-party bytes fetched from the sites;
+    # nosniff + a sandboxing CSP make sure a crafted "image" can never execute
+    # same-origin script in the console, whatever a browser might sniff it as.
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    resp.headers['Content-Security-Policy'] = 'sandbox'
     return resp
 
 
