@@ -9,10 +9,19 @@ class XLoveCam(Bot):
     siteslug = 'XLC'
 
     def __init__(self, username):
+        # No network in the constructor: a transient failure here used to
+        # propagate into loadStreamers, which dropped the entry and let the
+        # next saveConfig erase it from config.json. The performer id resolves
+        # lazily on the first status poll instead.
+        self._id = None
         super().__init__(username)
-        self._id = self.getPerformerId()
 
-    def getPerformerId(self):
+    def _resolve_performer_id(self):
+        # Returns the id, or None when the performer is not in the online
+        # list. The endpoint only returns online performers, so absence means
+        # "offline or nonexistent" — indistinguishable, and therefore never
+        # grounds for NOTEXIST. Network/HTTP errors raise so the caller can
+        # treat them as transient.
         data = {
             'config[nickname]':	self.username,
             'config[favorite]':	"0",
@@ -24,15 +33,11 @@ class XLoveCam(Bot):
             'origin': "filter-chg",
             'stat':	"0",
         }
-        r = requests.post(f'https://www.xlovecam.com/hu/performerAction/onlineList', headers=self.headers, data=data, timeout=DEFAULT_TIMEOUT)
-        if not r.ok:
-            return None
+        r = requests.post('https://www.xlovecam.com/hu/performerAction/onlineList', headers=self.headers, data=data, timeout=DEFAULT_TIMEOUT)
+        r.raise_for_status()
         resp = r.json()
-        if 'content' not in resp:
-            return None
-        if 'performerList' not in resp['content']:
-            return None
-        for performer in resp['content']['performerList']:
+        performers = resp.get('content', {}).get('performerList') or []
+        for performer in performers:
             if performer['nickname'].lower() == self.username.lower():
                 return performer['id']
         return None
@@ -42,7 +47,16 @@ class XLoveCam(Bot):
 
     def getStatus(self):
         if self._id is None:
-            return Status.NOTEXIST
+            try:
+                self._id = self._resolve_performer_id()
+            except Exception as e:
+                self.logger.warning(f'Performer id lookup failed (will retry): {e}')
+                return Status.UNKNOWN
+            if self._id is None:
+                # Not in the online list: offline (or nonexistent — the site
+                # gives no way to tell). Keep polling instead of stopping the
+                # monitor with NOTEXIST.
+                return Status.OFFLINE
 
         data = {
             'performerId': self._id,

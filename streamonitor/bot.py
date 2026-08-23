@@ -597,29 +597,58 @@ class Bot(Thread):
 class RoomIdBot(Bot):
     def __init__(self, username, room_id=None):
         self.room_id = None
+        self._room_lookup_error = False
         super().__init__(username)
 
         if room_id and username:
             self.room_id = room_id
 
         if self.room_id is None and username.isnumeric():  # Username might be the room ID
-            username_real = self.getUsernameFromRoomId(username)
+            try:
+                username_real = self.getUsernameFromRoomId(username)
+            except Exception as e:
+                self.logger.warning(f'Username lookup failed (will retry): {e}')
+                username_real = None
             if username_real is not None:  # Username might not be the room ID even though it is numeric
                 self.logger.debug(f'Found username: {username_real}')
                 self.room_id = username
                 self.setUsername(username_real)
 
         if self.room_id is None:  # We need to get the room ID
-            self.room_id = self.getRoomIdFromUsername(username)
-            if self.room_id:
-                self.logger.debug(f'Found room ID: {self.room_id}')
+            self._ensure_room_id()
 
-        if self.room_id is None:  # Still no room ID, streamer probably does not exist
-            self.logger.warning(f'Room ID not found')
-            self.sc = Status.NOTEXIST
+        if self.room_id is None:
+            # Unresolved is not proof of nonexistence: the lookup may have
+            # failed transiently, or the site only lists online rooms. Never
+            # start out as NOTEXIST — status() turns that into running=False,
+            # which can be persisted, silently ending monitoring for good.
+            self.logger.warning('Room ID not resolved yet; will retry while monitoring')
+            self.sc = Status.UNKNOWN
 
         self.logger = self.getLogger()
         self.url = self.getWebsiteURL()
+
+    def _ensure_room_id(self):
+        # Lazy + retryable resolution; True when a room id is available.
+        # Constructor-time network failures no longer matter: every status
+        # poll gets another chance. _room_lookup_error lets the caller tell a
+        # transient failure (-> UNKNOWN) from a clean "not listed" (-> the
+        # site simply doesn't know the room right now).
+        if self.room_id is not None:
+            return True
+        try:
+            room_id = self.getRoomIdFromUsername(self.username)
+        except Exception as e:
+            self._room_lookup_error = True
+            self.logger.warning(f'Room ID lookup failed (will retry): {e}')
+            return False
+        self._room_lookup_error = False
+        if room_id:
+            self.room_id = room_id
+            self.logger.debug(f'Found room ID: {room_id}')
+            self.url = self.getWebsiteURL()
+            return True
+        return False
 
     @classmethod
     def fromConfig(cls, data):

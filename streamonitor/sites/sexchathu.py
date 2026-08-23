@@ -76,7 +76,12 @@ class SexChatHU(RoomIdBot):
 
     def getStatus(self):
         if self.room_id is None:
-            return Status.NOTEXIST
+            if not self._ensure_room_id():
+                # Transient lookup failure -> UNKNOWN (retry on the next
+                # poll). Clean miss -> OFFLINE: the babes list only carries
+                # currently listed rooms, absence is not proof of
+                # nonexistence, so never stop the monitor with NOTEXIST here.
+                return Status.UNKNOWN if self._room_lookup_error else Status.OFFLINE
 
         r = self.session.get('https://chat.a.apn2.com/chat-api/index.php/room/getRoom?tokenID=guest&roomID=' + self.room_id, headers=self.headers)
         if r.status_code != 200:

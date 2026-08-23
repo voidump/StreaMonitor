@@ -9,8 +9,9 @@ import base64
 import hashlib
 import urllib.parse
 
+import threading
 from datetime import datetime
-from functools import lru_cache
+from functools import lru_cache  # pure-function caches only (hash/decode)
 from typing import Optional, Tuple
 
 from requests.adapters import HTTPAdapter
@@ -27,7 +28,10 @@ class StripChat(RoomIdBot):
 
     bulk_update = True
     _static_data = None
-    _INIT_FAILED = object()  # sentinel: initialization attempted but failed; do not retry
+    _INIT_FAILED = object()  # sentinel: initialization attempted but failed
+    _INIT_RETRY_INTERVAL = 600  # seconds before a failed initialization may retry
+    _init_failed_at = None
+    _init_lock = threading.Lock()
     _main_js_data = None
     _doppio_js_data = None
     _mouflon_cache_filename = 'stripchat_mouflon_keys.json'
@@ -73,17 +77,7 @@ class StripChat(RoomIdBot):
                 print('Error loading mouflon key cache:', e)
 
     def __init__(self, username, room_id=None):
-        if StripChat._static_data is None:
-            StripChat._static_data = {}  # marker: initialization in progress
-            try:
-                self.getInitialData()
-            except Exception as e:
-                print(f'Error initializing StripChat static data: {e}')
-            # If getInitialData (or its silent fallback) did not populate the
-            # data, mark as failed so subsequent streamers don't retry and
-            # don't block in the wait loop below.
-            if StripChat._static_data == {} or StripChat._static_data is None:
-                StripChat._static_data = StripChat._INIT_FAILED
+        StripChat._ensure_initial_data()
 
         # Wait for in-progress initialization from another thread (timeout 15s).
         # _INIT_FAILED is an object() instance so the `== {}` check is False.
@@ -119,6 +113,28 @@ class StripChat(RoomIdBot):
                 'Accept-Encoding': 'gzip, deflate'
             })
         return cls._session
+
+    @classmethod
+    def _ensure_initial_data(cls):
+        # Initialize once; after a failure allow a retry every
+        # _INIT_RETRY_INTERVAL seconds. A single network hiccup at startup
+        # must not permanently disable doppio.js key auto-extraction for the
+        # life of the process.
+        with cls._init_lock:
+            if StripChat._static_data is StripChat._INIT_FAILED:
+                if time.time() - (StripChat._init_failed_at or 0) < cls._INIT_RETRY_INTERVAL:
+                    return
+                StripChat._static_data = None
+            if StripChat._static_data is not None:
+                return
+            StripChat._static_data = {}  # marker: initialization in progress
+        try:
+            cls.getInitialData()
+        except Exception as e:
+            print(f'Error initializing StripChat static data: {e}')
+        if StripChat._static_data == {} or StripChat._static_data is None:
+            StripChat._static_data = StripChat._INIT_FAILED
+            StripChat._init_failed_at = time.time()
 
     @classmethod
     def getInitialData(cls):
@@ -309,11 +325,22 @@ class StripChat(RoomIdBot):
         return '\n'.join(decoded)
 
     @classmethod
-    @lru_cache(maxsize=128)
     def getMouflonDecKey(cls, pkey) -> Optional[str]:
-        """Get mouflon decryption key - first from cache, then auto-extract from doppio.js."""
+        """Get mouflon decryption key - first from cache, then auto-extract from doppio.js.
+
+        No lru_cache here: it also memoized the None of a failed lookup, so a
+        key that was missing once stayed "missing" for the whole process even
+        after doppio.js (or the key rotation) made it available — StripChat
+        recording then failed until a restart. _mouflon_keys already caches
+        the successes.
+        """
         if cls._mouflon_keys and pkey in cls._mouflon_keys:
             return cls._mouflon_keys[pkey]
+
+        # A failed/stale initialization may be retried (with backoff) so a
+        # missing doppio.js can heal without a restart.
+        if not cls._doppio_js_data:
+            cls._ensure_initial_data()
 
         # Auto-extract key from doppio.js
         if cls._doppio_js_data:
@@ -328,9 +355,21 @@ class StripChat(RoomIdBot):
                         cls._mouflon_keys = {}
                     cls._mouflon_keys[pkey] = key
                     print(f'Auto-extracted mouflon key for pkey={pkey[:8]}...')
+                    # Persist: extracted keys used to live only in memory, so
+                    # every restart re-lost them while the cache file on disk
+                    # stayed permanently empty.
+                    cls._save_mouflon_cache()
                     return key
 
         return None
+
+    @classmethod
+    def _save_mouflon_cache(cls):
+        try:
+            from streamonitor.utils.atomic_file import atomic_write_json
+            atomic_write_json(cls._mouflon_cache_filename, cls._mouflon_keys)
+        except Exception as e:
+            print(f'WARNING: could not save mouflon key cache: {e}')
 
     @staticmethod
     def _getMouflonFromM3U(m3u8_doc) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -450,6 +489,8 @@ class StripChat(RoomIdBot):
         if username == self.username:
             self._update_lastInfo(data)
 
+        if data is None:  # unparseable response: transient, not "no such room"
+            return None
         if 'user' not in data:
             return None
         if 'user' not in data['user']:
@@ -460,6 +501,10 @@ class StripChat(RoomIdBot):
         return str(data['user']['user']['id'])
 
     def getStatus(self):
+        # Backfill a room id that could not be resolved at construction time;
+        # the playlist URL needs it even though the status query goes by name.
+        if self.room_id is None:
+            self._ensure_room_id()
         data = self._getStatusData(self.username)
         if data is None:
             return Status.UNKNOWN
