@@ -326,7 +326,6 @@ NSFW_MODEL_PATH = env.str("STRMNTR_NSFW_MODEL_PATH", os.path.join('models', 'nsf
 # sampling produced fewer scores than this (short recordings, unseekable tails).
 NSFW_MAX_SAMPLES = env.int("STRMNTR_NSFW_MAX_SAMPLES", 8)
 
-# The camsoda bot ignores this setting in favor of a chrome useragent generated with the fake-useragent library
 HTTP_USER_AGENT = env.str("STRMNTR_USER_AGENT", "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0")
 
 # Specify the full path to the ffmpeg binary. By default, ffmpeg found on PATH is used.
