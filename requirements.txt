@@ -2,6 +2,7 @@ requests
 terminaltables
 pyzmq
 flask
+waitress
 termcolor
 beautifulsoup4
 websocket-client

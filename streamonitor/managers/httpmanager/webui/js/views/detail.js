@@ -154,7 +154,7 @@ function renderDetail(s){
           <div class="row2">
             <span>${t('addedOn')} ${addedDate(s)}</span>
             <span>${t('lastCheck')} ${fmtAgo(s.lastCheckSec)}</span>
-            <span>${t('filesN')(s.files.length)} · ${fmtSize(totalSize)}</span>
+            <span>${t('filesN')(fileCount(s))} · ${fmtSize(sizeOf(s))}</span>
           </div>
         </div>
       </div>
