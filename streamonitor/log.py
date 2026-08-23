@@ -5,20 +5,22 @@ import parameters
 class Logger(object):
     def __init__(self, name="__name__"):
         self.name = name
-        self.formatter = logging.Formatter('%(asctime)s - %(levelname)s - {}: %(message)s'.format(name))
-        self.handler = logging.StreamHandler()
-        self.handler.setFormatter(self.formatter)
-
-        self.logger = logging.getLogger(self.name)
         self.loglevel = logging.DEBUG if parameters.DEBUG else logging.INFO
+        self.logger = logging.getLogger(self.name)
         self.logger.setLevel(self.loglevel)
-        self.logger.addHandler(self.handler)
+        # Register the handler once per logger name: logging.getLogger returns
+        # a process-wide singleton, and stacking a new StreamHandler on every
+        # Logger construction made shared names (e.g. "manager") print each
+        # record as many times as they were constructed.
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter(
+                '%(asctime)s - %(levelname)s - {}: %(message)s'.format(name)))
+            self.logger.addHandler(handler)
+        self.handler = self.logger.handlers[0]
 
     def get_logger(self):
-        logger = logging.getLogger(self.name)
-        logger.setLevel(self.loglevel)
-        logger.addHandler(self.handler)
-        return logger
+        return self.logger
 
     def debug(self, msg):
         self.logger.debug(msg)
