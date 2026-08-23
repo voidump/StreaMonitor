@@ -87,6 +87,7 @@ class Bot(Thread):
         self.cookies = None
         self.cookieUpdater = None
         self.cookie_update_interval = 0
+        self._cookie_thread = None
 
         self.lastInfo = {}  # This dict will hold information about stream after getStatus is called. One can use this in getVideoUrl
         self.running = False
@@ -254,6 +255,31 @@ class Bot(Thread):
             if self.quitting or not self.running:
                 return
 
+    def _ensure_cookie_thread(self):
+        # One updater per bot. Recordings on a continuously-online streamer end
+        # and restart while sc stays PUBLIC, so the updater loop from the
+        # previous round never exits; spawning a fresh thread each round used
+        # to pile up N threads all hitting cookieUpdater concurrently.
+        existing = self._cookie_thread
+        if existing is not None and existing.is_alive():
+            return
+
+        def update_cookie():
+            while self.sc == Status.PUBLIC and not self.quitting and self.running:
+                self._sleep(self.cookie_update_interval)
+                # Re-check after sleeping so a stop during the sleep can't
+                # trigger one final network call.
+                if self.quitting or not self.running or self.sc != Status.PUBLIC:
+                    return
+                if self.cookieUpdater():
+                    self.debug('Updated cookies')
+                else:
+                    self.logger.warning('Failed to update cookies')
+
+        thread = Thread(target=update_cookie, daemon=True)
+        self._cookie_thread = thread
+        thread.start()
+
     def _should_do_single_status_check(self, now):
         # Non-bulk sites always poll on their own cadence (governed by the
         # sleep_on_* delays at the end of the loop).
@@ -314,16 +340,7 @@ class Bot(Thread):
                         offline_time = 0
                         if self.sc == Status.PUBLIC:
                             if self.cookie_update_interval > 0 and self.cookieUpdater is not None:
-                                def update_cookie():
-                                    while self.sc == Status.PUBLIC and not self.quitting and self.running:
-                                        self._sleep(self.cookie_update_interval)
-                                        ret2 = self.cookieUpdater()
-                                        if ret2:
-                                            self.debug('Updated cookies')
-                                        else:
-                                            self.logger.warning('Failed to update cookies')
-                                cookie_update_process = Thread(target=update_cookie)
-                                cookie_update_process.start()
+                                self._ensure_cookie_thread()
 
                             try:
                                 video_url = self.getVideoUrl()
