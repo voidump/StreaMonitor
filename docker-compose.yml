@@ -7,11 +7,19 @@ services:
     environment:
       # set timezone
       TZ: Asia/Shanghai
+      # All runtime state (config.json, .env, login session key, key caches,
+      # NSFW model under models/) lives in this directory — keep it on the
+      # ./data volume below or it is lost on container rebuild.
+      STRMNTR_DATA_DIR: '/data'
       # login user name (admin by default)
       #STRMNTR_USERNAME: 'admin'
-      # unset password (admin by default)
-      #STRMNTR_PASSWORD: ''
+      # Web password. If left at the factory default, a random password is
+      # generated on startup, printed in the container logs and saved to
+      # /data/.env. Set an empty string to disable login entirely (NOT
+      # recommended with STRMNTR_HOST 0.0.0.0 below).
+      #STRMNTR_PASSWORD: 'change-me'
       # unbind web interface (bound to 127.0.0.1 by default)
+      # NOTE: this exposes the console to the network — set your own password.
       STRMNTR_HOST: '0.0.0.0'
       # minimum free disk space percentage (default: 5.0)
       STRMNTR_MIN_FREE_SPACE: "0.5"
@@ -35,8 +43,14 @@ services:
     volumes:
       # Downloads directory - relative path to current project
       - ./downloads:/app/downloads
-      - ./config.json:/app/config.json
-      - ./stripchat_mouflon_keys.json:/app/stripchat_mouflon_keys.json
+      # One volume for all runtime state. Single-file mounts are gone for a
+      # reason: os.replace() onto a bind-mounted file fails with EBUSY inside
+      # the container, so every config save silently failed and changes were
+      # rolled back on restart. Migration from an older setup:
+      #   mkdir -p data/models
+      #   mv config.json stripchat_mouflon_keys.json data/ 2>/dev/null
+      #   cp models/nsfw-model.onnx data/models/   # if you use NSFW analysis
+      - ./data:/data
     ports:
       - '5000:5000'
 

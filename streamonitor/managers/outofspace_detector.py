@@ -29,12 +29,14 @@ class OOSDetector(Thread):
 
     @staticmethod
     def space_usage():
+        # No exists() pre-check: it is a TOCTOU against disk_usage, and a
+        # transiently unavailable mount (external/network disk) must fall back
+        # instead of raising into the watchdog.
         download_dir = parameters.get_download_dir()
-        if os.path.exists(download_dir):
-            usage = shutil.disk_usage(download_dir)
-        else:
-            usage = shutil.disk_usage('.')
-        return usage
+        try:
+            return shutil.disk_usage(download_dir)
+        except OSError:
+            return shutil.disk_usage('.')
 
     @staticmethod
     def disk_space_good():
@@ -123,14 +125,20 @@ class OOSDetector(Thread):
                 f'free space now {round(self.free_space(), 3)}%')
 
     def run(self):
+        # The whole iteration is guarded: this thread is the low-disk
+        # protection, and a single transient OSError silently killing it would
+        # disable exactly the safeguard it exists to provide.
         while True:
-            if parameters.OOS_CLEANUP_NON_ADULT:
-                try:
-                    self.cleanup_non_adult()
-                except Exception as e:
-                    self.logger.warning(f'Non-adult cleanup failed: {e}')
-            if not self.disk_space_good():
-                self.logger.warning(self.under_threshold_message)
-                CleanExit(self.streamers)()
-                return
+            try:
+                if parameters.OOS_CLEANUP_NON_ADULT:
+                    try:
+                        self.cleanup_non_adult()
+                    except Exception as e:
+                        self.logger.warning(f'Non-adult cleanup failed: {e}')
+                if not self.disk_space_good():
+                    self.logger.warning(self.under_threshold_message)
+                    CleanExit(self.streamers)()
+                    return
+            except Exception as e:
+                self.logger.warning(f'Disk watchdog check failed: {e}')
             sleep(5)

@@ -96,8 +96,18 @@ from the network. You can change this with environment variables:
 #### Web interface
 
 You can access the web interface on port 5000.
-The default credentials are username `admin` / password `admin`; set `STRMNTR_USERNAME` and `STRMNTR_PASSWORD` (or change them in the settings page) to override, an empty password is also allowed and disables the login.
-When you set the WEBSERVER_HOST it is also accesible to from other computers in the network
+The default user name is `admin`. If the password is left at the factory
+default, a **random password is generated on the first start**, printed in the
+logs and saved to `.env` — check the startup log for it. Set `STRMNTR_USERNAME`
+and `STRMNTR_PASSWORD` (or change them in the settings page) to pick your own;
+an empty password disables the login entirely (only do this on `127.0.0.1`).
+Repeated failed logins from one IP are locked out with exponential backoff.
+Behind a reverse proxy every client shares the proxy's IP and would be locked
+out together — set `STRMNTR_TRUST_PROXY=true` (only when the server is reached
+exclusively through a trusted proxy) so the `X-Forwarded-For` client IP is
+used instead.
+When you set `STRMNTR_HOST` to `0.0.0.0` the console is also accessible from
+other computers on the network.
 
 ##### v2 recording console (`webui`)
 
@@ -126,11 +136,51 @@ The console is a static front-end that talks to the backend over a JSON API
 You can run this application in docker. I prefer docker-compose so I included an example docker-compose.yml file that you can use.
 Simply start it in the folder with `docker-compose up`.
 
+The container keeps **all runtime state in one directory** (`/data`, mounted
+from `./data` in the compose file): `config.json`, `.env` (settings changed in
+the web UI, including the password), the login session key, the StripChat key
+cache and the NSFW model under `data/models/`. Migrating from an older setup:
+
+```bash
+mkdir -p data/models
+mv config.json stripchat_mouflon_keys.json data/
+cp models/nsfw-model.onnx data/models/   # only if you use NSFW analysis
+```
+
+Do **not** bind-mount `config.json` as a single file: atomic saves
+(`os.replace`) onto a file mount fail inside the container and every change is
+silently lost on restart.
+
 ## Configuration
 
-You can set some parameters in the [parameters.py](parameters.py).
+Configuration is driven by `STRMNTR_*` environment variables (see
+[parameters.py](parameters.py) for the full annotated list — every option and
+its default is documented there). Values set in the web UI's settings page are
+persisted into `.env` in the data directory.
 
-You also have to add decryption keys yourself for StripChat in the `stripchat_mouflon_keys.json` file.
+Key things to know:
+
+* `STRMNTR_DATA_DIR` — directory for all runtime state files (default: the
+  working directory). Everything you would want to back up lives there:
+  `config.json`, `history.json`, `.env`, `.session_secret`,
+  `.strmntr_online_history.json`, `.strmntr_recording_resolution.json`,
+  `stripchat_mouflon_keys.json` and (by default) `models/`.
+* **Options that delete files** — be deliberate with these:
+  * `STRMNTR_MIN_VIDEO_SIZE_MB` (default `10`) removes finished videos smaller
+    than this, including small historic files found by the library scanner.
+    Set `0` to disable.
+  * `STRMNTR_NSFW_ACTION=recycle|delete` moves/removes videos classified
+    non-adult; `recycle` keeps them `STRMNTR_NSFW_RECYCLE_RETENTION_DAYS` days.
+  * `STRMNTR_OOS_CLEANUP_NON_ADULT` deletes non-adult videos (oldest first)
+    when disk space runs low.
+* **NSFW analysis** (`STRMNTR_NSFW_ENABLED`) needs the optional
+  `onnxruntime`/`numpy` packages and a model file at `STRMNTR_NSFW_MODEL_PATH`
+  (default `models/nsfw-model.onnx` under the data dir; bring your own model —
+  see `streamonitor/nsfw_analyzer.py` for supported models). Without them,
+  videos are labeled `unknown` and nothing else changes.
+
+StripChat decryption keys are auto-extracted when possible and cached in
+`stripchat_mouflon_keys.json`; you can also add keys there manually.
 
 ## Disclaimer
 

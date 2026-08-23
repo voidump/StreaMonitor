@@ -25,6 +25,7 @@ import streamonitor.media_index as media_index
 import streamonitor.online_history as online_history
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.utils import human_file_size
+from streamonitor.utils.atomic_file import atomic_write_json
 
 
 # Stable machine-readable keys derived from the backend Status enum. The web UI
@@ -57,6 +58,13 @@ _LIVE_TAIL_BYTES = 1 << 20  # ~1 MB backoff from the write head
 _LIVE_READ_CHUNK = 64 * 1024
 _LIVE_POLL_INTERVAL = 0.5  # seconds between reads when caught up to the tail
 _LIVE_MAX_IDLE_ITERS = 60  # give up after this many empty reads (~30s)
+
+# Cap on concurrent /live viewer streams. Each stream holds a WSGI worker
+# thread for its whole lifetime, so without a cap a handful of open tabs could
+# exhaust the (waitress) thread pool and hang the whole console, login page
+# included.
+LIVE_MAX_CONCURRENT = 4
+_live_slots = threading.BoundedSemaphore(LIVE_MAX_CONCURRENT)
 
 # Delay after a change-password attempt with the wrong current password, the
 # same cheap brute-force deterrent the login route uses. Module-level so tests
@@ -186,6 +194,11 @@ def _validate_download_dir(raw):
     # Returns (abspath, None) on success or (None, (code, message)) on failure.
     if not isinstance(raw, str) or not raw.strip():
         return None, ('empty', 'Path must not be empty')
+    # Line breaks are technically legal in a directory name but the persist
+    # layer rejects them (they could inject .env lines); refuse them up front
+    # so the in-memory setting and .env can never diverge on a 500.
+    if any(c in raw for c in ('\n', '\r', '\0')):
+        return None, ('invalid', 'Path contains invalid characters')
     candidate = os.path.abspath(os.path.expanduser(raw.strip()))
     try:
         os.makedirs(candidate, exist_ok=True)
@@ -397,14 +410,11 @@ def _load_durations_locked(path):
 
 
 def _save_durations_locked(path):
-    # Caller holds _durations_lock. Atomic write via temp file + os.replace so a
-    # crash mid-write never leaves a truncated durations.json behind.
+    # Caller holds _durations_lock. Atomic write (unique temp + fsync + rename)
+    # so a crash mid-write never leaves a truncated durations.json behind.
     try:
         os.makedirs(_thumbs_dir(), exist_ok=True)
-        tmp = path + '.tmp'
-        with open(tmp, 'w') as f:
-            json.dump(_durations_cache, f)
-        os.replace(tmp, path)
+        atomic_write_json(path, _durations_cache, indent=None)
     except Exception:
         pass
 
@@ -1244,6 +1254,14 @@ def register_api_v2(app, manager, login_required):
         if not tmp_path or not os.path.exists(tmp_path):
             return _json({'error': 'Live stream not available'}, 404)
 
+        if not _live_slots.acquire(blocking=False):
+            return _json({'error': 'Too many live streams open'}, 503)
+        release = [_live_slots.release]
+
+        def _release_once():
+            if release:
+                release.pop()()
+
         # Detect the container actually on disk. StripChat/CMAF writes fragmented
         # MP4 (ftyp/moov + moof/mdat) into the .tmp.ts; other sites write raw
         # MPEG-TS. Serve each with the correct mimetype and start boundary.
@@ -1270,6 +1288,7 @@ def register_api_v2(app, manager, login_required):
                     start = max(0, size - _LIVE_TAIL_BYTES)
                     start -= start % _TS_PACKET_SIZE  # align to a TS packet
         except OSError:
+            _release_once()
             return _json({'error': 'Live stream not available'}, 404)
 
         def generate():
@@ -1297,13 +1316,20 @@ def register_api_v2(app, manager, login_required):
                         sleep(_LIVE_POLL_INTERVAL)
             except (GeneratorExit, OSError):
                 return
+            finally:
+                _release_once()
 
         headers = {
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'X-Accel-Buffering': 'no',
         }
-        return Response(generate(), mimetype=mimetype, headers=headers)
+        response = Response(generate(), mimetype=mimetype, headers=headers)
+        # call_on_close is the WSGI-guaranteed cleanup; the generator's finally
+        # alone would leak the slot if the response were closed before the
+        # first iteration. _release_once makes the two paths idempotent.
+        response.call_on_close(_release_once)
+        return response
 
     @app.route('/api/v2/streamers/<site>/<user>/videos/<path:filename>', methods=['DELETE'])
     @login_required
@@ -1311,6 +1337,10 @@ def register_api_v2(app, manager, login_required):
         streamer = manager.getStreamer(user, site)
         if streamer is None:
             return _json({'error': 'Streamer not found'}, 404)
+        # Second line of defense behind cache_file_list's exclusion: a .tmp.
+        # name is a downloader's in-flight file, never deletable via the API.
+        if '.tmp.' in filename:
+            return _json({'error': 'Cannot delete an in-flight temp file'}, 403)
         # Double-safety with the frontend graying-out: never delete the file
         # that is currently being written by the recorder.
         if streamer.recording and filename == getattr(streamer, 'recording_filename', None):
@@ -1342,6 +1372,11 @@ def register_api_v2(app, manager, login_required):
         skipped = 0
         freed = 0
         for video in list(streamer.video_files):
+            # cache_file_list already excludes '.tmp.' names; keep the guard
+            # here too so a stale list can never delete an in-flight file.
+            if '.tmp.' in video.filename:
+                skipped += 1
+                continue
             if streamer.recording and video.filename == recording_name:
                 skipped += 1
                 continue
@@ -1778,6 +1813,9 @@ def register_api_v2(app, manager, login_required):
                     <= parameters.WEBSERVER_USERNAME_MAX_LENGTH):
                 return _json({'error': 'New user name length is out of range',
                               'code': 'invalid_username'}, 400)
+            if any(c in new_username for c in ('\n', '\r', '\0')):
+                return _json({'error': 'New user name contains invalid characters',
+                              'code': 'invalid_username'}, 400)
         changing_password = new_password is not None or not changing_username
         if changing_password:
             if not isinstance(new_password, str) or not new_password:
@@ -1785,7 +1823,15 @@ def register_api_v2(app, manager, login_required):
             if not (parameters.WEBSERVER_PASSWORD_MIN_LENGTH <= len(new_password)
                     <= parameters.WEBSERVER_PASSWORD_MAX_LENGTH):
                 return _json({'error': 'New password length is out of range', 'code': 'invalid'}, 400)
-        if not isinstance(supplied, str) or not compare_digest(supplied, current):
+            # Line breaks would let a password inject arbitrary .env lines on
+            # the next parse (the persist layer also rejects them).
+            if any(c in new_password for c in ('\n', '\r', '\0')):
+                return _json({'error': 'New password contains invalid characters',
+                              'code': 'invalid'}, 400)
+        # Compared as bytes: compare_digest on str raises TypeError for
+        # non-ASCII input (e.g. a Chinese password set via this endpoint).
+        if not isinstance(supplied, str) or not compare_digest(
+                supplied.encode('utf-8'), current.encode('utf-8')):
             sleep(PASSWORD_FAILURE_DELAY)   # cheap brute-force deterrent
             return _json({'error': 'Current password is incorrect', 'code': 'wrong_password'}, 403)
         # Takes effect immediately: check_auth reads both halves via the getters

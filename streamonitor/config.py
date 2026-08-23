@@ -2,12 +2,29 @@ import json
 import os
 import time
 
+import parameters
 from streamonitor.bot import Bot
 from streamonitor.log import Logger
+from streamonitor.utils.atomic_file import atomic_write_json
 
 logger = Logger('[CONFIG]').get_logger()
-config_loc = "config.json"
-history_loc = "history.json"
+config_loc = parameters.data_path("config.json")
+history_loc = parameters.data_path("history.json")
+
+# Raw config entries whose bot could not be constructed at load time (site
+# unreachable, unknown site name). save_config merges them back so a transient
+# startup failure can never silently erase an entry from config.json.
+unloaded_entries = []
+
+
+def _entry_key(entry):
+    # Dedup key for the merge, normalized the same way loading normalizes:
+    # str2site accepts aliases/any case while export writes the canonical
+    # name, so a raw comparison would let 'chaturbate' and 'Chaturbate'
+    # coexist and get double-recorded after the next restart.
+    site = entry.get('site') or ''
+    site_cls = Bot.str2site(site) if site else None
+    return (site_cls.site if site_cls else site.lower(), entry.get('username'))
 
 
 def load_config():
@@ -31,20 +48,19 @@ def load_config():
 
 
 def save_config(config):
-    # Write to a temp file and rename so a crash mid-write can't corrupt the
-    # existing config.
-    tmp_loc = config_loc + ".tmp"
+    # Atomic write (unique temp name + fsync + rename) so a crash mid-write
+    # can't corrupt the existing config and concurrent writers can't collide.
     try:
-        with open(tmp_loc, "w") as f:
-            json.dump(config, f, indent=4)
-        os.replace(tmp_loc, config_loc)
+        data = list(config)
+        if unloaded_entries:
+            present = {_entry_key(e) for e in data}
+            for entry in unloaded_entries:
+                if _entry_key(entry) not in present:
+                    data.append(entry)
+        atomic_write_json(config_loc, data)
         return True
     except Exception as e:
         logger.error(f"Failed to save config: {e}")
-        try:
-            os.remove(tmp_loc)
-        except OSError:
-            pass
         return False
 
 
@@ -60,19 +76,12 @@ def load_history():
 
 
 def save_history(history):
-    # Same atomic write-then-rename strategy as save_config.
-    tmp_loc = history_loc + ".tmp"
+    # Same atomic write strategy as save_config.
     try:
-        with open(tmp_loc, "w") as f:
-            json.dump(history, f, indent=4)
-        os.replace(tmp_loc, history_loc)
+        atomic_write_json(history_loc, history)
         return True
     except Exception as e:
         logger.error(f"Failed to save history: {e}")
-        try:
-            os.remove(tmp_loc)
-        except OSError:
-            pass
         return False
 
 
@@ -84,19 +93,22 @@ def add_history_entry(entry):
 
 def loadStreamers():
     streamers = []
+    unloaded_entries.clear()
     for streamer in load_config():
         username = streamer["username"]
         site = streamer["site"]
 
         bot_class = Bot.str2site(site)
         if not bot_class:
-            logger.warning(f'Unknown site: {site} (user: {username})')
+            logger.warning(f'Unknown site: {site} (user: {username}); keeping its config entry')
+            unloaded_entries.append(streamer)
             continue
 
         try:
             streamer_bot = bot_class.fromConfig(streamer)
         except Exception as e:
-            logger.error(f'Failed to load streamer {username} ({site}): {e}')
+            logger.error(f'Failed to load streamer {username} ({site}): {e}; keeping its config entry')
+            unloaded_entries.append(streamer)
             continue
 
         streamers.append(streamer_bot)

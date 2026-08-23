@@ -1,8 +1,9 @@
 import math
 import shutil
 import time
+from functools import wraps
 from logging import INFO, WARN, ERROR
-from threading import Thread
+from threading import RLock, Thread
 from termcolor import colored
 import terminaltables.terminal_io
 from terminaltables import AsciiTable
@@ -12,6 +13,22 @@ from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.managers.outofspace_detector import OOSDetector
 
 from streamonitor.enums import Status
+
+# One process-wide lock: every Manager flavor (CLI/ZMQ/HTTP/bulk) shares the
+# same streamers list, and Flask serves requests from multiple threads. All
+# command handlers and saveConfig hold it, so a save can never iterate the
+# list mid-mutation (which used to drop an unrelated streamer from
+# config.json) and two commands can never interleave their mutations.
+_commands_lock = RLock()
+
+
+def _locked(fn):
+    # RLock so nested commands (do_restart -> do_stop/do_start) just re-enter.
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _commands_lock:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 class Manager(Thread):
@@ -33,6 +50,7 @@ class Manager(Thread):
             streamer = self.getStreamer(username, site)
             return command(streamer, username, site)
 
+    @_locked
     def getStreamer(self, username, site):
         found = None
         site = Bot.str2site(site)
@@ -51,6 +69,7 @@ class Manager(Thread):
                         return None
         return found
 
+    @_locked
     def saveConfig(self):
         config.save_config([s.export() for s in self.streamers])
 
@@ -59,22 +78,33 @@ class Manager(Thread):
             return 'Streamer already exists'
         elif username and site:
             try:
+                # Construct outside the lock: site initialization can involve
+                # slow network I/O and must not freeze every other command.
                 streamer = Bot.createInstance(username, site)
-                self.streamers.append(streamer)
-                streamer.start()
-                streamer.restart()
-                self.saveConfig()
+                with _commands_lock:
+                    # Re-check inside the lock: two concurrent adds of the
+                    # same streamer both resolved to None outside it.
+                    if self.getStreamer(streamer.username, site):
+                        return 'Streamer already exists'
+                    self.streamers.append(streamer)
+                    streamer.start()
+                    streamer.restart()
+                    self.saveConfig()
                 return "Added [" + streamer.siteslug + "] " + streamer.username
             except Exception as e:
                 return f"Failed to add: {e}"
         else:
             return "Missing value(s)"
 
+    @_locked
     def do_remove(self, streamer, username, site):
         if not streamer:
             return "Streamer not found"
         try:
-            streamer.stop(None, None)
+            # thread_too: the bot leaves the streamers list, so CleanExit can
+            # never reach it again — without ending the thread here it would
+            # spin in run() forever.
+            streamer.stop(None, None, thread_too=True)
             streamer.logger.handlers = []
             self.streamers.remove(streamer)
             self.saveConfig()
@@ -83,6 +113,7 @@ class Manager(Thread):
             self.logger.error(e)
             return "Failed to remove streamer"
 
+    @_locked
     def do_pause(self, streamer, username, site):
         # Layer 1: temporarily stop recording, keep the entry as-is
         # (monitorState stays 'active'; the paused state is derived from running).
@@ -90,12 +121,14 @@ class Manager(Thread):
             return "Streamer not found"
         return self.do_stop(streamer, username, site)
 
+    @_locked
     def do_resume(self, streamer, username, site):
         # Layer 1: resume a paused streamer.
         if not streamer:
             return "Streamer not found"
         return self.do_start(streamer, username, site)
 
+    @_locked
     def do_stop_recording(self, streamer, username, site):
         # Layer 2: archive the streamer. Stop the bot and mark it stopped, but
         # keep the config entry (name/link/local files) for a one-click restart.
@@ -104,6 +137,7 @@ class Manager(Thread):
         streamer.monitorState = 'stopped'
         return self.do_stop(streamer, username, site)
 
+    @_locked
     def do_reactivate(self, streamer, username, site):
         # Layer 2 inverse: restore an archived streamer and start it again.
         if not streamer:
@@ -117,24 +151,30 @@ class Manager(Thread):
         if not streamer:
             return "Streamer not found"
         try:
-            streamer.stop(None, None)
-            streamer.logger.handlers = []
-            config.add_history_entry({
-                'site': streamer.site,
-                'siteslug': streamer.siteslug,
-                'username': streamer.username,
-                'url': streamer.url,
-                'deletedAt': int(time.time()),
-            })
+            with _commands_lock:
+                # thread_too for the same reason as do_remove: the bot is
+                # dropped from the list, nothing else will ever end its thread.
+                streamer.stop(None, None, thread_too=True)
+                streamer.logger.handlers = []
+                config.add_history_entry({
+                    'site': streamer.site,
+                    'siteslug': streamer.siteslug,
+                    'username': streamer.username,
+                    'url': streamer.url,
+                    'deletedAt': int(time.time()),
+                })
+                self.streamers.remove(streamer)
+                self.saveConfig()
             if delete_files:
+                # Outside the lock: deleting a large recordings directory can
+                # take minutes and must not freeze the whole command surface.
                 shutil.rmtree(streamer.outputFolder, ignore_errors=True)
-            self.streamers.remove(streamer)
-            self.saveConfig()
             return "OK"
         except Exception as e:
             self.logger.error(e)
             return "Failed to delete streamer"
 
+    @_locked
     def do_start(self, streamer, username, site):
         if not streamer:
             if username == '*':
@@ -157,6 +197,7 @@ class Manager(Thread):
                 self.logger.error(e)
                 return "Failed to start"
 
+    @_locked
     def do_stop(self, streamer, username, site):
         if not streamer:
             if username == '*':
@@ -175,6 +216,7 @@ class Manager(Thread):
                 self.logger.error(e)
                 return "Failed to stop"
 
+    @_locked
     def do_restart(self, streamer, username, site):
         if not streamer:
             return "Streamer not found"
@@ -182,21 +224,22 @@ class Manager(Thread):
         return self.do_start(streamer, username, site)
         
     def do_status(self, streamer, username, site):
+        # disk_usage on a dead network mount can block for a long time, so the
+        # disk query stays outside the lock; only the list snapshot needs it.
         output = [["Username", "Site", "Started", "Status"]]
 
-        def line():
-            output.append([streamer.username,
-                           streamer.site,
-                           streamer.running,
-                           streamer.status()])
+        def line(s):
+            output.append([s.username, s.site, s.running, s.status()])
 
-        if streamer:
-            line()
-        else:
-            for streamer in self.streamers:
-                line()
+        with _commands_lock:
+            if streamer:
+                line(streamer)
+            else:
+                for s in self.streamers:
+                    line(s)
         return "Status:\n" + f'Free space: {str(round(OOSDetector.free_space(), 3))}%\n\n' + AsciiTable(output).table
 
+    @_locked
     def do_status2(self, streamer, username, site):
         maxlen = max([len(s.username) for s in self.streamers] or [0])
         termwidth = terminaltables.terminal_io.terminal_size()[0]

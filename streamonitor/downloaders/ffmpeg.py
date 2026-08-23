@@ -11,6 +11,14 @@ from streamonitor.video_filter import remove_undersized_videos
 
 _PROGRESS_POLL_INTERVAL = 2  # seconds between live recording-size samples
 
+# Escalation timeouts for stopping ffmpeg: 'q' on stdin, then SIGTERM, then
+# SIGKILL. ffmpeg only reads stdin from its main loop, so a process stuck in a
+# blocking network read never sees the 'q' — without the escalation the stop
+# path hangs forever and takes process shutdown down with it.
+FFMPEG_QUIT_TIMEOUT = 10
+FFMPEG_TERM_TIMEOUT = 10
+FFMPEG_KILL_TIMEOUT = 5
+
 
 def getVideoFfmpeg(self, url, filename):
     cmd = [
@@ -91,7 +99,22 @@ def getVideoFfmpeg(self, url, filename):
 
             while process.poll() is None:
                 if stopping.stop:
-                    process.communicate(b'q')
+                    try:
+                        process.communicate(b'q', timeout=FFMPEG_QUIT_TIMEOUT)
+                    except subprocess.TimeoutExpired:
+                        self.logger.warning('ffmpeg ignored quit, terminating')
+                        process.terminate()
+                        try:
+                            process.wait(FFMPEG_TERM_TIMEOUT)
+                        except subprocess.TimeoutExpired:
+                            self.logger.error('ffmpeg did not terminate, killing')
+                            process.kill()
+                            try:
+                                process.wait(FFMPEG_KILL_TIMEOUT)
+                            except subprocess.TimeoutExpired:
+                                pass
+                    except (OSError, ValueError):
+                        pass  # process already exited / pipes closed
                     break
                 try:
                     process.wait(1)
@@ -106,9 +129,12 @@ def getVideoFfmpeg(self, url, filename):
             if hasattr(stderr, "close"):
                 stderr.close()
 
+    # Arm the stop callback before the worker starts: a stop() arriving in the
+    # gap between Popen and the assignment used to be silently lost, leaving
+    # the recording running until the stream ended on its own.
+    self.stopDownload = lambda: stopping.pls_stop()
     thread = Thread(target=execute)
     thread.start()
-    self.stopDownload = lambda: stopping.pls_stop()
 
     # Poll the output file(s) on disk so the list/card UI can show a live
     # recording speed. ffmpeg writes the container directly (single file, or

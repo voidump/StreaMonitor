@@ -65,8 +65,11 @@ function renderModalInner(){
   }
   if (modalState.type==='batchPurge'){
     const arr = streamers.filter(x=>selected.has(x.id));
-    const files = arr.reduce((a,x)=>a+x.files.length+x.temps.length, 0);
-    const sz = fmtSize(arr.reduce((a,x)=>a+filesSize(x)+x.temps.reduce((b,tp)=>b+tp.size,0), 0));
+    // fileCount/sizeOf: in API mode s.files is only populated after the detail
+    // view loads, so counting s.files here showed "0 files (0 KB)" on an
+    // irreversible delete. The list payload's aggregates are always present.
+    const files = arr.reduce((a,x)=>a+fileCount(x)+x.temps.length, 0);
+    const sz = fmtSize(arr.reduce((a,x)=>a+sizeOf(x)+x.temps.reduce((b,tp)=>b+tp.size,0), 0));
     root.innerHTML = `
     <div class="modal-backdrop" id="modalBk">
       <div class="modal">
@@ -148,8 +151,9 @@ function renderModalInner(){
   }
   const alreadyStopped = s.status==='stopped';   // keep-files option is the current state — offer delete only
   const delFiles = alreadyStopped ? true : modalState.delFiles;
-  const n = s.files.length + s.temps.length;
-  const sz = fmtSize(filesSize(s)+s.temps.reduce((a,x)=>a+x.size,0));
+  // Same as batchPurge above: use the list aggregates, s.files may be empty.
+  const n = fileCount(s) + s.temps.length;
+  const sz = fmtSize(sizeOf(s)+s.temps.reduce((a,x)=>a+x.size,0));
   root.innerHTML = `
   <div class="modal-backdrop" id="modalBk">
     <div class="modal">

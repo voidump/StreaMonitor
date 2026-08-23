@@ -25,6 +25,11 @@ if not _http_lib:
 if not _http_lib:
     raise ImportError("Please install requests or pycurl package to proceed")
 
+# Rounds (one sleep(2) each) the playlist may return 200 without producing any
+# new segment before the recording is ended. Without this limit a frozen
+# playlist left the recording thread spinning forever.
+MAX_STALL_ROUNDS = 60
+
 
 def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     self.stopDownloadFlag = False
@@ -37,6 +42,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         downloaded_list = set()
         consecutive_failures = 0
         max_consecutive_failures = 15  # Tolerate transient 404s from LL-HLS
+        stall_rounds = 0
         total_bytes = 0
         segment_count = 0
         self.recording_bytes = 0
@@ -48,7 +54,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     did_download = False
                     try:
                         r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=DEFAULT_TIMEOUT)
-                        content = r.content.decode("utf-8")
                     except Exception as e:
                         self.logger.warning(f'Failed to fetch playlist: {e}')
                         consecutive_failures += 1
@@ -57,13 +62,35 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             return
                         sleep(2)
                         continue
-                    if m3u_processor:
-                        content = m3u_processor(content)
-                    # Skip ADVERT playlists (promotional/ad content)
-                    if '#EXT-X-MOUFLON-ADVERT' in content:
-                        self.logger.warning('Stopping: received ADVERT playlist')
-                        return
-                    chunklist = m3u8.loads(content)
+                    # A 5xx/403 error page decodes fine and parses to a
+                    # 0-segment playlist, which used to end the recording as if
+                    # the stream were over; route non-200 (and malformed
+                    # bodies) through the same retry counter as exceptions.
+                    if r.status_code != 200:
+                        self.logger.warning(f'Playlist HTTP {r.status_code} (fail #{consecutive_failures + 1})')
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            self.logger.error(f'Stopping: {consecutive_failures} consecutive playlist failures')
+                            return
+                        sleep(2)
+                        continue
+                    try:
+                        content = r.content.decode("utf-8")
+                        if m3u_processor:
+                            content = m3u_processor(content)
+                        # Skip ADVERT playlists (promotional/ad content)
+                        if '#EXT-X-MOUFLON-ADVERT' in content:
+                            self.logger.warning('Stopping: received ADVERT playlist')
+                            return
+                        chunklist = m3u8.loads(content)
+                    except Exception as e:
+                        self.logger.warning(f'Malformed playlist: {e}')
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_consecutive_failures:
+                            self.logger.error(f'Stopping: {consecutive_failures} consecutive playlist failures')
+                            return
+                        sleep(2)
+                        continue
                     if len(chunklist.segments) == 0:
                         if total_bytes > 0:
                             self.logger.info(f'Stream ended: {total_bytes/1024/1024:.1f} MB, {segment_count} segments')
@@ -111,7 +138,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         if self.stopDownloadFlag:
                             return
                     if not did_download:
+                        stall_rounds += 1
+                        if stall_rounds >= MAX_STALL_ROUNDS:
+                            self.logger.warning(
+                                f'Stopping: no new segments for {MAX_STALL_ROUNDS} rounds (frozen playlist)')
+                            return
                         sleep(2)
+                    else:
+                        stall_rounds = 0
             if total_bytes > 0:
                 self.logger.info(f'Recording complete: {total_bytes/1024/1024:.1f} MB, {segment_count} segments')
         except Exception as e:
@@ -138,6 +172,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     if os.path.getsize(tmpfilename) == 0:
         os.remove(tmpfilename)
         return False
+
+    if getattr(self, 'quitting', False):
+        # Process shutdown: a full remux is proportional to the recording size
+        # and can outlive the shutdown deadline (CleanExit would then force the
+        # process down mid-remux). Leave the temp file to the startup repair
+        # chain instead — it handles exactly these leftovers.
+        self.logger.info('Shutdown in progress; leaving temp file for startup repair')
+        return True
 
     # Post-processing
     stdout = subprocess.DEVNULL

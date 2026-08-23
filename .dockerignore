@@ -1,8 +1,17 @@
 downloads
+data
+models
+tests
+docs
 __pycache__
 venv
+.venv
+.worktrees
 .git
+.github
 .gitignore
+.playwright-mcp
 config.json
+history.json
 Dockerfile
 docker-compose.yml

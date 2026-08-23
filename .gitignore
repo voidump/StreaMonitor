@@ -14,3 +14,5 @@ stripchat_mouflon_keys.json
 *.local_backup
 models/
 .worktrees/
+history.json
+.playwright-mcp/

@@ -27,6 +27,26 @@ TEMP_SUFFIXES = {
 # written and is never touched by the runtime periodic repair.
 ACTIVE_MTIME_GRACE = 300  # seconds
 
+# In-process memory of repair attempts that failed with an ffmpeg error, so a
+# genuinely unrepairable file doesn't burn a full-size remux (and the disk
+# space for its discarded output) on every scan cycle. Keyed by absolute path;
+# a changed size/mtime resets the count, and a restart grants a fresh attempt.
+MAX_FAILURES_PER_FILE = 3
+_failed_attempts = {}  # abs path -> (size, mtime, count)
+
+
+def _too_many_failures(tmppath, size, mtime):
+    record = _failed_attempts.get(os.path.abspath(tmppath))
+    return bool(record and record[0] == size and record[1] == mtime
+                and record[2] >= MAX_FAILURES_PER_FILE)
+
+
+def _record_failure(tmppath, size, mtime):
+    key = os.path.abspath(tmppath)
+    record = _failed_attempts.get(key)
+    count = record[2] + 1 if record and record[0] == size and record[1] == mtime else 1
+    _failed_attempts[key] = (size, mtime, count)
+
 
 def _unique_output_path(base):
     # Never overwrite an existing final file; append a distinguishing suffix.
@@ -53,21 +73,17 @@ def _discard_output(output_path):
             pass
 
 
-def _cleanup_failed(tmppath, output_path):
-    name = os.path.basename(tmppath)
-    _discard_output(output_path)
-    try:
-        os.remove(tmppath)
-    except OSError as e:
-        logger.warning(f'Failed to remove temp file {name}: {e}')
-
-
 def _repair_one(tmppath, input_opts, suffix):
     name = os.path.basename(tmppath)
     try:
-        size = os.path.getsize(tmppath)
+        stat = os.stat(tmppath)
+        size, mtime = stat.st_size, stat.st_mtime
     except OSError as e:
         logger.warning(f'Cannot stat temp file {name}: {e}')
+        return
+
+    if _too_many_failures(tmppath, size, mtime):
+        logger.debug(f'Skipping {name}: {MAX_FAILURES_PER_FILE} failed repair attempts')
         return
 
     if size == 0:
@@ -88,17 +104,15 @@ def _repair_one(tmppath, input_opts, suffix):
         )
         ff.run(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FFRuntimeError as e:
-        # ffmpeg actually ran. A genuine non-zero exit (other than 255, which is
-        # ffmpeg's interrupted code) means the temp file itself is unrepairable,
-        # so it is safe to remove. On 255/interrupted, keep it for a later retry.
-        if e.exit_code and e.exit_code != 255:
-            logger.warning(
-                f'Repair failed for {name} (ffmpeg exit {e.exit_code}); removing temp file')
-            _cleanup_failed(tmppath, output_path)
-        else:
-            logger.warning(
-                f'Repair interrupted for {name} (ffmpeg exit {e.exit_code}); keeping temp file for retry')
-            _discard_output(output_path)
+        # ffmpeg actually ran and failed. The exit code cannot distinguish a
+        # corrupt temp file from an environment error — ENOSPC, permissions or
+        # a read-only target also exit 1 — so never delete the source here.
+        # (The disk-full restart loop used to wipe the only copy of a
+        # recording: OOS exit -> restart -> repair -> ENOSPC -> delete.)
+        logger.warning(
+            f'Repair failed for {name} (ffmpeg exit {e.exit_code}); keeping temp file for retry')
+        _record_failure(tmppath, size, mtime)
+        _discard_output(output_path)
         return
     except FFExecutableNotFoundError as e:
         # ffmpeg is missing/not executable: an environment error, not a bad temp
@@ -114,6 +128,7 @@ def _repair_one(tmppath, input_opts, suffix):
         return
 
     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        _failed_attempts.pop(os.path.abspath(tmppath), None)
         try:
             os.remove(tmppath)
         except OSError as e:

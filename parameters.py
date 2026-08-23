@@ -1,11 +1,38 @@
 import json
+import os
 import os.path
+import threading
+
 import environ
 
 
+# All runtime state files (.env, config.json, history.json, session secret,
+# online history, key caches, NSFW model) resolve against this directory.
+# Default "." preserves the historical working-directory layout; Docker
+# deployments set STRMNTR_DATA_DIR=/data and mount one volume so every piece
+# of state survives a container rebuild. Read from the OS environment
+# directly: the .env file itself lives in the data dir, so this must resolve
+# before read_env can run.
+DATA_DIR = os.environ.get('STRMNTR_DATA_DIR', '.')
+
+
+def data_path(name):
+    # Resolve a state file name against the data directory; absolute paths
+    # are respected as-is. normpath keeps the default layout's paths plain
+    # ("./.env" -> ".env"), so they stay relative to the working directory.
+    if os.path.isabs(name):
+        return name
+    return os.path.normpath(os.path.join(DATA_DIR, name))
+
+
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except OSError:
+    pass
+
 env = environ.Env()
-if os.path.exists('.env'):
-    environ.Env.read_env('.env')
+if os.path.exists(data_path('.env')):
+    environ.Env.read_env(data_path('.env'))
 
 
 DOWNLOADS_DIR = env.str("STRMNTR_DOWNLOAD_DIR", "downloads")
@@ -24,28 +51,9 @@ def set_download_dir(path):
 
 
 def persist_download_dir(path):
-    # Write STRMNTR_DOWNLOAD_DIR into the project .env, preserving other keys,
-    # using the same atomic write-then-rename strategy as the config store.
-    env_path = '.env'
-    key = 'STRMNTR_DOWNLOAD_DIR'
-    new_line = f'{key}={path}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    _persist_env_key('STRMNTR_DOWNLOAD_DIR', path)
+
+
 MIN_FREE_DISK_PERCENT = env.float("STRMNTR_MIN_FREE_SPACE", 5.0)  # in %
 
 # When free space drops below STRMNTR_OOS_CLEANUP_THRESHOLD percent (should be
@@ -115,28 +123,7 @@ def set_min_video_size_mb(value):
 
 
 def persist_min_video_size_mb(value):
-    # Write STRMNTR_MIN_VIDEO_SIZE_MB into the project .env, preserving other
-    # keys, using the same atomic write-then-rename as persist_download_dir.
-    env_path = '.env'
-    key = 'STRMNTR_MIN_VIDEO_SIZE_MB'
-    new_line = f'{key}={value:g}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    _persist_env_key('STRMNTR_MIN_VIDEO_SIZE_MB', f'{value:g}')
 
 # --- NSFW frame analysis (optional, disabled by default) ---
 # When enabled, a frame is grabbed from the file being recorded every
@@ -166,52 +153,42 @@ def set_nsfw_enabled(value):
 
 
 def persist_nsfw_enabled(value):
-    # Write STRMNTR_NSFW_ENABLED into the project .env, preserving other keys,
-    # using the same atomic write-then-rename as persist_download_dir.
-    env_path = '.env'
-    key = 'STRMNTR_NSFW_ENABLED'
-    new_line = f'{key}={"true" if value else "false"}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    _persist_env_key('STRMNTR_NSFW_ENABLED', 'true' if value else 'false')
+
+
+_ENV_WRITE_LOCK = threading.Lock()
 
 
 def _persist_env_key(key, formatted_value):
-    # Write key=value into the project .env, preserving other keys, using the
-    # same atomic write-then-rename as persist_download_dir.
-    env_path = '.env'
-    new_line = f'{key}={formatted_value}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    # Single choke point for .env writes: the whole read-modify-write is
+    # serialized (settings endpoints run on concurrent Flask threads), the file
+    # is written atomically with a unique temp name, and it is kept 0600 — it
+    # holds the web password in plain text. Line breaks in a value would
+    # inject arbitrary config lines on the next parse, so they are rejected.
+    key = str(key)
+    value_str = str(formatted_value)
+    if any(c in value_str for c in ('\n', '\r', '\0')):
+        raise ValueError('.env values must not contain line breaks or NUL')
+    if any(c in key for c in ('\n', '\r', '\0', '=', ' ')):
+        raise ValueError('invalid .env key')
+    from streamonitor.utils.atomic_file import atomic_write_text
+    env_path = data_path('.env')
+    new_line = f'{key}={value_str}'
+    with _ENV_WRITE_LOCK:
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                lines = f.read().splitlines()
+        found = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
+                lines[i] = new_line
+                found = True
+                break
+        if not found:
+            lines.append(new_line)
+        atomic_write_text(env_path, '\n'.join(lines) + '\n', mode=0o600)
 
 
 # What to do with a finished video once analysis classifies it as non-adult:
@@ -320,28 +297,17 @@ def persist_nsfw_threshold(value):
 
 # Path to the ONNX classifier model file (bring your own model, it is not
 # downloaded automatically; see streamonitor/nsfw_analyzer.py for options).
-NSFW_MODEL_PATH = env.str("STRMNTR_NSFW_MODEL_PATH", os.path.join('models', 'nsfw-model.onnx'))
+NSFW_MODEL_PATH = env.str("STRMNTR_NSFW_MODEL_PATH",
+                          data_path(os.path.join('models', 'nsfw-model.onnx')))
 
 # Maximum number of frames sampled evenly across the finished file when live
 # sampling produced fewer scores than this (short recordings, unseekable tails).
 NSFW_MAX_SAMPLES = env.int("STRMNTR_NSFW_MAX_SAMPLES", 8)
 
-# The camsoda bot ignores this setting in favor of a chrome useragent generated with the fake-useragent library
 HTTP_USER_AGENT = env.str("STRMNTR_USER_AGENT", "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0")
 
 # Specify the full path to the ffmpeg binary. By default, ffmpeg found on PATH is used.
 FFMPEG_PATH = env.str("STRMNTR_FFMPEG_PATH", 'ffmpeg')
-
-# You can enter a number to select a specific height.
-# Use a huge number here and closest match to get the highest resolution variant
-# Eg: 240, 360, 480, 720, 1080, 1440, 99999
-WANTED_RESOLUTION = env.int("STRMNTR_RESOLUTION", 1080)
-
-# Specify match type when specified height
-# Possible values: exact, exact_or_least_higher, exact_or_highest_lower, closest
-# Beware of the exact policy. Nothing gets downloaded if the wanted resolution is not available
-WANTED_RESOLUTION_PREFERENCE = env.str("STRMNTR_RESOLUTION_PREF", 'closest')
-
 
 # --- Recording resolution runtime setting (V33A) ---
 # The recording resolution is a runtime-configurable, persisted setting. Long-
@@ -352,7 +318,7 @@ WANTED_RESOLUTION_PREFERENCE = env.str("STRMNTR_RESOLUTION_PREF", 'closest')
 RECORDING_RESOLUTION_MAX = 'max'
 RESOLUTION_PREFERENCES = (
     'closest', 'exact', 'exact_or_least_higher', 'exact_or_highest_lower')
-RECORDING_RESOLUTION_STORE = '.strmntr_recording_resolution.json'
+RECORDING_RESOLUTION_STORE = data_path('.strmntr_recording_resolution.json')
 
 
 def _initial_recording_resolution():
@@ -397,14 +363,12 @@ def set_recording_resolution(resolution, preference=None):
 
 
 def persist_recording_resolution(resolution, preference):
-    # Atomic write-then-rename to a JSON store (same strategy as config.py) so a
-    # crash mid-write can't corrupt the setting. The persisted value takes
-    # priority over the env var on the next startup (see load_recording_resolution).
-    data = {'resolution': resolution, 'preference': preference}
-    tmp_path = RECORDING_RESOLUTION_STORE + '.tmp'
-    with open(tmp_path, 'w') as f:
-        json.dump(data, f, indent=4)
-    os.replace(tmp_path, RECORDING_RESOLUTION_STORE)
+    # Atomic write to a JSON store (same strategy as config.py) so a crash
+    # mid-write can't corrupt the setting. The persisted value takes priority
+    # over the env var on the next startup (see load_recording_resolution).
+    from streamonitor.utils.atomic_file import atomic_write_json
+    atomic_write_json(RECORDING_RESOLUTION_STORE,
+                      {'resolution': resolution, 'preference': preference})
 
 
 def load_recording_resolution():
@@ -496,6 +460,12 @@ WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "admin")
 # value can never lock the console out. Same runtime-configurable pattern as the
 # password: always read it through get_webserver_username().
 WEBSERVER_USERNAME = env.str("STRMNTR_USERNAME", "admin").strip() or "admin"
+
+# Behind a reverse proxy every request shares the proxy's IP, so the per-IP
+# login lockout would lock all users together. Set this to true ONLY when the
+# server is reached exclusively through a trusted proxy that sets
+# X-Forwarded-For; the first hop of that header is then used as the client IP.
+WEBSERVER_TRUST_PROXY = env.bool("STRMNTR_TRUST_PROXY", False)
 
 # Length bounds enforced by the change-password API.
 WEBSERVER_PASSWORD_MIN_LENGTH = 4

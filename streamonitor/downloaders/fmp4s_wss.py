@@ -75,6 +75,13 @@ def getVideoWSSVR(self, url, filename):
     if error:
         return False
 
+    if getattr(self, 'quitting', False) and os.path.exists(tmpfilename) \
+            and os.path.getsize(tmpfilename) > 0:
+        # Same as hls.py: don't let a size-proportional remux outlive the
+        # shutdown deadline; the startup repair chain finishes the job.
+        self.logger.info('Shutdown in progress; leaving temp file for startup repair')
+        return True
+
     # Post-processing
     stdout = subprocess.DEVNULL
     stderr = subprocess.DEVNULL

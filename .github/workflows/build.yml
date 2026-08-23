@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+name: Test, Build and Push Docker Image
 
 on:
   push:
@@ -8,8 +8,36 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.lock.txt -r requirements-dev.txt
+
+      - name: Lint (fatal errors only)
+        run: ruff check --select E9,F63,F7,F82 --exclude streamonitor/managers/httpmanager/webui .
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
   build-and-push:
     runs-on: ubuntu-latest
+    # The image is only built and published when the test suite is green;
+    # previously broken commits shipped straight to the latest tag.
+    needs: test
 
     steps:
       - name: Checkout repository
