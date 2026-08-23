@@ -1,5 +1,7 @@
 import json
 import os.path
+import threading
+
 import environ
 
 
@@ -24,28 +26,9 @@ def set_download_dir(path):
 
 
 def persist_download_dir(path):
-    # Write STRMNTR_DOWNLOAD_DIR into the project .env, preserving other keys,
-    # using the same atomic write-then-rename strategy as the config store.
-    env_path = '.env'
-    key = 'STRMNTR_DOWNLOAD_DIR'
-    new_line = f'{key}={path}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    _persist_env_key('STRMNTR_DOWNLOAD_DIR', path)
+
+
 MIN_FREE_DISK_PERCENT = env.float("STRMNTR_MIN_FREE_SPACE", 5.0)  # in %
 
 # When free space drops below STRMNTR_OOS_CLEANUP_THRESHOLD percent (should be
@@ -115,28 +98,7 @@ def set_min_video_size_mb(value):
 
 
 def persist_min_video_size_mb(value):
-    # Write STRMNTR_MIN_VIDEO_SIZE_MB into the project .env, preserving other
-    # keys, using the same atomic write-then-rename as persist_download_dir.
-    env_path = '.env'
-    key = 'STRMNTR_MIN_VIDEO_SIZE_MB'
-    new_line = f'{key}={value:g}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    _persist_env_key('STRMNTR_MIN_VIDEO_SIZE_MB', f'{value:g}')
 
 # --- NSFW frame analysis (optional, disabled by default) ---
 # When enabled, a frame is grabbed from the file being recorded every
@@ -166,52 +128,42 @@ def set_nsfw_enabled(value):
 
 
 def persist_nsfw_enabled(value):
-    # Write STRMNTR_NSFW_ENABLED into the project .env, preserving other keys,
-    # using the same atomic write-then-rename as persist_download_dir.
-    env_path = '.env'
-    key = 'STRMNTR_NSFW_ENABLED'
-    new_line = f'{key}={"true" if value else "false"}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    _persist_env_key('STRMNTR_NSFW_ENABLED', 'true' if value else 'false')
+
+
+_ENV_WRITE_LOCK = threading.Lock()
 
 
 def _persist_env_key(key, formatted_value):
-    # Write key=value into the project .env, preserving other keys, using the
-    # same atomic write-then-rename as persist_download_dir.
+    # Single choke point for .env writes: the whole read-modify-write is
+    # serialized (settings endpoints run on concurrent Flask threads), the file
+    # is written atomically with a unique temp name, and it is kept 0600 — it
+    # holds the web password in plain text. Line breaks in a value would
+    # inject arbitrary config lines on the next parse, so they are rejected.
+    key = str(key)
+    value_str = str(formatted_value)
+    if any(c in value_str for c in ('\n', '\r', '\0')):
+        raise ValueError('.env values must not contain line breaks or NUL')
+    if any(c in key for c in ('\n', '\r', '\0', '=', ' ')):
+        raise ValueError('invalid .env key')
+    from streamonitor.utils.atomic_file import atomic_write_text
     env_path = '.env'
-    new_line = f'{key}={formatted_value}'
-    lines = []
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            lines = f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        lines.append(new_line)
-    tmp_path = env_path + '.tmp'
-    with open(tmp_path, 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    os.replace(tmp_path, env_path)
+    new_line = f'{key}={value_str}'
+    with _ENV_WRITE_LOCK:
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                lines = f.read().splitlines()
+        found = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith(key + '=') or stripped.startswith(key + ' '):
+                lines[i] = new_line
+                found = True
+                break
+        if not found:
+            lines.append(new_line)
+        atomic_write_text(env_path, '\n'.join(lines) + '\n', mode=0o600)
 
 
 # What to do with a finished video once analysis classifies it as non-adult:
