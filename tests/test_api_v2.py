@@ -2185,11 +2185,13 @@ def test_set_password_success_persists_and_takes_effect(
         json={"currentPassword": "admin", "newPassword": "newpass"}, headers=AUTH)
     assert response.status_code == 200
     assert json.loads(response.data)["ok"] is True
-    assert parameters.get_webserver_password() == "newpass"
-    # Other keys survive the atomic rewrite and the new password is stored.
+    # Only a salted hash is stored and persisted, never the plaintext.
+    assert parameters.webserver_password_is_hashed()
+    assert parameters.check_webserver_password("newpass")
     env_text = (tmp_path / ".env").read_text()
     assert "STRMNTR_PORT=5000" in env_text
-    assert 'STRMNTR_PASSWORD="newpass"' in env_text
+    assert "newpass" not in env_text
+    assert 'STRMNTR_PASSWORD="pbkdf2:' in env_text or 'STRMNTR_PASSWORD="scrypt:' in env_text
     assert not (tmp_path / ".env.tmp").exists()
     # No restart needed: the old password stops working immediately.
     assert client.get("/api/v2/streamers", headers=AUTH).status_code == 401
@@ -2315,7 +2317,7 @@ def test_set_username_and_password_together(
         headers=AUTH)
     assert response.status_code == 200
     assert parameters.get_webserver_username() == "operator"
-    assert parameters.get_webserver_password() == "newpass"
+    assert parameters.check_webserver_password("newpass")
     assert client.get(
         "/api/v2/streamers",
         headers=basic_auth("operator", "newpass")).status_code == 200

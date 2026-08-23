@@ -8,13 +8,12 @@ import re
 import subprocess
 import threading
 from contextlib import closing
-from secrets import compare_digest
 from time import sleep, time
 from types import SimpleNamespace
 from urllib.parse import urljoin, urlparse
 
 import requests
-from flask import Response, request, send_file
+from flask import Response, request, send_file, session as flask_session
 
 import parameters
 import streamonitor.config as config
@@ -1828,19 +1827,23 @@ def register_api_v2(app, manager, login_required):
             if any(c in new_password for c in ('\n', '\r', '\0')):
                 return _json({'error': 'New password contains invalid characters',
                               'code': 'invalid'}, 400)
-        # Compared as bytes: compare_digest on str raises TypeError for
-        # non-ASCII input (e.g. a Chinese password set via this endpoint).
-        if not isinstance(supplied, str) or not compare_digest(
-                supplied.encode('utf-8'), current.encode('utf-8')):
+        # check_webserver_password handles the hashed credential and legacy
+        # plaintext alike, and never raises on non-ASCII input.
+        if not isinstance(supplied, str) or not parameters.check_webserver_password(supplied):
             sleep(PASSWORD_FAILURE_DELAY)   # cheap brute-force deterrent
             return _json({'error': 'Current password is incorrect', 'code': 'wrong_password'}, 403)
         # Takes effect immediately: check_auth reads both halves via the getters
-        # at call time. The current session cookie stays valid.
+        # at call time. Only a salted hash is stored/persisted.
         if changing_username:
             parameters.set_webserver_username(new_username)
             parameters.persist_webserver_username(new_username)
         if changing_password:
-            parameters.set_webserver_password(new_password)
-            parameters.persist_webserver_password(new_password)
+            parameters.set_webserver_password(
+                parameters.hash_webserver_password(new_password))
+            parameters.persist_webserver_password(parameters.get_webserver_password())
+            # A password change revokes every session except the requester's
+            # own, which is re-stamped with the new credential generation.
+            if flask_session.get('authenticated') is True:
+                flask_session['auth_gen'] = parameters.webserver_auth_generation()
         return _json({'ok': True, 'authEnabled': True,
                       'username': parameters.get_webserver_username()})

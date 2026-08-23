@@ -95,6 +95,7 @@ var I18N = {
     submit:'登录',
     errWrong:'用户名或密码错误，请重试。',
     errEmpty:'请输入用户名和密码。',
+    errLocked:'失败次数过多，已暂时锁定，请稍后再试。',
     langBtn:'English'
   },
   en: {
@@ -106,6 +107,7 @@ var I18N = {
     submit:'Sign in',
     errWrong:'Wrong user name or password, please try again.',
     errEmpty:'Please enter your user name and password.',
+    errLocked:'Too many failed attempts — temporarily locked, try again later.',
     langBtn:'中文'
   }
 };
@@ -124,7 +126,11 @@ function apply(){
   document.getElementById('langBtn').textContent = t.langBtn;
 }
 
-if (new URLSearchParams(location.search).has('error')) errEl.classList.add('show');
+var errParam = new URLSearchParams(location.search).get('error');
+if (errParam !== null) {
+  if (errParam === 'locked') errKey = 'errLocked';
+  errEl.classList.add('show');
+}
 
 document.getElementById('langBtn').addEventListener('click', function(){
   lang = lang === 'zh' ? 'en' : 'zh';

@@ -485,6 +485,48 @@ def set_webserver_password(value):
     WEBSERVER_PASSWORD = value
 
 
+# The stored credential is either a werkzeug salted hash (normal case; written
+# by the change-password API and the startup migration) or legacy plaintext
+# (a hand-edited .env / pre-hash setup, migrated to a hash at startup).
+_PASSWORD_HASH_PREFIXES = ('pbkdf2:', 'scrypt:')
+
+
+def webserver_password_is_hashed(value=None):
+    value = WEBSERVER_PASSWORD if value is None else value
+    return isinstance(value, str) and value.startswith(_PASSWORD_HASH_PREFIXES)
+
+
+def hash_webserver_password(plaintext):
+    from werkzeug.security import generate_password_hash
+    return generate_password_hash(plaintext)
+
+
+def check_webserver_password(candidate):
+    # Verify a login attempt against the stored credential. An empty stored
+    # value means auth is disabled — callers gate on that before ever getting
+    # here, so it never matches. Legacy plaintext is compared constant-time.
+    stored = get_webserver_password()
+    if not isinstance(candidate, str) or stored == '':
+        return False
+    if webserver_password_is_hashed(stored):
+        from werkzeug.security import check_password_hash
+        try:
+            return check_password_hash(stored, candidate)
+        except Exception:
+            return False
+    import hmac
+    return hmac.compare_digest(candidate.encode('utf-8'), stored.encode('utf-8'))
+
+
+def webserver_auth_generation():
+    # Fingerprint of the stored credential, kept inside each session cookie:
+    # changing the password changes the generation, which invalidates every
+    # session that doesn't carry the new value (revocation without a session
+    # store). Not a secret — knowing it doesn't help without the signing key.
+    import hashlib
+    return hashlib.sha256(WEBSERVER_PASSWORD.encode('utf-8')).hexdigest()[:8]
+
+
 def get_webserver_username():
     return WEBSERVER_USERNAME
 
