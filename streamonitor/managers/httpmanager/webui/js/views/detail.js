@@ -94,7 +94,7 @@ function renderDetail(s){
            ${['adult','non-adult','unknown'].map(l=>`<button class="${f._cls===l?'on':''}" data-clsset="${l}" data-clsfile="${esc(f.id)}">${l==='adult'?t('clsAdult'):l==='non-adult'?t('clsNonAdult'):t('clsUnknown')}</button>`).join('')}
          </span>`
       : '';
-    return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}${f._inRecycle?' inrecycle':''}" ${liveThumb?`data-watchlive="${s.id}"`:`data-playfile="${f.id}"`}>
+    return `<div class="vthumb ${isCur?'current':''}${f.marked?' marked':''}${f._recording?' recording':''}${f._inRecycle?' inrecycle':''}" ${liveThumb?`data-watchlive="${esc(s.id)}"`:`data-playfile="${esc(f.id)}"`}>
       <div class="imgwrap">
         <img src="${thumbSrc}" alt="" loading="lazy"${useApiThumb?` data-thumb-fallback="${esc(f.id)}"`:''}>
         ${f._recording?`<span class="rec-badge">${t('recTag')}</span>`:''}
@@ -110,17 +110,17 @@ function renderDetail(s){
         <div class="l2">
           ${confirm
             ? `<span class="confirm-del">${t('confirmDel')}
-                 <button class="yes" data-delyes="${f.id}">${t('yes')}</button>
+                 <button class="yes" data-delyes="${esc(f.id)}">${t('yes')}</button>
                  <button class="no" data-delno="1">${t('no')}</button></span>`
             : `<span title="${f.lastWatched?t('lastWatched')+' '+t('dtFmt')(f.lastWatched):''}">${fmtSize(f.size)} · ${watchedLabel}</span>
                <span class="acts">
-                 <button class="icon-btn" data-play="${f.id}" title="${t('play')}">${IC.play}</button>
-                 <button class="icon-btn ${f.marked?'markon':''}" data-mark="${f.id}" title="${f.marked?t('unmark'):t('mark')}">${f.marked?IC.markFill:IC.mark}</button>
-                 <button class="icon-btn" data-dl="${f.id}" title="${t('download')}">${IC.down}</button>
+                 <button class="icon-btn" data-play="${esc(f.id)}" title="${t('play')}">${IC.play}</button>
+                 <button class="icon-btn ${f.marked?'markon':''}" data-mark="${esc(f.id)}" title="${f.marked?t('unmark'):t('mark')}">${f.marked?IC.markFill:IC.mark}</button>
+                 <button class="icon-btn" data-dl="${esc(f.id)}" title="${t('download')}">${IC.down}</button>
                  ${f._recording ? '' : `<button class="icon-btn ${clsMenuFileId===f.id?'markon':''}" data-clsmenu="${esc(f.id)}" title="${t('clsChange')}">${IC.tag}</button>`}
                  ${f._recording
                    ? `<button class="icon-btn danger" disabled title="${t('recDelBlocked')}">${IC.trash}</button>`
-                   : `<button class="icon-btn danger" data-del="${f.id}" title="${t('del')}">${IC.trash}</button>`}
+                   : `<button class="icon-btn danger" data-del="${esc(f.id)}" title="${t('del')}">${IC.trash}</button>`}
                </span>`}
         </div>
       </div>
@@ -212,7 +212,7 @@ function renderDetail(s){
               : apiState.mode==='api' && !s._detailLoaded
               ? skeletonGrid(s)
               : liveWatchable(s)
-              ? `<div class="thumb-grid"><div class="vthumb recording" data-watchlive="${s.id}">
+              ? `<div class="thumb-grid"><div class="vthumb recording" data-watchlive="${esc(s.id)}">
                   <div class="imgwrap">
                     <img src="${genThumb(s.seed||s.id)}" alt="" loading="lazy">
                     <span class="rec-badge">${t('recTag')}</span>

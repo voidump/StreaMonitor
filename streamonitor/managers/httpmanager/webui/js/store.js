@@ -32,8 +32,8 @@ function pushHistory(s){
 }
 function removeHistoryAt(i){ if (i>=0 && i<history.length) history.splice(i,1); }
 
-/* Keep in sync with player.js PLAYER_HOTKEY_DEFAULTS — this table is the source
- * of truth the settings editor's "restore defaults" resets to. */
+/* THE single source of truth for player hotkey defaults (player.js references
+ * it; store.js loads first). Also what "restore defaults" resets to. */
 const DEFAULT_HOTKEYS = {
   playPause:'Space', seekBack:'ArrowLeft', seekFwd:'ArrowRight',
   jumpBack:'Shift+ArrowLeft', jumpFwd:'Shift+ArrowRight',
@@ -152,7 +152,8 @@ function toast(text, type='ok'){
  * configured, so the standalone prototype keeps working with zero console noise.
  * Enable against a real backend by injecting, before the app scripts:
  *   <script>window.SM_CONFIG = { useApi: true };</script>
- * Optional SM_CONFIG: apiBase (default '/api/v2'), listFrequency (s or ms),
+ * Optional SM_CONFIG: apiBase (default '/api/v2'), listFrequency (SECONDS —
+ *   same contract as the backend's listFrequency field),
  *   useApi:'auto' (probe first, keep mock if unreachable). No SM_CONFIG = mock. */
 const apiState = { mode:'mock', loading:false, error:false, pollMs:30000, timer:null };
 
@@ -180,8 +181,18 @@ function handleUnauthorized(){
 }
 /* returns true when the response was a 401 and a redirect was triggered */
 function checkUnauthorized(r){ return r && r.status===401 ? handleUnauthorized() : false; }
+const API_TIMEOUT_MS = 15000;
 async function apiGet(path){
-  const r = await fetch(apiUrl(path), {headers:{'Accept':'application/json'}, credentials:'same-origin'});
+  // AbortController timeout: a backend that stops answering must fail the
+  // request (surfacing the error banner) instead of pinning it forever.
+  const ctl = new AbortController();
+  const timer = setTimeout(()=>ctl.abort(), API_TIMEOUT_MS);
+  let r;
+  try {
+    r = await fetch(apiUrl(path), {headers:{'Accept':'application/json'}, credentials:'same-origin', signal:ctl.signal});
+  } finally {
+    clearTimeout(timer);
+  }
   if (!r.ok){
     checkUnauthorized(r);
     const err = new Error('HTTP '+r.status); err.status = r.status; throw err;
@@ -292,7 +303,13 @@ function mapStreamers(list){
 }
 
 /* ---- fetch + poll ---- */
+let refreshInFlight = false;
 async function refreshStreamers(){
+  // Re-entrancy guard: when the backend answers slower than the poll period,
+  // interval ticks used to stack requests and a slow stale response could
+  // overwrite a newer list.
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   try {
     const data = await apiGet('/streamers');
     streamers = mapStreamers(Array.isArray(data) ? data : (data && data.streamers) || []);
@@ -303,6 +320,8 @@ async function refreshStreamers(){
   } catch(e){
     apiState.loading = false; apiState.error = true;
     render();   // keep last data on screen; banner surfaces the failure
+  } finally {
+    refreshInFlight = false;
   }
 }
 /* V37C: short-cycle duration backfill. When the detail payload still has finished
@@ -393,7 +412,9 @@ async function loadBaseSettings(){
       else if (disk.free!=null && disk.total!=null) DISK.used = disk.total - disk.free;
     }
     const f = b.listFrequency!=null ? b.listFrequency : (b.webListFrequency!=null ? b.webListFrequency : b.WEB_LIST_FREQUENCY);
-    if (f!=null && !isNaN(Number(f))){ const n = Number(f); apiState.pollMs = n>1000 ? n : n*1000; }
+    // Contract: the backend field is SECONDS, always. The old n>1000 unit
+    // heuristic flipped e.g. 1800s into 1.8s polling — a request storm.
+    if (f!=null && !isNaN(Number(f))){ const n = Number(f); if (n>0) apiState.pollMs = Math.max(2000, n*1000); }
     // Only show the settings "log out" entry when the backend actually requires
     // a password; missing flag (older backend / no password) means no button.
     auth.enabled = b.authEnabled===true;
@@ -1038,7 +1059,8 @@ async function apiPurgeStreamerVideos(s){
 
 async function initDataSource(){
   const cfg = window.SM_CONFIG || {};
-  if (cfg.listFrequency!=null && !isNaN(Number(cfg.listFrequency))){ const n = Number(cfg.listFrequency); apiState.pollMs = n>1000 ? n : n*1000; }
+  // SM_CONFIG.listFrequency is SECONDS (same contract as the backend field).
+  if (cfg.listFrequency!=null && !isNaN(Number(cfg.listFrequency))){ const n = Number(cfg.listFrequency); if (n>0) apiState.pollMs = Math.max(2000, n*1000); }
   if (cfg.useApi === true){
     apiState.mode='api'; apiState.loading=true; streamers=[]; render();
     await loadBaseSettings(); await refreshStreamers(); startPolling();

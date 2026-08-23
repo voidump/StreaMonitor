@@ -89,7 +89,7 @@ function renderModalInner(){
     root.innerHTML = `
     <div class="modal-backdrop" id="modalBk">
       <div class="modal">
-        <div class="modal-h">${t('histDelTitle')(h.user)}</div>
+        <div class="modal-h">${t('histDelTitle')(esc(h.user))}</div>
         <div class="modal-b" style="padding-bottom:14px">${t('histDelDesc')}</div>
         <div class="modal-f">
           <button class="btn" id="modalCancel">${t('cancel')}</button>
@@ -123,7 +123,7 @@ function renderModalInner(){
     root.innerHTML = `
     <div class="modal-backdrop" id="modalBk">
       <div class="modal">
-        <div class="modal-h">${t('purgeVideosTitle')(s.user)}</div>
+        <div class="modal-h">${t('purgeVideosTitle')(esc(s.user))}</div>
         <div class="modal-b" style="padding-bottom:14px">${t('purgeVideosDesc')(n, sz)}</div>
         <div class="modal-f">
           <button class="btn" id="modalCancel">${t('cancel')}</button>
@@ -157,7 +157,7 @@ function renderModalInner(){
   root.innerHTML = `
   <div class="modal-backdrop" id="modalBk">
     <div class="modal">
-      <div class="modal-h">${t('removeTitle')(s.user)}</div>
+      <div class="modal-h">${t('removeTitle')(esc(s.user))}</div>
       <div class="modal-b">
         ${alreadyStopped?'':`
         <label class="opt ${!delFiles?'sel':''}" data-rmopt="keep">
