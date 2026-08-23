@@ -537,6 +537,9 @@ async function loadHistory(){
       const user = h.username || h.user || '';
       return {
         _idx: h.idx!=null ? h.idx : i,
+        /* raw identity for index-shift-safe delete/readd (the backend verifies
+         * it against the entry at _idx and falls back to identity lookup) */
+        _identity: {site: h.site, username: h.username, deletedAt: h.deletedAt},
         user, site: slug, url: h.url || '',
         avatarDataUrl: genAvatar(slug+'/'+user, user),
         addedDate: (h.addedTs!=null || h.addedDate!=null) ? parseTs(h.addedTs!=null ? h.addedTs : h.addedDate) : null,
@@ -548,7 +551,7 @@ async function loadHistory(){
 }
 async function apiHistoryReadd(idx, h){
   try {
-    await apiSend('POST', '/history/'+idx+'/readd');
+    await apiSend('POST', '/history/'+idx+'/readd', h && h._identity ? h._identity : undefined);
     toast(t('histReaddToast')(h.user));
     await loadHistory();
     await refreshStreamers();
@@ -558,7 +561,7 @@ async function apiHistoryReadd(idx, h){
 async function apiHistoryDelete(i){
   const h = history[i];
   const idx = h && h._idx!=null ? h._idx : i;
-  try { await apiSend('DELETE', '/history/'+idx); toast(t('histRemovedToast'), 'warn'); await loadHistory(); }
+  try { await apiSend('DELETE', '/history/'+idx, h && h._identity ? h._identity : undefined); toast(t('histRemovedToast'), 'warn'); await loadHistory(); }
   catch(e){ toast(t('apiOpError'), 'err'); }
 }
 

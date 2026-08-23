@@ -728,6 +728,11 @@ def _index_readable():
     return parameters.MEDIA_INDEX_ENABLED and os.path.isfile(index_db_path())
 
 
+def is_readable():
+    """Public form of _index_readable for other modules (the web API)."""
+    return _index_readable()
+
+
 def list_videos(siteslug, username):
     # All indexed (non-deleted) videos for one streamer as a list of dicts with
     # filename, abs_path, size, mtime, duration and thumb_path. Returns None

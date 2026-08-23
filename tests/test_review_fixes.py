@@ -10,6 +10,7 @@ import parameters
 import streamonitor.config as config
 import streamonitor.manager as manager_mod
 import streamonitor.managers.httpmanager.api_v2 as api_v2
+from streamonitor.managers.httpmanager.api_v2 import (branding, live, media_cache, settings_api, streamers_api, videos_api)
 import streamonitor.temp_repair as temp_repair
 from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.manager import Manager
@@ -137,12 +138,12 @@ def test_live_stream_concurrency_cap(monkeypatch):
         def acquire(self, blocking=True):
             return False
 
-    monkeypatch.setattr(api_v2, '_live_slots', Exhausted())
+    monkeypatch.setattr(live, '_live_slots', Exhausted())
     streamer = mock.Mock()
     streamer.recording = True
-    monkeypatch.setattr(api_v2.os.path, 'exists', lambda p: True)
+    monkeypatch.setattr(live.os.path, 'exists', lambda p: True)
     with mock.patch.object(HTTPManager, 'getStreamer', return_value=streamer), \
-            mock.patch.object(api_v2, '_live_tmp_path', return_value='/tmp/x.tmp.ts'):
+            mock.patch.object(live, '_live_tmp_path', return_value='/tmp/x.tmp.ts'):
         client2 = HTTPManager([]).create_app().test_client()
         response = client2.get('/api/v2/streamers/FS/alice/live', headers=AUTH)
     assert response.status_code == 503
