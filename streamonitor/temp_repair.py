@@ -53,15 +53,6 @@ def _discard_output(output_path):
             pass
 
 
-def _cleanup_failed(tmppath, output_path):
-    name = os.path.basename(tmppath)
-    _discard_output(output_path)
-    try:
-        os.remove(tmppath)
-    except OSError as e:
-        logger.warning(f'Failed to remove temp file {name}: {e}')
-
-
 def _repair_one(tmppath, input_opts, suffix):
     name = os.path.basename(tmppath)
     try:
@@ -88,17 +79,14 @@ def _repair_one(tmppath, input_opts, suffix):
         )
         ff.run(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FFRuntimeError as e:
-        # ffmpeg actually ran. A genuine non-zero exit (other than 255, which is
-        # ffmpeg's interrupted code) means the temp file itself is unrepairable,
-        # so it is safe to remove. On 255/interrupted, keep it for a later retry.
-        if e.exit_code and e.exit_code != 255:
-            logger.warning(
-                f'Repair failed for {name} (ffmpeg exit {e.exit_code}); removing temp file')
-            _cleanup_failed(tmppath, output_path)
-        else:
-            logger.warning(
-                f'Repair interrupted for {name} (ffmpeg exit {e.exit_code}); keeping temp file for retry')
-            _discard_output(output_path)
+        # ffmpeg actually ran and failed. The exit code cannot distinguish a
+        # corrupt temp file from an environment error — ENOSPC, permissions or
+        # a read-only target also exit 1 — so never delete the source here.
+        # (The disk-full restart loop used to wipe the only copy of a
+        # recording: OOS exit -> restart -> repair -> ENOSPC -> delete.)
+        logger.warning(
+            f'Repair failed for {name} (ffmpeg exit {e.exit_code}); keeping temp file for retry')
+        _discard_output(output_path)
         return
     except FFExecutableNotFoundError as e:
         # ffmpeg is missing/not executable: an environment error, not a bad temp
