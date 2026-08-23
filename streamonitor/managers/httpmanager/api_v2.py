@@ -1785,6 +1785,9 @@ def register_api_v2(app, manager, login_required):
                     <= parameters.WEBSERVER_USERNAME_MAX_LENGTH):
                 return _json({'error': 'New user name length is out of range',
                               'code': 'invalid_username'}, 400)
+            if any(c in new_username for c in ('\n', '\r', '\0')):
+                return _json({'error': 'New user name contains invalid characters',
+                              'code': 'invalid_username'}, 400)
         changing_password = new_password is not None or not changing_username
         if changing_password:
             if not isinstance(new_password, str) or not new_password:
@@ -1792,7 +1795,15 @@ def register_api_v2(app, manager, login_required):
             if not (parameters.WEBSERVER_PASSWORD_MIN_LENGTH <= len(new_password)
                     <= parameters.WEBSERVER_PASSWORD_MAX_LENGTH):
                 return _json({'error': 'New password length is out of range', 'code': 'invalid'}, 400)
-        if not isinstance(supplied, str) or not compare_digest(supplied, current):
+            # Line breaks would let a password inject arbitrary .env lines on
+            # the next parse (the persist layer also rejects them).
+            if any(c in new_password for c in ('\n', '\r', '\0')):
+                return _json({'error': 'New password contains invalid characters',
+                              'code': 'invalid'}, 400)
+        # Compared as bytes: compare_digest on str raises TypeError for
+        # non-ASCII input (e.g. a Chinese password set via this endpoint).
+        if not isinstance(supplied, str) or not compare_digest(
+                supplied.encode('utf-8'), current.encode('utf-8')):
             sleep(PASSWORD_FAILURE_DELAY)   # cheap brute-force deterrent
             return _json({'error': 'Current password is incorrect', 'code': 'wrong_password'}, 403)
         # Takes effect immediately: check_auth reads both halves via the getters

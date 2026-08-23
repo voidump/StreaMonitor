@@ -2257,8 +2257,7 @@ def test_login_accepts_the_configured_username(preserve_webserver_password):
         "/login", json={"username": "admin", "password": "admin"}).status_code == 200
 
 
-def test_login_rejects_a_wrong_username(monkeypatch, preserve_webserver_password):
-    monkeypatch.setattr(httpmanager, "LOGIN_FAILURE_DELAY", 0)
+def test_login_rejects_a_wrong_username(preserve_webserver_password):
     response = _client(HTTPManager([])).post(
         "/login", json={"username": "nope", "password": "admin"})
     assert response.status_code == 401
@@ -2266,8 +2265,7 @@ def test_login_rejects_a_wrong_username(monkeypatch, preserve_webserver_password
     assert json.loads(response.data)["error"] == "invalid_credentials"
 
 
-def test_login_rejects_a_wrong_password(monkeypatch, preserve_webserver_password):
-    monkeypatch.setattr(httpmanager, "LOGIN_FAILURE_DELAY", 0)
+def test_login_rejects_a_wrong_password(preserve_webserver_password):
     response = _client(HTTPManager([])).post(
         "/login", json={"username": "admin", "password": "nope"})
     assert response.status_code == 401
@@ -2352,7 +2350,6 @@ def test_set_username_requires_the_current_password(
 
 def test_set_username_keeps_current_session_and_new_username_can_log_in(
         tmp_path, monkeypatch, preserve_webserver_password):
-    monkeypatch.setattr(httpmanager, "LOGIN_FAILURE_DELAY", 0)
     monkeypatch.chdir(tmp_path)
     client = _client(HTTPManager([]))
     assert client.post(

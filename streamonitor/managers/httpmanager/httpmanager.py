@@ -7,13 +7,14 @@ from datetime import timedelta
 from flask import Flask, jsonify, redirect, request, send_from_directory, session as flask_session
 import os
 import logging
-from time import sleep
+import threading
+import time
 
 import parameters
 from parameters import WEBSERVER_HOST, WEBSERVER_PORT, WEBSERVER_SKIN
 import streamonitor.log as log
 from functools import wraps
-from secrets import compare_digest, token_hex
+from secrets import compare_digest, token_hex, token_urlsafe
 from streamonitor.bot import Bot
 from streamonitor.manager import Manager
 
@@ -26,8 +27,12 @@ SESSION_SECRET_FILE = '.session_secret'
 # Sessions are permanent and slide forward on every request, so a login lasts
 # as long as the browser keeps the cookie.
 SESSION_LIFETIME_DAYS = 365
-# Delay after a failed login attempt, a cheap brute-force deterrent.
-LOGIN_FAILURE_DELAY = 1
+# Per-IP login failure lockout. A per-request sleep is no deterrent when every
+# request gets its own thread (it is a cheap DoS instead), so failures are
+# counted per source IP and the IP is locked out with exponential backoff.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 60
+LOGIN_LOCKOUT_MAX_SECONDS = 300
 
 
 def load_or_create_secret_key(path=SESSION_SECRET_FILE):
@@ -93,10 +98,52 @@ class HTTPManager(Manager):
                 return False
             # Both halves go through compare_digest and both are always
             # evaluated, so a wrong user name is not distinguishable from a
-            # wrong password by timing.
-            user_ok = compare_digest(username, parameters.get_webserver_username())
-            password_ok = compare_digest(password, parameters.get_webserver_password())
+            # wrong password by timing. Compared as bytes: the str form of
+            # compare_digest raises TypeError on non-ASCII input, which used
+            # to turn every login into a 500 once a non-ASCII password was set.
+            user_ok = compare_digest(
+                username.encode('utf-8'),
+                parameters.get_webserver_username().encode('utf-8'))
+            password_ok = compare_digest(
+                password.encode('utf-8'),
+                parameters.get_webserver_password().encode('utf-8'))
             return user_ok and password_ok
+
+        # Per-app (per-process) login failure state, keyed by source IP.
+        login_failures = {}
+        login_failures_lock = threading.Lock()
+
+        def _client_ip():
+            return request.remote_addr or 'unknown'
+
+        def _login_locked(ip):
+            now = time.time()
+            with login_failures_lock:
+                entry = login_failures.get(ip)
+                return bool(entry and entry['locked_until'] > now)
+
+        def _clear_login_failures(ip):
+            with login_failures_lock:
+                login_failures.pop(ip, None)
+
+        def _register_login_failure(ip):
+            with login_failures_lock:
+                entry = login_failures.setdefault(
+                    ip, {'count': 0, 'locked_until': 0.0})
+                entry['count'] += 1
+                locked_for = 0
+                if entry['count'] >= LOGIN_MAX_FAILURES:
+                    over = entry['count'] - LOGIN_MAX_FAILURES
+                    locked_for = min(LOGIN_LOCKOUT_SECONDS * (2 ** over),
+                                     LOGIN_LOCKOUT_MAX_SECONDS)
+                    entry['locked_until'] = time.time() + locked_for
+                count = entry['count']
+            if locked_for:
+                self.logger.warning(
+                    f'Login failed from {ip}; locked out for {locked_for:g}s '
+                    f'after {count} consecutive failures')
+            else:
+                self.logger.warning(f'Login failed from {ip}')
 
         def authenticated():
             if not password_enabled():
@@ -105,9 +152,20 @@ class HTTPManager(Manager):
                 return True
             # Basic Auth stays supported for scripts/curl, but no
             # WWW-Authenticate header is ever returned so browsers do not show
-            # the native credentials prompt anymore.
+            # the native credentials prompt anymore. This path counts toward
+            # the same per-IP lockout as the login form — without it, /api/
+            # with a Basic header was an unthrottled brute-force oracle.
             auth = request.authorization
-            return bool(auth and check_auth(auth.username, auth.password))
+            if not auth:
+                return False
+            ip = _client_ip()
+            if _login_locked(ip):
+                return False
+            if check_auth(auth.username or '', auth.password or ''):
+                _clear_login_failures(ip)
+                return True
+            _register_login_failure(ip)
+            return False
 
         def login_required(f):
             @wraps(f)
@@ -146,14 +204,20 @@ class HTTPManager(Manager):
                 # Older JSON clients only send a password; keep them working by
                 # assuming the configured user name.
                 username = parameters.get_webserver_username()
+            ip = _client_ip()
+            if _login_locked(ip):
+                if request.is_json:
+                    return jsonify({'error': 'too_many_attempts'}), 429
+                return redirect('/login?error=1')
             if check_auth(username if isinstance(username, str) else '',
                           password if isinstance(password, str) else ''):
+                _clear_login_failures(ip)
                 flask_session.permanent = True
                 flask_session['authenticated'] = True
                 if request.is_json:
                     return jsonify({'ok': True})
                 return redirect('/')
-            sleep(LOGIN_FAILURE_DELAY)
+            _register_login_failure(ip)
             if request.is_json:
                 # Deliberately does not say which half was wrong.
                 return jsonify({'error': 'invalid_credentials'}), 401
@@ -206,6 +270,37 @@ class HTTPManager(Manager):
 
         return app
 
+    def _harden_default_password(self):
+        # Factory default admin/admin on a reachable port is an open door (the
+        # shipped docker-compose binds 0.0.0.0). Replace it with a generated
+        # password on startup and print it; an explicitly configured password
+        # (anything but the literal default) is left alone.
+        if parameters.get_webserver_password() != 'admin':
+            return None
+        generated = token_urlsafe(9)
+        parameters.set_webserver_password(generated)
+        try:
+            parameters.persist_webserver_password(generated)
+        except Exception as e:
+            self.logger.warning(f'Could not persist the generated password: {e}')
+        self.logger.warning('The factory-default web password "admin" is disabled.')
+        self.logger.warning(
+            f'Generated web login -> user: {parameters.get_webserver_username()}'
+            f'  password: {generated}')
+        self.logger.warning('It is saved to .env; change it any time in Settings.')
+        return generated
+
     def run(self):
+        self._harden_default_password()
         app = self.create_app()
-        app.run(host=WEBSERVER_HOST, port=WEBSERVER_PORT)
+        try:
+            from waitress import serve
+        except ImportError:
+            # Werkzeug's dev server is not meant for production; keep it only
+            # as a fallback so a missing dependency doesn't take the UI down.
+            self.logger.warning(
+                'waitress is not installed; falling back to the Flask dev server')
+            app.run(host=WEBSERVER_HOST, port=WEBSERVER_PORT)
+            return
+        self.logger.info(f'Serving web console on {WEBSERVER_HOST}:{WEBSERVER_PORT}')
+        serve(app, host=WEBSERVER_HOST, port=WEBSERVER_PORT, threads=16)
