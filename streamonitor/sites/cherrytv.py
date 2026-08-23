@@ -18,9 +18,15 @@ class CherryTV(Bot):
         variables = '{"slug": "' + self.username + '"}'
         extensions = '{"persistedQuery":{"version":1,"sha256Hash":"1fd980c874484de0b139ef4a67c867200a87f44aa51caf54319e93a4108a7510"}}'
 
-        r = self.session.get(f'https://api.cherry.tv/graphql?operationName={operationName}&variables={variables}&extensions={extensions}', headers=self.headers)
-        self.lastInfo = r.json()['data']['streamer']
-        
+        body = self._fetch_json('GET', f'https://api.cherry.tv/graphql?operationName={operationName}&variables={variables}&extensions={extensions}', headers=self.headers)
+        if body is None:
+            return Status.UNKNOWN
+        try:
+            self.lastInfo = body['data']['streamer']
+        except (KeyError, TypeError):
+            self.logger.warning('Unexpected response shape from graphql endpoint')
+            return Status.UNKNOWN
+
         if not self.lastInfo:
             return Status.NOTEXIST
         if not self.lastInfo['broadcast']:

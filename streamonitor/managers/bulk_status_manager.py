@@ -1,10 +1,7 @@
 from time import sleep
 
-import requests
-
 from streamonitor.bot import LOADED_SITES
 from streamonitor.manager import Manager
-from streamonitor.clean_exit import CleanExit
 import streamonitor.log as log
 
 
@@ -15,10 +12,6 @@ class BulkStatusManager(Manager):
 
     def run(self):
         bulk_bots = frozenset([site for site in LOADED_SITES if hasattr(site, 'getStatusBulk') and site.bulk_update])
-        bot_sessions = {}
-
-        for bot in bulk_bots:
-            bot_sessions[bot] = requests.Session()
 
         while True:
             bot_bulk = {}
@@ -36,6 +29,3 @@ class BulkStatusManager(Manager):
                 except Exception as e:
                     self.logger.error(f"Error in bulk status check for {bot_class.site}: {e}")
             sleep(10)
-
-    def do_quit(self, _=None, __=None, ___=None):
-        CleanExit(self.streamers)()

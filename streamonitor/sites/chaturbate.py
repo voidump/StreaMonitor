@@ -50,32 +50,37 @@ class Chaturbate(Bot):
         headers = {"X-Requested-With": "XMLHttpRequest"}
         data = {"room_slug": self.username, "bandwidth": "high"}
 
+        body = self._fetch_json('POST', "https://chaturbate.com/get_edge_hls_url_ajax/",
+                                headers=headers, data=data, timeout=DEFAULT_TIMEOUT)
+        if body is None:
+            # Only an actual 429 means rate-limited; DNS failures, JSON changes
+            # and 5xx used to be swallowed by a bare except into RATELIMIT,
+            # masking real breakage behind a 180s backoff.
+            status = Status.RATELIMIT if self._last_fetch_status == 429 else Status.UNKNOWN
+            self.ratelimit = status == Status.RATELIMIT
+            return status
+        self.lastInfo = body
         try:
-            r = requests.post("https://chaturbate.com/get_edge_hls_url_ajax/", headers=headers, data=data, timeout=DEFAULT_TIMEOUT)
-            self.lastInfo = r.json()
-            status = self._parseStatus(self.lastInfo['room_status'])
-            if status == status.PUBLIC and not self.lastInfo['url']:
-                status = status.RESTRICTED
-        except:
-            status = Status.RATELIMIT
+            status = self._parseStatus(body['room_status'])
+        except (KeyError, TypeError):
+            self.logger.warning('Unexpected response shape from edge_hls endpoint')
+            self.ratelimit = False
+            return Status.UNKNOWN
+        if status == Status.PUBLIC and not body.get('url'):
+            status = Status.RESTRICTED
 
         self.ratelimit = status == Status.RATELIMIT
         return status
 
     @classmethod
     def getStatusBulk(cls, streamers):
-        for streamer in streamers:
-            if not isinstance(streamer, Chaturbate):
-                continue
-
         session = requests.Session()
         session.headers.update(cls.headers)
-        r = session.get("https://chaturbate.com/affiliates/api/onlinerooms/?format=json&wm=DkfRj", timeout=10)
-
         try:
+            r = session.get("https://chaturbate.com/affiliates/api/onlinerooms/?format=json&wm=DkfRj", timeout=10)
             data = r.json()
-        except requests.exceptions.JSONDecodeError:
-            print('Failed to parse JSON response')
+        except Exception as e:
+            print(f'Chaturbate bulk status failed: {e}')
             return
         data_map = {str(model['username']).lower(): model for model in data}
 
