@@ -130,9 +130,17 @@ class Bot(Thread):
     def stop(self, a, b, thread_too=False):
         if self.running:
             self.log("Stopping...")
-            if self.stopDownload:
-                self.stopDownload()
+            # Clear running first so downloader loops keyed off it wind down
+            # even if the callback below fails. Snapshot the callback: the
+            # downloader sets stopDownload back to None concurrently, so
+            # check-then-call on the attribute is a race.
             self.running = False
+            cb = self.stopDownload
+            if cb:
+                try:
+                    cb()
+                except Exception as e:
+                    self.logger.warning(f'Error signalling download stop: {e}')
         if thread_too:
             self.quitting = True
 
