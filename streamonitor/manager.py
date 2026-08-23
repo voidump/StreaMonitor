@@ -73,17 +73,23 @@ class Manager(Thread):
     def saveConfig(self):
         config.save_config([s.export() for s in self.streamers])
 
-    @_locked
     def do_add(self, streamer, username, site):
         if streamer:
             return 'Streamer already exists'
         elif username and site:
             try:
+                # Construct outside the lock: site initialization can involve
+                # slow network I/O and must not freeze every other command.
                 streamer = Bot.createInstance(username, site)
-                self.streamers.append(streamer)
-                streamer.start()
-                streamer.restart()
-                self.saveConfig()
+                with _commands_lock:
+                    # Re-check inside the lock: two concurrent adds of the
+                    # same streamer both resolved to None outside it.
+                    if self.getStreamer(streamer.username, site):
+                        return 'Streamer already exists'
+                    self.streamers.append(streamer)
+                    streamer.start()
+                    streamer.restart()
+                    self.saveConfig()
                 return "Added [" + streamer.siteslug + "] " + streamer.username
             except Exception as e:
                 return f"Failed to add: {e}"
@@ -139,28 +145,30 @@ class Manager(Thread):
         streamer.monitorState = 'active'
         return self.do_start(streamer, username, site)
 
-    @_locked
     def do_purge(self, streamer, username, site, delete_files=False):
         # Layer 3: permanent delete. Stop the bot, record it in history, drop it
         # from config and optionally remove its recordings on disk.
         if not streamer:
             return "Streamer not found"
         try:
-            # thread_too for the same reason as do_remove: the bot is dropped
-            # from the list, nothing else will ever end its thread.
-            streamer.stop(None, None, thread_too=True)
-            streamer.logger.handlers = []
-            config.add_history_entry({
-                'site': streamer.site,
-                'siteslug': streamer.siteslug,
-                'username': streamer.username,
-                'url': streamer.url,
-                'deletedAt': int(time.time()),
-            })
+            with _commands_lock:
+                # thread_too for the same reason as do_remove: the bot is
+                # dropped from the list, nothing else will ever end its thread.
+                streamer.stop(None, None, thread_too=True)
+                streamer.logger.handlers = []
+                config.add_history_entry({
+                    'site': streamer.site,
+                    'siteslug': streamer.siteslug,
+                    'username': streamer.username,
+                    'url': streamer.url,
+                    'deletedAt': int(time.time()),
+                })
+                self.streamers.remove(streamer)
+                self.saveConfig()
             if delete_files:
+                # Outside the lock: deleting a large recordings directory can
+                # take minutes and must not freeze the whole command surface.
                 shutil.rmtree(streamer.outputFolder, ignore_errors=True)
-            self.streamers.remove(streamer)
-            self.saveConfig()
             return "OK"
         except Exception as e:
             self.logger.error(e)
@@ -215,21 +223,20 @@ class Manager(Thread):
         self.do_stop(streamer, username, site)
         return self.do_start(streamer, username, site)
         
-    @_locked
     def do_status(self, streamer, username, site):
+        # disk_usage on a dead network mount can block for a long time, so the
+        # disk query stays outside the lock; only the list snapshot needs it.
         output = [["Username", "Site", "Started", "Status"]]
 
-        def line():
-            output.append([streamer.username,
-                           streamer.site,
-                           streamer.running,
-                           streamer.status()])
+        def line(s):
+            output.append([s.username, s.site, s.running, s.status()])
 
-        if streamer:
-            line()
-        else:
-            for streamer in self.streamers:
-                line()
+        with _commands_lock:
+            if streamer:
+                line(streamer)
+            else:
+                for s in self.streamers:
+                    line(s)
         return "Status:\n" + f'Free space: {str(round(OOSDetector.free_space(), 3))}%\n\n' + AsciiTable(output).table
 
     @_locked

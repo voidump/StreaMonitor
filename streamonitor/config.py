@@ -17,6 +17,16 @@ history_loc = parameters.data_path("history.json")
 unloaded_entries = []
 
 
+def _entry_key(entry):
+    # Dedup key for the merge, normalized the same way loading normalizes:
+    # str2site accepts aliases/any case while export writes the canonical
+    # name, so a raw comparison would let 'chaturbate' and 'Chaturbate'
+    # coexist and get double-recorded after the next restart.
+    site = entry.get('site') or ''
+    site_cls = Bot.str2site(site) if site else None
+    return (site_cls.site if site_cls else site.lower(), entry.get('username'))
+
+
 def load_config():
     try:
         with open(config_loc, "r+") as f:
@@ -43,9 +53,9 @@ def save_config(config):
     try:
         data = list(config)
         if unloaded_entries:
-            present = {(e.get('site'), e.get('username')) for e in data}
+            present = {_entry_key(e) for e in data}
             for entry in unloaded_entries:
-                if (entry.get('site'), entry.get('username')) not in present:
+                if _entry_key(entry) not in present:
                     data.append(entry)
         atomic_write_json(config_loc, data)
         return True

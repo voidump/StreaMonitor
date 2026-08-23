@@ -114,6 +114,13 @@ class HTTPManager(Manager):
         login_failures_lock = threading.Lock()
 
         def _client_ip():
+            # Behind a reverse proxy remote_addr is the proxy for everyone and
+            # the lockout would lock all users together; with the opt-in trust
+            # flag the first X-Forwarded-For hop identifies the client.
+            if parameters.WEBSERVER_TRUST_PROXY:
+                forwarded = request.headers.get('X-Forwarded-For', '')
+                if forwarded:
+                    return forwarded.split(',')[0].strip() or 'unknown'
             return request.remote_addr or 'unknown'
 
         def _login_locked(ip):
@@ -128,15 +135,24 @@ class HTTPManager(Manager):
 
         def _register_login_failure(ip):
             with login_failures_lock:
+                now = time.time()
+                # Bound the table: with the port exposed, mass scans from many
+                # source addresses would otherwise grow it forever.
+                if len(login_failures) > 1000:
+                    for key in [k for k, e in login_failures.items()
+                                if e['locked_until'] < now
+                                and now - e.get('last_ts', 0) > 3600]:
+                        login_failures.pop(key, None)
                 entry = login_failures.setdefault(
-                    ip, {'count': 0, 'locked_until': 0.0})
+                    ip, {'count': 0, 'locked_until': 0.0, 'last_ts': 0.0})
                 entry['count'] += 1
+                entry['last_ts'] = now
                 locked_for = 0
                 if entry['count'] >= LOGIN_MAX_FAILURES:
                     over = entry['count'] - LOGIN_MAX_FAILURES
                     locked_for = min(LOGIN_LOCKOUT_SECONDS * (2 ** over),
                                      LOGIN_LOCKOUT_MAX_SECONDS)
-                    entry['locked_until'] = time.time() + locked_for
+                    entry['locked_until'] = now + locked_for
                 count = entry['count']
             if locked_for:
                 self.logger.warning(
@@ -279,15 +295,23 @@ class HTTPManager(Manager):
             return None
         generated = token_urlsafe(9)
         parameters.set_webserver_password(generated)
+        persisted = True
         try:
             parameters.persist_webserver_password(generated)
         except Exception as e:
+            persisted = False
             self.logger.warning(f'Could not persist the generated password: {e}')
         self.logger.warning('The factory-default web password "admin" is disabled.')
         self.logger.warning(
             f'Generated web login -> user: {parameters.get_webserver_username()}'
             f'  password: {generated}')
-        self.logger.warning('It is saved to .env; change it any time in Settings.')
+        if persisted:
+            self.logger.warning('It is saved to .env; change it any time in Settings.')
+        else:
+            self.logger.warning(
+                'It could NOT be saved (data dir not writable?): this password '
+                'is valid for this run only and a new one will be generated on '
+                'the next start.')
         return generated
 
     def run(self):
@@ -303,4 +327,6 @@ class HTTPManager(Manager):
             app.run(host=WEBSERVER_HOST, port=WEBSERVER_PORT)
             return
         self.logger.info(f'Serving web console on {WEBSERVER_HOST}:{WEBSERVER_PORT}')
-        serve(app, host=WEBSERVER_HOST, port=WEBSERVER_PORT, threads=16)
+        # /live streams are capped separately (api_v2.LIVE_MAX_CONCURRENT), so
+        # long-lived viewers can't exhaust this pool.
+        serve(app, host=WEBSERVER_HOST, port=WEBSERVER_PORT, threads=32)

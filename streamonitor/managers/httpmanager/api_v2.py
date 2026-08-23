@@ -59,6 +59,13 @@ _LIVE_READ_CHUNK = 64 * 1024
 _LIVE_POLL_INTERVAL = 0.5  # seconds between reads when caught up to the tail
 _LIVE_MAX_IDLE_ITERS = 60  # give up after this many empty reads (~30s)
 
+# Cap on concurrent /live viewer streams. Each stream holds a WSGI worker
+# thread for its whole lifetime, so without a cap a handful of open tabs could
+# exhaust the (waitress) thread pool and hang the whole console, login page
+# included.
+LIVE_MAX_CONCURRENT = 4
+_live_slots = threading.BoundedSemaphore(LIVE_MAX_CONCURRENT)
+
 # Delay after a change-password attempt with the wrong current password, the
 # same cheap brute-force deterrent the login route uses. Module-level so tests
 # can shrink it.
@@ -187,6 +194,11 @@ def _validate_download_dir(raw):
     # Returns (abspath, None) on success or (None, (code, message)) on failure.
     if not isinstance(raw, str) or not raw.strip():
         return None, ('empty', 'Path must not be empty')
+    # Line breaks are technically legal in a directory name but the persist
+    # layer rejects them (they could inject .env lines); refuse them up front
+    # so the in-memory setting and .env can never diverge on a 500.
+    if any(c in raw for c in ('\n', '\r', '\0')):
+        return None, ('invalid', 'Path contains invalid characters')
     candidate = os.path.abspath(os.path.expanduser(raw.strip()))
     try:
         os.makedirs(candidate, exist_ok=True)
@@ -1242,6 +1254,14 @@ def register_api_v2(app, manager, login_required):
         if not tmp_path or not os.path.exists(tmp_path):
             return _json({'error': 'Live stream not available'}, 404)
 
+        if not _live_slots.acquire(blocking=False):
+            return _json({'error': 'Too many live streams open'}, 503)
+        release = [_live_slots.release]
+
+        def _release_once():
+            if release:
+                release.pop()()
+
         # Detect the container actually on disk. StripChat/CMAF writes fragmented
         # MP4 (ftyp/moov + moof/mdat) into the .tmp.ts; other sites write raw
         # MPEG-TS. Serve each with the correct mimetype and start boundary.
@@ -1268,6 +1288,7 @@ def register_api_v2(app, manager, login_required):
                     start = max(0, size - _LIVE_TAIL_BYTES)
                     start -= start % _TS_PACKET_SIZE  # align to a TS packet
         except OSError:
+            _release_once()
             return _json({'error': 'Live stream not available'}, 404)
 
         def generate():
@@ -1295,13 +1316,20 @@ def register_api_v2(app, manager, login_required):
                         sleep(_LIVE_POLL_INTERVAL)
             except (GeneratorExit, OSError):
                 return
+            finally:
+                _release_once()
 
         headers = {
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'X-Accel-Buffering': 'no',
         }
-        return Response(generate(), mimetype=mimetype, headers=headers)
+        response = Response(generate(), mimetype=mimetype, headers=headers)
+        # call_on_close is the WSGI-guaranteed cleanup; the generator's finally
+        # alone would leak the slot if the response were closed before the
+        # first iteration. _release_once makes the two paths idempotent.
+        response.call_on_close(_release_once)
+        return response
 
     @app.route('/api/v2/streamers/<site>/<user>/videos/<path:filename>', methods=['DELETE'])
     @login_required

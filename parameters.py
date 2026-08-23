@@ -461,6 +461,12 @@ WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "admin")
 # password: always read it through get_webserver_username().
 WEBSERVER_USERNAME = env.str("STRMNTR_USERNAME", "admin").strip() or "admin"
 
+# Behind a reverse proxy every request shares the proxy's IP, so the per-IP
+# login lockout would lock all users together. Set this to true ONLY when the
+# server is reached exclusively through a trusted proxy that sets
+# X-Forwarded-For; the first hop of that header is then used as the client IP.
+WEBSERVER_TRUST_PROXY = env.bool("STRMNTR_TRUST_PROXY", False)
+
 # Length bounds enforced by the change-password API.
 WEBSERVER_PASSWORD_MIN_LENGTH = 4
 WEBSERVER_PASSWORD_MAX_LENGTH = 128

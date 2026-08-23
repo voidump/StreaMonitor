@@ -27,6 +27,26 @@ TEMP_SUFFIXES = {
 # written and is never touched by the runtime periodic repair.
 ACTIVE_MTIME_GRACE = 300  # seconds
 
+# In-process memory of repair attempts that failed with an ffmpeg error, so a
+# genuinely unrepairable file doesn't burn a full-size remux (and the disk
+# space for its discarded output) on every scan cycle. Keyed by absolute path;
+# a changed size/mtime resets the count, and a restart grants a fresh attempt.
+MAX_FAILURES_PER_FILE = 3
+_failed_attempts = {}  # abs path -> (size, mtime, count)
+
+
+def _too_many_failures(tmppath, size, mtime):
+    record = _failed_attempts.get(os.path.abspath(tmppath))
+    return bool(record and record[0] == size and record[1] == mtime
+                and record[2] >= MAX_FAILURES_PER_FILE)
+
+
+def _record_failure(tmppath, size, mtime):
+    key = os.path.abspath(tmppath)
+    record = _failed_attempts.get(key)
+    count = record[2] + 1 if record and record[0] == size and record[1] == mtime else 1
+    _failed_attempts[key] = (size, mtime, count)
+
 
 def _unique_output_path(base):
     # Never overwrite an existing final file; append a distinguishing suffix.
@@ -56,9 +76,14 @@ def _discard_output(output_path):
 def _repair_one(tmppath, input_opts, suffix):
     name = os.path.basename(tmppath)
     try:
-        size = os.path.getsize(tmppath)
+        stat = os.stat(tmppath)
+        size, mtime = stat.st_size, stat.st_mtime
     except OSError as e:
         logger.warning(f'Cannot stat temp file {name}: {e}')
+        return
+
+    if _too_many_failures(tmppath, size, mtime):
+        logger.debug(f'Skipping {name}: {MAX_FAILURES_PER_FILE} failed repair attempts')
         return
 
     if size == 0:
@@ -86,6 +111,7 @@ def _repair_one(tmppath, input_opts, suffix):
         # recording: OOS exit -> restart -> repair -> ENOSPC -> delete.)
         logger.warning(
             f'Repair failed for {name} (ffmpeg exit {e.exit_code}); keeping temp file for retry')
+        _record_failure(tmppath, size, mtime)
         _discard_output(output_path)
         return
     except FFExecutableNotFoundError as e:
@@ -102,6 +128,7 @@ def _repair_one(tmppath, input_opts, suffix):
         return
 
     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        _failed_attempts.pop(os.path.abspath(tmppath), None)
         try:
             os.remove(tmppath)
         except OSError as e:

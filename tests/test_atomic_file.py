@@ -34,12 +34,15 @@ def test_mode_is_applied(tmp_path):
     assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
 
 
-def test_default_mode_is_world_readable(tmp_path):
+def test_default_mode_honors_umask(tmp_path):
     # mkstemp creates 0600 temp files; without an explicit chmod the rename
-    # would silently tighten config.json & co. Keep the historical 0644.
+    # would silently tighten config.json & co. The default must reproduce
+    # what a plain open() would have created under the current umask.
+    umask = os.umask(0)
+    os.umask(umask)
     target = tmp_path / 'config.json'
     atomic_write_json(str(target), {})
-    assert stat.S_IMODE(os.stat(target).st_mode) == 0o644
+    assert stat.S_IMODE(os.stat(target).st_mode) == (0o666 & ~umask)
 
 
 def test_concurrent_writers_never_corrupt_target(tmp_path):

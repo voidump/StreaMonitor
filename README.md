@@ -102,6 +102,10 @@ logs and saved to `.env` — check the startup log for it. Set `STRMNTR_USERNAME
 and `STRMNTR_PASSWORD` (or change them in the settings page) to pick your own;
 an empty password disables the login entirely (only do this on `127.0.0.1`).
 Repeated failed logins from one IP are locked out with exponential backoff.
+Behind a reverse proxy every client shares the proxy's IP and would be locked
+out together — set `STRMNTR_TRUST_PROXY=true` (only when the server is reached
+exclusively through a trusted proxy) so the `X-Forwarded-For` client IP is
+used instead.
 When you set `STRMNTR_HOST` to `0.0.0.0` the console is also accessible from
 other computers on the network.
 
