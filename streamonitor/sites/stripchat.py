@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import parameters
 from streamonitor.bot import RoomIdBot
 from streamonitor.downloaders.hls import getVideoNativeHLS
 from streamonitor.enums import Status, Gender, COUNTRIES
@@ -34,7 +35,7 @@ class StripChat(RoomIdBot):
     _init_lock = threading.Lock()
     _main_js_data = None
     _doppio_js_data = None
-    _mouflon_cache_filename = 'stripchat_mouflon_keys.json'
+    _mouflon_cache_filename = parameters.data_path('stripchat_mouflon_keys.json')
     # Pre-populated known keys + auto-extracted keys from doppio.js
     _mouflon_keys: dict = {
         "Zeechoej4aleeshi": "ubahjae7goPoodi6",

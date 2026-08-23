@@ -1,13 +1,38 @@
 import json
+import os
 import os.path
 import threading
 
 import environ
 
 
+# All runtime state files (.env, config.json, history.json, session secret,
+# online history, key caches, NSFW model) resolve against this directory.
+# Default "." preserves the historical working-directory layout; Docker
+# deployments set STRMNTR_DATA_DIR=/data and mount one volume so every piece
+# of state survives a container rebuild. Read from the OS environment
+# directly: the .env file itself lives in the data dir, so this must resolve
+# before read_env can run.
+DATA_DIR = os.environ.get('STRMNTR_DATA_DIR', '.')
+
+
+def data_path(name):
+    # Resolve a state file name against the data directory; absolute paths
+    # are respected as-is. normpath keeps the default layout's paths plain
+    # ("./.env" -> ".env"), so they stay relative to the working directory.
+    if os.path.isabs(name):
+        return name
+    return os.path.normpath(os.path.join(DATA_DIR, name))
+
+
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except OSError:
+    pass
+
 env = environ.Env()
-if os.path.exists('.env'):
-    environ.Env.read_env('.env')
+if os.path.exists(data_path('.env')):
+    environ.Env.read_env(data_path('.env'))
 
 
 DOWNLOADS_DIR = env.str("STRMNTR_DOWNLOAD_DIR", "downloads")
@@ -147,7 +172,7 @@ def _persist_env_key(key, formatted_value):
     if any(c in key for c in ('\n', '\r', '\0', '=', ' ')):
         raise ValueError('invalid .env key')
     from streamonitor.utils.atomic_file import atomic_write_text
-    env_path = '.env'
+    env_path = data_path('.env')
     new_line = f'{key}={value_str}'
     with _ENV_WRITE_LOCK:
         lines = []
@@ -272,7 +297,8 @@ def persist_nsfw_threshold(value):
 
 # Path to the ONNX classifier model file (bring your own model, it is not
 # downloaded automatically; see streamonitor/nsfw_analyzer.py for options).
-NSFW_MODEL_PATH = env.str("STRMNTR_NSFW_MODEL_PATH", os.path.join('models', 'nsfw-model.onnx'))
+NSFW_MODEL_PATH = env.str("STRMNTR_NSFW_MODEL_PATH",
+                          data_path(os.path.join('models', 'nsfw-model.onnx')))
 
 # Maximum number of frames sampled evenly across the finished file when live
 # sampling produced fewer scores than this (short recordings, unseekable tails).
@@ -292,7 +318,7 @@ FFMPEG_PATH = env.str("STRMNTR_FFMPEG_PATH", 'ffmpeg')
 RECORDING_RESOLUTION_MAX = 'max'
 RESOLUTION_PREFERENCES = (
     'closest', 'exact', 'exact_or_least_higher', 'exact_or_highest_lower')
-RECORDING_RESOLUTION_STORE = '.strmntr_recording_resolution.json'
+RECORDING_RESOLUTION_STORE = data_path('.strmntr_recording_resolution.json')
 
 
 def _initial_recording_resolution():

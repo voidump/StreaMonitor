@@ -2,13 +2,14 @@ import json
 import os
 import time
 
+import parameters
 from streamonitor.bot import Bot
 from streamonitor.log import Logger
 from streamonitor.utils.atomic_file import atomic_write_json
 
 logger = Logger('[CONFIG]').get_logger()
-config_loc = "config.json"
-history_loc = "history.json"
+config_loc = parameters.data_path("config.json")
+history_loc = parameters.data_path("history.json")
 
 # Raw config entries whose bot could not be constructed at load time (site
 # unreachable, unknown site name). save_config merges them back so a transient

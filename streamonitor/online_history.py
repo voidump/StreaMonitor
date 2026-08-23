@@ -3,6 +3,7 @@ import os
 import threading
 from datetime import datetime
 
+import parameters
 import streamonitor.log as log
 from streamonitor.utils.atomic_file import atomic_write_json
 
@@ -31,7 +32,7 @@ logger = log.Logger('online_history')
 
 
 def _store_path():
-    return ONLINE_HISTORY_STORE
+    return parameters.data_path(ONLINE_HISTORY_STORE)
 
 
 def _key(site, user):

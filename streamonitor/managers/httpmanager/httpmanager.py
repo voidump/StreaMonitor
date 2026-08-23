@@ -23,7 +23,7 @@ from .api_v2 import register_api_v2
 
 # The Flask secret key is persisted here so session cookies (and therefore
 # logins) stay valid across restarts.
-SESSION_SECRET_FILE = '.session_secret'
+SESSION_SECRET_FILE = parameters.data_path('.session_secret')
 # Sessions are permanent and slide forward on every request, so a login lasts
 # as long as the browser keeps the cookie.
 SESSION_LIFETIME_DAYS = 365
