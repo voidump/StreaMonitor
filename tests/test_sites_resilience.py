@@ -98,8 +98,13 @@ def test_sexchathu_status_retries_room_id(monkeypatch):
 # --- StripChat: mouflon key chain must not poison-cache failures ---
 
 @pytest.fixture
-def stripchat_state(monkeypatch):
-    monkeypatch.setattr(StripChat, '_mouflon_keys', dict(StripChat._mouflon_keys))
+def stripchat_state(monkeypatch, tmp_path):
+    # Fresh key dict (no keys leaked from the real on-disk cache) and a
+    # throwaway cache file so _save_mouflon_cache can never write into the
+    # repository's stripchat_mouflon_keys.json.
+    monkeypatch.setattr(StripChat, '_mouflon_keys', {'known': 'known-value'})
+    monkeypatch.setattr(StripChat, '_mouflon_cache_filename',
+                        str(tmp_path / 'mouflon.json'))
     monkeypatch.setattr(StripChat, '_doppio_js_data', None)
     monkeypatch.setattr(StripChat, '_static_data', StripChat._static_data)
     monkeypatch.setattr(StripChat, '_init_failed_at', None)
