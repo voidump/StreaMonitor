@@ -3,6 +3,9 @@ import os
 import threading
 from datetime import datetime
 
+import streamonitor.log as log
+from streamonitor.utils.atomic_file import atomic_write_json
+
 
 # Real online-history store (v3.6). Each streamer's online observations are kept
 # at hour granularity as a sorted list of "hour epochs" (int(epoch // 3600)) in a
@@ -22,6 +25,9 @@ _cache = None                     # dict key -> sorted list[int] once loaded
 _cache_path = None                # which store file the cache was loaded from
 _last_hour = {}                   # key -> last recorded hour epoch (hot-path dedup)
 _backfilled = set()               # keys already backfilled this process
+_save_warned = False              # one warning per failure streak, not per write
+
+logger = log.Logger('online_history')
 
 
 def _store_path():
@@ -49,13 +55,17 @@ def _load_locked(path):
 
 
 def _save_locked(path):
+    global _save_warned
     try:
-        tmp = path + '.tmp'
-        with open(tmp, 'w') as f:
-            json.dump(_cache, f)
-        os.replace(tmp, path)
-    except Exception:
-        pass
+        atomic_write_json(path, _cache, indent=None)
+        _save_warned = False
+    except Exception as e:
+        # Never fatal, but never silent either: a full disk or permission
+        # change would otherwise stop the history from persisting with no
+        # trace. Warn once until a write succeeds again.
+        if not _save_warned:
+            _save_warned = True
+            logger.warning(f'Failed to persist online history to {path}: {e}')
 
 
 def _ensure_loaded_locked():

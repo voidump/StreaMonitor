@@ -396,14 +396,12 @@ def set_recording_resolution(resolution, preference=None):
 
 
 def persist_recording_resolution(resolution, preference):
-    # Atomic write-then-rename to a JSON store (same strategy as config.py) so a
-    # crash mid-write can't corrupt the setting. The persisted value takes
-    # priority over the env var on the next startup (see load_recording_resolution).
-    data = {'resolution': resolution, 'preference': preference}
-    tmp_path = RECORDING_RESOLUTION_STORE + '.tmp'
-    with open(tmp_path, 'w') as f:
-        json.dump(data, f, indent=4)
-    os.replace(tmp_path, RECORDING_RESOLUTION_STORE)
+    # Atomic write to a JSON store (same strategy as config.py) so a crash
+    # mid-write can't corrupt the setting. The persisted value takes priority
+    # over the env var on the next startup (see load_recording_resolution).
+    from streamonitor.utils.atomic_file import atomic_write_json
+    atomic_write_json(RECORDING_RESOLUTION_STORE,
+                      {'resolution': resolution, 'preference': preference})
 
 
 def load_recording_resolution():

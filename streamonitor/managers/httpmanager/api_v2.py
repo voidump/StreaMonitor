@@ -25,6 +25,7 @@ import streamonitor.media_index as media_index
 import streamonitor.online_history as online_history
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.utils import human_file_size
+from streamonitor.utils.atomic_file import atomic_write_json
 
 
 # Stable machine-readable keys derived from the backend Status enum. The web UI
@@ -397,14 +398,11 @@ def _load_durations_locked(path):
 
 
 def _save_durations_locked(path):
-    # Caller holds _durations_lock. Atomic write via temp file + os.replace so a
-    # crash mid-write never leaves a truncated durations.json behind.
+    # Caller holds _durations_lock. Atomic write (unique temp + fsync + rename)
+    # so a crash mid-write never leaves a truncated durations.json behind.
     try:
         os.makedirs(_thumbs_dir(), exist_ok=True)
-        tmp = path + '.tmp'
-        with open(tmp, 'w') as f:
-            json.dump(_durations_cache, f)
-        os.replace(tmp, path)
+        atomic_write_json(path, _durations_cache, indent=None)
     except Exception:
         pass
 
