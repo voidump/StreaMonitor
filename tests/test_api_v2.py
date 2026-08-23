@@ -2368,3 +2368,51 @@ def test_set_username_keeps_current_session_and_new_username_can_log_in(
         "/login", json={"username": "admin", "password": "admin"}).status_code == 401
     assert fresh.post(
         "/login", json={"username": "operator", "password": "admin"}).status_code == 200
+
+
+# --- in-flight temp file protection (.tmp. names) ---
+
+def test_cache_file_list_excludes_tmp_and_hidden_files(tmp_path, monkeypatch):
+    # fmp4s_wss writes "<name>.tmp.mp4" while recording; its extension passes
+    # the mp4 filter, so without the .tmp. exclusion the delete endpoints could
+    # remove a file that is still being written. media_index already excludes
+    # '.tmp.' — the two views must agree.
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    with open(os.path.join(streamer.outputFolder, "alice-20260706-130000.tmp.mp4"), "wb") as f:
+        f.write(b"0" * 100)
+    with open(os.path.join(streamer.outputFolder, ".hidden.mp4"), "wb") as f:
+        f.write(b"0" * 100)
+    streamer.cache_file_list()
+    names = [v.filename for v in streamer.video_files]
+    assert "alice-20260706-120000.mp4" in names
+    assert "alice-20260706-130000.tmp.mp4" not in names
+    assert ".hidden.mp4" not in names
+
+
+def test_delete_video_rejects_tmp_filename(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, _ = _make_streamer_with_video()
+    tmp_file = os.path.join(streamer.outputFolder, "alice-20260706-130000.tmp.mp4")
+    with open(tmp_file, "wb") as f:
+        f.write(b"0" * 100)
+    client = _client(HTTPManager([streamer]))
+    response = client.delete(
+        "/api/v2/streamers/FS/alice/videos/alice-20260706-130000.tmp.mp4",
+        headers=AUTH)
+    assert response.status_code == 403
+    assert os.path.exists(tmp_file)
+
+
+def test_delete_all_videos_keeps_tmp_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer, final_path = _make_streamer_with_video()
+    tmp_file = os.path.join(streamer.outputFolder, "alice-20260706-130000.tmp.mp4")
+    with open(tmp_file, "wb") as f:
+        f.write(b"0" * 100)
+    streamer.cache_file_list()
+    client = _client(HTTPManager([streamer]))
+    response = client.delete("/api/v2/streamers/FS/alice/videos", headers=AUTH)
+    assert response.status_code == 200
+    assert os.path.exists(tmp_file), "in-flight temp file must survive delete-all"
+    assert not os.path.exists(final_path)

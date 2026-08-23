@@ -192,6 +192,12 @@ class Bot(Thread):
                 for file in os.scandir(videos_folder):
                     if file.is_dir():
                         continue
+                    # Never surface in-flight downloader temp files (fmp4s_wss
+                    # writes "<name>.tmp.mp4", whose extension passes the filter
+                    # below) or hidden files: the delete endpoints operate on
+                    # this list. Must agree with media_index's '.tmp.' exclusion.
+                    if file.name.startswith('.') or '.tmp.' in file.name:
+                        continue
                     if not os.path.splitext(file.name)[1][1:] in ['mp4', 'mkv', 'webm', 'mov', 'avi', 'wmv']:
                         continue
                     video = VideoData(file, self.username)

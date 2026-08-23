@@ -1311,6 +1311,10 @@ def register_api_v2(app, manager, login_required):
         streamer = manager.getStreamer(user, site)
         if streamer is None:
             return _json({'error': 'Streamer not found'}, 404)
+        # Second line of defense behind cache_file_list's exclusion: a .tmp.
+        # name is a downloader's in-flight file, never deletable via the API.
+        if '.tmp.' in filename:
+            return _json({'error': 'Cannot delete an in-flight temp file'}, 403)
         # Double-safety with the frontend graying-out: never delete the file
         # that is currently being written by the recorder.
         if streamer.recording and filename == getattr(streamer, 'recording_filename', None):
@@ -1342,6 +1346,11 @@ def register_api_v2(app, manager, login_required):
         skipped = 0
         freed = 0
         for video in list(streamer.video_files):
+            # cache_file_list already excludes '.tmp.' names; keep the guard
+            # here too so a stale list can never delete an in-flight file.
+            if '.tmp.' in video.filename:
+                skipped += 1
+                continue
             if streamer.recording and video.filename == recording_name:
                 skipped += 1
                 continue
