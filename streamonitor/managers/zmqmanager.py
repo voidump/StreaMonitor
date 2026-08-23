@@ -15,8 +15,12 @@ class ZMQManager(Manager):
             while True:
                 line = socket.recv_string()
                 self.logger.info("[ZMQ] " + line)
-                reply = self.execCmd(line)
-                if type(reply) is str:
-                    socket.send_string(reply)
-                else:
-                    socket.send_string('')
+                # REP sockets require strict recv/send alternation: dying (or
+                # skipping the send) after a recv leaves the socket in EFSM,
+                # so every command must produce exactly one reply.
+                try:
+                    reply = self.execCmd(line)
+                except Exception as e:
+                    self.logger.error(f'Command failed: {e}')
+                    reply = f'Error: {e}'
+                socket.send_string(reply if type(reply) is str else '')

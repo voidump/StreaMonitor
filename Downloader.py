@@ -54,7 +54,10 @@ def main():
     bulk_status_manager = BulkStatusManager(streamers)
     bulk_status_manager.start()
 
-    if not is_docker():
+    # Only start the interactive console on a real terminal: with stdin at EOF
+    # (systemd, `< /dev/null`) the console would immediately read EOF and shut
+    # the whole application down.
+    if not is_docker() and sys.stdin is not None and sys.stdin.isatty():
         console_manager = CLIManager(streamers)
         console_manager.start()
 

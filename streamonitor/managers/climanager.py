@@ -19,7 +19,12 @@ class CLIManager(Manager):
             except EOFError:
                 self.do_quit()
                 return
-            reply = self.execCmd(line)
+            # One bad command must not kill the console for the whole session.
+            try:
+                reply = self.execCmd(line)
+            except Exception as e:
+                self.logger.error(f'Command failed: {e}')
+                reply = f'Error: {e}'
             if line == "quit":
                 return
             self.logger.info(reply)
