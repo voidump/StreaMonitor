@@ -74,7 +74,10 @@ class Manager(Thread):
         if not streamer:
             return "Streamer not found"
         try:
-            streamer.stop(None, None)
+            # thread_too: the bot leaves the streamers list, so CleanExit can
+            # never reach it again — without ending the thread here it would
+            # spin in run() forever.
+            streamer.stop(None, None, thread_too=True)
             streamer.logger.handlers = []
             self.streamers.remove(streamer)
             self.saveConfig()
@@ -117,7 +120,9 @@ class Manager(Thread):
         if not streamer:
             return "Streamer not found"
         try:
-            streamer.stop(None, None)
+            # thread_too for the same reason as do_remove: the bot is dropped
+            # from the list, nothing else will ever end its thread.
+            streamer.stop(None, None, thread_too=True)
             streamer.logger.handlers = []
             config.add_history_entry({
                 'site': streamer.site,

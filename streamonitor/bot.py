@@ -74,6 +74,11 @@ class Bot(Thread):
 
     def __init__(self, username):
         super().__init__()
+        # Daemon: orderly shutdown is CleanExit's explicit wait; a stuck or
+        # leaked bot thread must never hang interpreter exit. Also keeps the
+        # daemon flag consistent whether the bot is created by the main thread
+        # (startup) or a web request thread (which is itself a daemon).
+        self.daemon = True
         self.username = username
         self.logger = self.getLogger()
 
