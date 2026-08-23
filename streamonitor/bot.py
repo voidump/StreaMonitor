@@ -300,6 +300,16 @@ class Bot(Thread):
             return last is None or (now - last) >= self.min_unknown_fallback_interval
         return False
 
+    def _should_throttle_fallback(self):
+        # Whether the current state should arm the single-check throttle
+        # timestamp (see run()); RoomIdBot widens this to unresolved room ids.
+        return self.sc == Status.UNKNOWN
+
+    def _status_check(self):
+        # Overridable wrapper around getStatus() so subclasses can recondition
+        # the poll (e.g. RoomIdBot retries its room-id resolution here).
+        return self.getStatus()
+
     def run(self):
         while not self.quitting:
             while not self.running and not self.quitting:
@@ -315,15 +325,15 @@ class Bot(Thread):
                     now = time.time()
                     if self._should_do_single_status_check(now):
                         try:
-                            self.sc = self.getStatus()
+                            self.sc = self._status_check()
                         except Exception as e:
                             self.logger.exception(e)
                             self.sc = Status.ERROR
                         self.lastCheckTs = datetime.now().timestamp()
-                        # Throttle repeated fallbacks only while stranded in
-                        # UNKNOWN; any other outcome clears the backoff so a
-                        # fresh UNKNOWN is retried immediately.
-                        self._last_unknown_fallback_ts = now if self.sc == Status.UNKNOWN else None
+                        # Throttle repeated fallbacks while stranded (UNKNOWN,
+                        # or an unresolved room id); any other outcome clears
+                        # the backoff so a fresh stall is retried immediately.
+                        self._last_unknown_fallback_ts = now if self._should_throttle_fallback() else None
                     # Check if the status has changed and log the update if it's different from the previous status
                     if self.sc != self.previous_status:
                         self.log(self.status())
@@ -358,6 +368,12 @@ class Bot(Thread):
                                 self.sc = Status.ERROR
                                 self.logger.error(self.status())
                                 self._sleep(self.sleep_on_error)
+                                continue
+                            # A stop() may have landed while the video URL was
+                            # being fetched — before the downloader arms its
+                            # stopDownload callback. Re-check so shutdown never
+                            # races a recording into starting.
+                            if not self.running or self.quitting:
                                 continue
                             self.log('Started downloading show')
                             self.recording = True
@@ -636,6 +652,21 @@ class RoomIdBot(Bot):
         # site simply doesn't know the room right now).
         if self.room_id is not None:
             return True
+        # A numeric "username" may actually be a room id (same interpretation
+        # the constructor tries); retry that resolution here too, otherwise a
+        # startup hiccup would leave us querying a room number as a name.
+        if self.username.isnumeric():
+            try:
+                username_real = self.getUsernameFromRoomId(self.username)
+            except Exception as e:
+                self._room_lookup_error = True
+                self.logger.warning(f'Username lookup failed (will retry): {e}')
+                return False
+            if username_real is not None:
+                self.room_id = self.username
+                self.setUsername(username_real)
+                self.logger.debug(f'Found username: {username_real}')
+                return True
         try:
             room_id = self.getRoomIdFromUsername(self.username)
         except Exception as e:
@@ -649,6 +680,32 @@ class RoomIdBot(Bot):
             self.url = self.getWebsiteURL()
             return True
         return False
+
+    def _status_check(self):
+        # Every poll is a chance to resolve a missing room id, regardless of
+        # whether the concrete site's getStatus knows to do so.
+        if self.room_id is None:
+            self._ensure_room_id()
+        sc = self.getStatus()
+        if sc == Status.NOTEXIST and self.room_id is None:
+            # Without a resolved identity, "not found" usually just means
+            # "not resolved yet" (e.g. a room number queried as a user name);
+            # never let it flip running off.
+            return Status.UNKNOWN
+        return sc
+
+    def _should_do_single_status_check(self, now):
+        # An unresolved room id strands bulk-update streamers: the batch call
+        # skips entries without a room id, so without this fallback a state
+        # like OFFLINE/LONG_OFFLINE would never poll (and never resolve)
+        # again. Throttled like the UNKNOWN fallback.
+        if self.bulk_update and self.room_id is None and self.sc != Status.NOTRUNNING:
+            last = self._last_unknown_fallback_ts
+            return last is None or (now - last) >= self.min_unknown_fallback_interval
+        return super()._should_do_single_status_check(now)
+
+    def _should_throttle_fallback(self):
+        return super()._should_throttle_fallback() or self.room_id is None
 
     @classmethod
     def fromConfig(cls, data):

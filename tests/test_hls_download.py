@@ -30,6 +30,7 @@ class FakeBot:
         self.stopDownload = None
         self.recording_bytes = 0
         self.recording_segments = 0
+        self.quitting = False
 
     def debug(self, *a, **kw):
         pass
@@ -50,13 +51,14 @@ class FakeFFmpeg:
             f.write(b'y' * 2048)
 
 
-def _run(monkeypatch, tmp_path, handler):
+def _run(monkeypatch, tmp_path, handler, quitting=False, ffmpeg=FakeFFmpeg):
     session = FakeSession(handler)
     monkeypatch.setattr(hls_mod.requests, 'Session', lambda: session)
     monkeypatch.setattr(hls_mod, 'sleep', lambda *_: None)
-    monkeypatch.setattr(hls_mod, 'FFmpeg', FakeFFmpeg)
+    monkeypatch.setattr(hls_mod, 'FFmpeg', ffmpeg)
     monkeypatch.setattr(hls_mod, 'remove_undersized_videos', lambda paths, logger: None)
     bot = FakeBot()
+    bot.quitting = quitting
     filename = str(tmp_path / 'alice-20260823-120000.mp4')
     result = hls_mod.getVideoNativeHLS(bot, 'http://example.invalid/playlist.m3u8', filename)
     return session, result
@@ -84,6 +86,27 @@ def test_malformed_playlist_is_retried(monkeypatch, tmp_path):
     session, result = _run(monkeypatch, tmp_path, boom)
     assert session.playlist_fetches >= 15
     assert result is False
+
+
+def test_shutdown_skips_remux_and_keeps_temp_file(monkeypatch, tmp_path):
+    # During process shutdown a size-proportional remux could outlive
+    # CleanExit's deadline and get the process force-killed mid-remux; the
+    # temp file is left for the startup repair chain instead.
+    remux_calls = []
+
+    class RecordingFFmpeg(FakeFFmpeg):
+        def run(self, stdout=None, stderr=None):
+            remux_calls.append(1)
+            super().run(stdout=stdout, stderr=stderr)
+
+    playlist = (b'#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2.0,\nseg-1.ts\n')
+    session, result = _run(monkeypatch, tmp_path,
+                           lambda n: FakeResponse(200, playlist),
+                           quitting=True, ffmpeg=RecordingFFmpeg)
+    assert result is True
+    assert remux_calls == []
+    tmp_files = [p for p in tmp_path.iterdir() if '.tmp.' in p.name]
+    assert len(tmp_files) == 1, 'temp file must be left for startup repair'
 
 
 def test_frozen_playlist_hits_the_stall_limit(monkeypatch, tmp_path):

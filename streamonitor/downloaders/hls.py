@@ -173,6 +173,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         os.remove(tmpfilename)
         return False
 
+    if getattr(self, 'quitting', False):
+        # Process shutdown: a full remux is proportional to the recording size
+        # and can outlive the shutdown deadline (CleanExit would then force the
+        # process down mid-remux). Leave the temp file to the startup repair
+        # chain instead — it handles exactly these leftovers.
+        self.logger.info('Shutdown in progress; leaving temp file for startup repair')
+        return True
+
     # Post-processing
     stdout = subprocess.DEVNULL
     stderr = subprocess.DEVNULL

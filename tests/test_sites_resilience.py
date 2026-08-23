@@ -151,3 +151,95 @@ def test_initial_data_failure_backs_off_then_retries(monkeypatch):
     monkeypatch.setattr(StripChat, '_INIT_RETRY_INTERVAL', 0)
     StripChat._ensure_initial_data()
     assert calls == [1, 1]
+
+
+# --- RoomIdBot: retry works for every site, not just the ones that opted in ---
+
+class _RoomProbe(__import__('streamonitor.bot', fromlist=['RoomIdBot']).RoomIdBot):
+    site = 'RoomProbe'
+    siteslug = 'RPRB'
+    bulk_update = True
+
+    room_lookup_results = None   # list to pop from, or exception instances
+    username_lookup_results = None
+    status_result = Status.NOTEXIST
+
+    def getRoomIdFromUsername(self, username):
+        if not self.room_lookup_results:
+            return None
+        item = self.room_lookup_results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def getUsernameFromRoomId(self, room_id):
+        if not self.username_lookup_results:
+            return None
+        item = self.username_lookup_results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def getStatus(self):
+        return self.status_result
+
+
+def _room_probe(**overrides):
+    bot = _RoomProbe.__new__(_RoomProbe)
+    bot.room_lookup_results = list(overrides.pop('room_lookups', []))
+    bot.username_lookup_results = list(overrides.pop('username_lookups', []))
+    from streamonitor.bot import RoomIdBot
+    RoomIdBot.__init__(bot, overrides.pop('username', 'somebody'))
+    for key, value in overrides.items():
+        setattr(bot, key, value)
+    return bot
+
+
+def test_status_check_filters_notexist_while_room_id_unresolved():
+    # Sites whose getStatus answers NOTEXIST for an unresolved identity
+    # (Flirt4Free, FanslyLive with a numeric name) must not self-stop: without
+    # a room id, "not found" mostly means "not resolved yet".
+    bot = _room_probe(room_lookups=[requests.exceptions.ConnectionError('boom')])
+    assert bot.room_id is None
+    bot.status_result = Status.NOTEXIST
+    assert bot._status_check() == Status.UNKNOWN
+
+
+def test_status_check_retries_resolution_every_poll():
+    bot = _room_probe(room_lookups=[requests.exceptions.ConnectionError('boom')])
+    assert bot.room_id is None
+    bot.room_lookup_results = ['room-77']
+    bot.status_result = Status.OFFLINE
+    assert bot._status_check() == Status.OFFLINE
+    assert bot.room_id == 'room-77'
+
+
+def test_bulk_streamer_with_unresolved_room_id_keeps_polling():
+    # Bulk updates skip entries without a room id; once the status left
+    # UNKNOWN (e.g. OFFLINE -> LONG_OFFLINE) the fallback single check used to
+    # stop forever, so the id was never resolved again.
+    import time as _time
+    bot = _room_probe(room_lookups=[requests.exceptions.ConnectionError('boom')])
+    bot.sc = Status.LONG_OFFLINE
+    assert bot._should_do_single_status_check(_time.time()) is True
+    # Throttled after a check has just run.
+    bot._last_unknown_fallback_ts = _time.time()
+    assert bot._should_do_single_status_check(_time.time()) is False
+    # Resolved: back to the plain bulk behavior (no single checks).
+    bot.room_id = 'r1'
+    bot._last_unknown_fallback_ts = None
+    assert bot._should_do_single_status_check(_time.time()) is False
+
+
+def test_numeric_username_retries_room_id_interpretation():
+    # A numeric name may be a room id; after a startup hiccup the retry path
+    # must try that interpretation again instead of querying the number as a
+    # user name forever.
+    bot = _room_probe(
+        username='12345',
+        username_lookups=[requests.exceptions.ConnectionError('boom')])
+    assert bot.room_id is None
+    bot.username_lookup_results = ['real_name']
+    assert bot._ensure_room_id() is True
+    assert bot.room_id == '12345'
+    assert bot.username == 'real_name'
