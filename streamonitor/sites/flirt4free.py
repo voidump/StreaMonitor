@@ -46,13 +46,15 @@ class Flirt4Free(RoomIdBot):
         return self.getWantedResolutionPlaylist("https:" + self.lastInfo['data']['hls'][0]['url'])
 
     def getStatus(self):
-        r = self.session.get(f'https://www.flirt4free.com/ws/chat/get-stream-urls.php?model_id={self.room_id}').json()
+        r = self._fetch_json('GET', f'https://www.flirt4free.com/ws/chat/get-stream-urls.php?model_id={self.room_id}')
+        if r is None or not isinstance(r, dict) or 'code' not in r:
+            return Status.UNKNOWN
         self.lastInfo = r
         if r['code'] == 44:
             return Status.NOTEXIST
         if r['code'] == 0:
-            s = self.session.get(f'https://www.flirt4free.com/ws/rooms/chat-room-interface.php?a=login_room&model_id={self.room_id}').json()
-            if 'config' not in s:
+            s = self._fetch_json('GET', f'https://www.flirt4free.com/ws/rooms/chat-room-interface.php?a=login_room&model_id={self.room_id}')
+            if s is None or 'config' not in s:
                 return Status.UNKNOWN
             status = s['config'].get('room', {}).get('status')
             if status == 'O':

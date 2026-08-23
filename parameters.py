@@ -485,6 +485,86 @@ def set_webserver_password(value):
     WEBSERVER_PASSWORD = value
 
 
+# The stored credential is either a werkzeug salted hash (normal case; written
+# by the change-password API and the startup migration) or legacy plaintext
+# (a hand-edited .env / pre-hash setup, migrated to a hash at startup).
+_PASSWORD_HASH_PREFIXES = ('pbkdf2:', 'scrypt:')
+
+
+def webserver_password_is_hashed(value=None):
+    value = WEBSERVER_PASSWORD if value is None else value
+    # Prefix alone is not enough: a hand-written plaintext like
+    # "pbkdf2:mypassword" would be misdetected, skip migration and then never
+    # match through check_password_hash — a silent lockout. Require the full
+    # werkzeug shape (method$salt$hash).
+    return (isinstance(value, str)
+            and value.startswith(_PASSWORD_HASH_PREFIXES)
+            and value.count('$') >= 2)
+
+
+def verify_password_hash(hashed_value, plaintext):
+    from werkzeug.security import check_password_hash
+    try:
+        return check_password_hash(hashed_value, plaintext)
+    except Exception:
+        return False
+
+
+def read_persisted_env_value(key):
+    # Read a value straight from the data-dir .env, bypassing the normal
+    # loading order where OS environment variables take precedence. Needed by
+    # the startup migration: a compose-style STRMNTR_PASSWORD env var keeps
+    # re-supplying the plaintext on every boot, and without looking at what a
+    # previous run already persisted the migration would re-hash with a fresh
+    # salt each time (changing the session generation -> all sessions revoked
+    # on every restart).
+    env_path = data_path('.env')
+    try:
+        with open(env_path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(key + '='):
+            value = stripped[len(key) + 1:]
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                value = value[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+            return value
+    return None
+
+
+def hash_webserver_password(plaintext):
+    from werkzeug.security import generate_password_hash
+    return generate_password_hash(plaintext)
+
+
+def check_webserver_password(candidate):
+    # Verify a login attempt against the stored credential. An empty stored
+    # value means auth is disabled — callers gate on that before ever getting
+    # here, so it never matches. Legacy plaintext is compared constant-time.
+    stored = get_webserver_password()
+    if not isinstance(candidate, str) or stored == '':
+        return False
+    if webserver_password_is_hashed(stored):
+        from werkzeug.security import check_password_hash
+        try:
+            return check_password_hash(stored, candidate)
+        except Exception:
+            return False
+    import hmac
+    return hmac.compare_digest(candidate.encode('utf-8'), stored.encode('utf-8'))
+
+
+def webserver_auth_generation():
+    # Fingerprint of the stored credential, kept inside each session cookie:
+    # changing the password changes the generation, which invalidates every
+    # session that doesn't carry the new value (revocation without a session
+    # store). Not a secret — knowing it doesn't help without the signing key.
+    import hashlib
+    return hashlib.sha256(WEBSERVER_PASSWORD.encode('utf-8')).hexdigest()[:8]
+
+
 def get_webserver_username():
     return WEBSERVER_USERNAME
 

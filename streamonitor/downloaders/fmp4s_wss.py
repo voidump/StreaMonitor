@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 from threading import Thread
+from time import sleep
 from websocket import create_connection, WebSocketConnectionClosedException, WebSocketException
 from contextlib import closing
 from ffmpy import FFmpeg, FFRuntimeError
@@ -28,6 +29,9 @@ def getVideoWSSVR(self, url, filename):
 
     def execute():
         nonlocal error
+        consecutive_failures = 0
+        max_consecutive_failures = 15
+        total_bytes = 0
         with open(tmpfilename, 'wb') as outfile:
             while not self.stopDownloadFlag:
                 try:
@@ -41,25 +45,44 @@ def getVideoWSSVR(self, url, filename):
                                     if tj['url'] == 'stream/qual':
                                         conn.send('{"quality":"test","url":"stream/play","version":"0.0.1"}')
                                         debug_('Connection opened')
+                                        consecutive_failures = 0
                                         break
                                 if 'message' in tj:
                                     if tj['message'] == 'ping':
                                         debug_('Server is not ready or there was a change')
                                         error = True
                                         return
-                            except:
+                            except Exception:
                                 debug_('Failed to open the connection')
                                 error = True
                                 return
 
                         while not self.stopDownloadFlag:
-                            outfile.write(conn.recv())
+                            chunk = conn.recv()
+                            outfile.write(chunk)
+                            if isinstance(chunk, (bytes, bytearray)):
+                                total_bytes += len(chunk)
+                                # Live size for the list/card UI, same as the
+                                # other downloaders; without it VR recordings
+                                # showed 0 B/s for their whole duration.
+                                self.update_recording_progress(total_bytes)
                 except WebSocketConnectionClosedException:
                     debug_('WebSocket connection closed - try to continue')
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        self.logger.warning(
+                            f'Stopping: {consecutive_failures} consecutive reconnects')
+                        return
+                    sleep(2)  # backoff: an instantly-closing server was hammered in a tight loop
                     continue
-                except WebSocketException as wex:
+                except (WebSocketException, OSError) as wex:
+                    # OSError covers DNS failures / ECONNREFUSED from
+                    # create_connection, which used to escape and kill the
+                    # thread with error still False (the empty tmp then went
+                    # through remux as if the recording had succeeded).
                     debug_('Error when downloading')
                     debug_(wex)
+                    self.logger.warning(f'WSS download error: {wex}')
                     error = True
                     return
 

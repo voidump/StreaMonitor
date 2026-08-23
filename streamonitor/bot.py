@@ -148,6 +148,32 @@ class Bot(Thread):
     def getStatus(self):
         return Status.UNKNOWN
 
+    def _fetch_json(self, method, url, **kwargs):
+        """Unified request → status check → JSON parse for site adapters.
+
+        Returns the parsed body on HTTP 200, else None (transport error,
+        non-200, unparseable body — each logged). self._last_fetch_status
+        carries the HTTP status code (None on transport error) for adapters
+        that map specific codes (429 -> RATELIMIT, Streamate's code map).
+        Adapters map None to Status.UNKNOWN, so a transient failure never
+        crashes the poll loop or gets mislabeled as NOTEXIST/RATELIMIT.
+        """
+        self._last_fetch_status = None
+        try:
+            r = self.session.request(method, url, **kwargs)
+        except Exception as e:
+            self.logger.warning(f'{method} {url} failed: {e}')
+            return None
+        self._last_fetch_status = r.status_code
+        if r.status_code != 200:
+            self.logger.debug(f'{method} {url} -> HTTP {r.status_code}')
+            return None
+        try:
+            return r.json()
+        except Exception as e:
+            self.logger.warning(f'{method} {url}: unparseable JSON: {e}')
+            return None
+
     def log(self, message):
         self.logger.info(message)
 

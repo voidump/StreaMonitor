@@ -24,9 +24,9 @@ from .api_v2 import register_api_v2
 # The Flask secret key is persisted here so session cookies (and therefore
 # logins) stay valid across restarts.
 SESSION_SECRET_FILE = parameters.data_path('.session_secret')
-# Sessions are permanent and slide forward on every request, so a login lasts
-# as long as the browser keeps the cookie.
-SESSION_LIFETIME_DAYS = 365
+# Sessions are permanent and slide forward on every request, so an ACTIVE user
+# is never logged out; 30 days only expires cookies that stopped being used.
+SESSION_LIFETIME_DAYS = 30
 # Per-IP login failure lockout. A per-request sleep is no deterrent when every
 # request gets its own thread (it is a cheap DoS instead), so failures are
 # counted per source IP and the IP is locked out with exponential backoff.
@@ -96,17 +96,15 @@ class HTTPManager(Manager):
                 return True
             if not isinstance(username, str) or not isinstance(password, str):
                 return False
-            # Both halves go through compare_digest and both are always
-            # evaluated, so a wrong user name is not distinguishable from a
-            # wrong password by timing. Compared as bytes: the str form of
-            # compare_digest raises TypeError on non-ASCII input, which used
-            # to turn every login into a 500 once a non-ASCII password was set.
+            # Both halves are always evaluated, so a wrong user name is not
+            # distinguishable from a wrong password by timing. Compared as
+            # bytes: compare_digest on str raises TypeError for non-ASCII.
+            # The password check handles both the hashed credential (normal)
+            # and legacy plaintext (migrated at startup).
             user_ok = compare_digest(
                 username.encode('utf-8'),
                 parameters.get_webserver_username().encode('utf-8'))
-            password_ok = compare_digest(
-                password.encode('utf-8'),
-                parameters.get_webserver_password().encode('utf-8'))
+            password_ok = parameters.check_webserver_password(password)
             return user_ok and password_ok
 
         # Per-app (per-process) login failure state, keyed by source IP.
@@ -164,7 +162,10 @@ class HTTPManager(Manager):
         def authenticated():
             if not password_enabled():
                 return True
-            if flask_session.get('authenticated') is True:
+            # A session is only valid for the credential generation it was
+            # issued under: changing the password revokes every other session.
+            if (flask_session.get('authenticated') is True
+                    and flask_session.get('auth_gen') == parameters.webserver_auth_generation()):
                 return True
             # Basic Auth stays supported for scripts/curl, but no
             # WWW-Authenticate header is ever returned so browsers do not show
@@ -206,8 +207,16 @@ class HTTPManager(Manager):
             if not password_enabled():
                 return redirect('/')
             if request.method == 'GET':
-                if flask_session.get('authenticated') is True:
+                # Same full check as authenticated(): a session whose auth_gen
+                # no longer matches (revoked by a password change, or issued
+                # before generations existed) must land on the login page —
+                # checking only the authenticated flag here while / checks the
+                # generation bounced such sessions between / and /login in an
+                # infinite redirect loop.
+                if authenticated() and flask_session.get('authenticated') is True:
                     return redirect('/')
+                if flask_session.get('authenticated') is True:
+                    flask_session.clear()  # revoked session: drop it cleanly
                 return send_from_directory(webui_dir, 'login.html')
             data = request.get_json(silent=True) or {}
             password = data.get('password')
@@ -224,12 +233,15 @@ class HTTPManager(Manager):
             if _login_locked(ip):
                 if request.is_json:
                     return jsonify({'error': 'too_many_attempts'}), 429
-                return redirect('/login?error=1')
+                # Distinct error code so the login page can tell the user to
+                # wait instead of claiming the password was wrong.
+                return redirect('/login?error=locked')
             if check_auth(username if isinstance(username, str) else '',
                           password if isinstance(password, str) else ''):
                 _clear_login_failures(ip)
                 flask_session.permanent = True
                 flask_session['authenticated'] = True
+                flask_session['auth_gen'] = parameters.webserver_auth_generation()
                 if request.is_json:
                     return jsonify({'ok': True})
                 return redirect('/')
@@ -286,36 +298,60 @@ class HTTPManager(Manager):
 
         return app
 
-    def _harden_default_password(self):
-        # Factory default admin/admin on a reachable port is an open door (the
-        # shipped docker-compose binds 0.0.0.0). Replace it with a generated
-        # password on startup and print it; an explicitly configured password
-        # (anything but the literal default) is left alone.
-        if parameters.get_webserver_password() != 'admin':
-            return None
-        generated = token_urlsafe(9)
-        parameters.set_webserver_password(generated)
-        persisted = True
-        try:
-            parameters.persist_webserver_password(generated)
-        except Exception as e:
-            persisted = False
-            self.logger.warning(f'Could not persist the generated password: {e}')
-        self.logger.warning('The factory-default web password "admin" is disabled.')
-        self.logger.warning(
-            f'Generated web login -> user: {parameters.get_webserver_username()}'
-            f'  password: {generated}')
-        if persisted:
-            self.logger.warning('It is saved to .env; change it any time in Settings.')
-        else:
+    def _harden_credentials(self):
+        # Two startup upgrades of the stored credential:
+        # 1) The factory default admin/admin on a reachable port is an open
+        #    door (the shipped docker-compose binds 0.0.0.0): replace it with
+        #    a generated password and print it once.
+        # 2) A legacy plaintext password (hand-edited .env, pre-hash setup) is
+        #    migrated to a salted hash so .env no longer holds the secret.
+        stored = parameters.get_webserver_password()
+        if stored == 'admin':
+            generated = token_urlsafe(9)
+            parameters.set_webserver_password(
+                parameters.hash_webserver_password(generated))
+            persisted = True
+            try:
+                parameters.persist_webserver_password(
+                    parameters.get_webserver_password())
+            except Exception as e:
+                persisted = False
+                self.logger.warning(f'Could not persist the generated password: {e}')
+            self.logger.warning('The factory-default web password "admin" is disabled.')
             self.logger.warning(
-                'It could NOT be saved (data dir not writable?): this password '
-                'is valid for this run only and a new one will be generated on '
-                'the next start.')
-        return generated
+                f'Generated web login -> user: {parameters.get_webserver_username()}'
+                f'  password: {generated}')
+            if persisted:
+                self.logger.warning('It is saved (hashed) to .env; change it any time in Settings.')
+            else:
+                self.logger.warning(
+                    'It could NOT be saved (data dir not writable?): this password '
+                    'is valid for this run only and a new one will be generated on '
+                    'the next start.')
+            return generated
+        if stored and not parameters.webserver_password_is_hashed(stored):
+            # Idempotency: with the password supplied as an OS env var (the
+            # compose/README way) the plaintext re-appears on every boot even
+            # though a previous run already persisted a hash. Re-adopt that
+            # hash instead of re-hashing with a fresh salt — a new salt would
+            # change the session generation and revoke every login on every
+            # restart.
+            persisted = parameters.read_persisted_env_value('STRMNTR_PASSWORD')
+            if (persisted and parameters.webserver_password_is_hashed(persisted)
+                    and parameters.verify_password_hash(persisted, stored)):
+                parameters.set_webserver_password(persisted)
+                return None
+            hashed = parameters.hash_webserver_password(stored)
+            parameters.set_webserver_password(hashed)
+            try:
+                parameters.persist_webserver_password(hashed)
+                self.logger.info('Migrated the stored web password to a salted hash.')
+            except Exception as e:
+                self.logger.warning(f'Could not persist the hashed password: {e}')
+        return None
 
     def run(self):
-        self._harden_default_password()
+        self._harden_credentials()
         app = self.create_app()
         try:
             from waitress import serve

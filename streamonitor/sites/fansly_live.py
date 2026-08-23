@@ -32,16 +32,16 @@ class FanslyLive(RoomIdBot):
 
     def getStatus(self):
         if self.room_id is None:
-            self.room_id = self.getRoomIdFromUsername(self.username)
-        if self.room_id is None:
-            return Status.NOTEXIST
+            if not self._ensure_room_id():
+                # Transient lookup failure -> retry next poll; a clean miss is
+                # not proof of nonexistence (numeric-name lookups especially).
+                return Status.UNKNOWN if self._room_lookup_error else Status.OFFLINE
 
-        r = self.session.get(f'https://apiv3.fansly.com/api/v1/streaming/channel/{self.room_id}?ngsw-bypass=true')
-        data = r.json()
-        if data.get('success') is not True:
+        data = self._fetch_json('GET', f'https://apiv3.fansly.com/api/v1/streaming/channel/{self.room_id}?ngsw-bypass=true')
+        if data is None or data.get('success') is not True:
             return Status.UNKNOWN
 
-        self.lastInfo = r.json().get('response')
+        self.lastInfo = data.get('response')
 
         if not self.lastInfo:
             return Status.NOTEXIST

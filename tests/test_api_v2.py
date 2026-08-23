@@ -390,7 +390,7 @@ def test_api_history_avatar_no_cache_404(tmp_path, monkeypatch):
 def test_api_history_avatar_serves_cached_image(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config.save_history([{"username": "alice", "site": "FakeSite", "deletedAt": 1}])
-    cache_path = api_v2._avatar_cache_path("FakeSite", "alice")
+    cache_path = branding._avatar_cache_path("FakeSite", "alice")
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     with open(cache_path, "wb") as f:
         f.write(_PNG_BYTES)
@@ -407,7 +407,7 @@ def test_purge_delete_files_preserves_avatar_cache(tmp_path, monkeypatch):
     # remove its cached avatar, so the history page can still show the real face.
     monkeypatch.chdir(tmp_path)
     streamer = make_streamer()
-    cache_path = api_v2._avatar_cache_path(streamer.site, streamer.username)
+    cache_path = branding._avatar_cache_path(streamer.site, streamer.username)
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     with open(cache_path, "wb") as f:
         f.write(_PNG_BYTES)
@@ -484,7 +484,7 @@ def test_video_thumb_recycled_file_is_found(tmp_path, monkeypatch):
     # The thumb endpoint's disk-scan fallback must see recycled files (the
     # cached file list includes the recycle folder), so the response is not
     # a "Video not found" 404. Thumb generation itself is stubbed out.
-    import streamonitor.managers.httpmanager.api_v2 as api_v2_mod
+    from streamonitor.managers.httpmanager.api_v2 import videos_api as api_v2_mod
     monkeypatch.chdir(tmp_path)
     streamer = make_streamer()
     _make_recycled_video(streamer)
@@ -734,6 +734,7 @@ def test_streamers_list_last_recorded_ts_null_when_no_files(tmp_path, monkeypatc
 # --- live view (watch-while-recording) endpoint (L1) ---
 
 import streamonitor.managers.httpmanager.api_v2 as api_v2
+from streamonitor.managers.httpmanager.api_v2 import (branding, live, media_cache, settings_api, streamers_api, videos_api)
 
 
 def _start_recording(streamer, recording_filename="alice-20260707-120000.mp4",
@@ -820,9 +821,9 @@ def test_live_streams_ts_aligned_to_packet(tmp_path, monkeypatch):
     _start_recording(streamer, ts_data=ts_data)
     # Force a tail backoff that lands mid-packet so alignment is actually tested,
     # and stop tailing after the first empty read.
-    monkeypatch.setattr(api_v2, "_LIVE_TAIL_BYTES", 1000)
-    monkeypatch.setattr(api_v2, "_LIVE_MAX_IDLE_ITERS", 1)
-    monkeypatch.setattr(api_v2, "_LIVE_POLL_INTERVAL", 0)
+    monkeypatch.setattr(live, "_LIVE_TAIL_BYTES", 1000)
+    monkeypatch.setattr(live, "_LIVE_MAX_IDLE_ITERS", 1)
+    monkeypatch.setattr(live, "_LIVE_POLL_INTERVAL", 0)
 
     manager = HTTPManager([streamer])
     response = _client(manager).get("/api/v2/streamers/FakeSite/alice/live", headers=AUTH)
@@ -862,9 +863,9 @@ def test_live_streams_fmp4_prepends_init_and_tails(tmp_path, monkeypatch):
     streamer = make_streamer()
     _start_recording(streamer, ts_data=data)
     # Small tail so early fragments are trimmed and backoff is exercised.
-    monkeypatch.setattr(api_v2, "_LIVE_TAIL_BYTES", 200)
-    monkeypatch.setattr(api_v2, "_LIVE_MAX_IDLE_ITERS", 1)
-    monkeypatch.setattr(api_v2, "_LIVE_POLL_INTERVAL", 0)
+    monkeypatch.setattr(live, "_LIVE_TAIL_BYTES", 200)
+    monkeypatch.setattr(live, "_LIVE_MAX_IDLE_ITERS", 1)
+    monkeypatch.setattr(live, "_LIVE_POLL_INTERVAL", 0)
 
     manager = HTTPManager([streamer])
     response = _client(manager).get("/api/v2/streamers/FakeSite/alice/live", headers=AUTH)
@@ -1018,7 +1019,7 @@ def test_get_nsfw_broken_runtime_degrades(tmp_path, monkeypatch, preserve_nsfw):
     monkeypatch.chdir(tmp_path)
     def boom(name):
         raise ImportError(f"broken installation: {name}")
-    monkeypatch.setattr(api_v2.importlib.util, "find_spec", boom)
+    monkeypatch.setattr(settings_api.importlib.util, "find_spec", boom)
     manager = HTTPManager([])
     response = _client(manager).get("/api/v2/settings/nsfw", headers=AUTH)
     assert response.status_code == 200
@@ -1512,7 +1513,7 @@ def test_detail_includes_duration_field(tmp_path, monkeypatch):
     # file reports null immediately and is queued for the background worker.
     monkeypatch.chdir(tmp_path)
     _reset_durations_cache(monkeypatch)
-    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: None)
+    monkeypatch.setattr(media_cache, "_probe_duration", lambda p: None)
     streamer, _ = _make_streamer_with_video()
     manager = HTTPManager([streamer])
     response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
@@ -1520,7 +1521,7 @@ def test_detail_includes_duration_field(tmp_path, monkeypatch):
     video = json.loads(response.data)["videos"][0]
     assert "duration" in video
     assert video["duration"] is None
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
 
 
 def test_detail_recording_video_has_null_duration(tmp_path, monkeypatch):
@@ -1545,7 +1546,7 @@ def test_detail_classification_null_and_not_in_recycle_by_default(tmp_path, monk
     video = json.loads(response.data)["videos"][0]
     assert video["classification"] is None
     assert video["inRecycle"] is False
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
 
 
 def test_detail_classification_comes_from_media_index(tmp_path, monkeypatch):
@@ -1560,7 +1561,7 @@ def test_detail_classification_comes_from_media_index(tmp_path, monkeypatch):
     video = json.loads(response.data)["videos"][0]
     assert video["classification"] == "adult"
     assert video["inRecycle"] is False
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
 
 
 def test_detail_flags_video_in_recycle_bin(tmp_path, monkeypatch):
@@ -1574,7 +1575,7 @@ def test_detail_flags_video_in_recycle_bin(tmp_path, monkeypatch):
     fpath.write_bytes(b"0" * 1000)
     rows = [{"filename": "alice-20260706-120000.mp4", "abs_path": str(fpath),
              "size": 1000, "mtime": 1_700_000_000, "duration": 12.0}]
-    monkeypatch.setattr(api_v2.media_index, "list_videos", lambda site, user: rows)
+    monkeypatch.setattr(streamers_api.media_index, "list_videos", lambda site, user: rows)
     manager = HTTPManager([streamer])
     response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     video = json.loads(response.data)["videos"][0]
@@ -1599,7 +1600,7 @@ def test_video_thumb_real_video_generates_and_caches(tmp_path, monkeypatch):
     assert response.headers["Cache-Control"] == "private, max-age=31536000, immutable"
 
     video = streamer.video_files[0]
-    thumb_path = api_v2._thumb_cache_path(video.abs_path, int(video._stat.st_mtime))
+    thumb_path = media_cache._thumb_cache_path(video.abs_path, int(video._stat.st_mtime))
     assert os.path.exists(thumb_path)
     first_mtime = os.path.getmtime(thumb_path)
 
@@ -1621,7 +1622,7 @@ def test_detail_duration_real_video(tmp_path, monkeypatch):
     # First read is cache-only (null) and queues a background probe.
     first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(first.data)["videos"][0]["duration"] is None
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     # After the worker probes, the warm cache serves the real duration.
     response = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     video = json.loads(response.data)["videos"][0]
@@ -1631,26 +1632,26 @@ def test_detail_duration_real_video(tmp_path, monkeypatch):
 
 def _reset_durations_cache(monkeypatch):
     # Drop the in-memory cache so a test starts cold (also simulates a restart).
-    monkeypatch.setattr(api_v2, "_durations_cache", None)
-    monkeypatch.setattr(api_v2, "_durations_cache_path", None)
+    monkeypatch.setattr(media_cache, "_durations_cache", None)
+    monkeypatch.setattr(media_cache, "_durations_cache_path", None)
 
 
 def test_duration_cache_persists_to_consolidated_json(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _reset_durations_cache(monkeypatch)
     calls = []
-    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p) or 123.0))
+    monkeypatch.setattr(media_cache, "_probe_duration", lambda p: (calls.append(p) or 123.0))
     streamer, _ = _make_streamer_with_video()
     manager = HTTPManager([streamer])
     # Reads are non-blocking: the first request returns null and queues a probe.
     first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(first.data)["videos"][0]["duration"] is None
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     assert len(calls) == 1
     # The probed duration is now served from the warm cache and persisted to disk.
     second = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(second.data)["videos"][0]["duration"] == 123.0
-    dpath = api_v2._durations_path()
+    dpath = media_cache._durations_path()
     assert os.path.exists(dpath)
     with open(dpath) as f:
         stored = json.load(f)
@@ -1661,10 +1662,10 @@ def test_duration_cache_survives_restart_without_reprobe(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _reset_durations_cache(monkeypatch)
     calls = []
-    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p) or 42.0))
+    monkeypatch.setattr(media_cache, "_probe_duration", lambda p: (calls.append(p) or 42.0))
     streamer, _ = _make_streamer_with_video()
     _client(HTTPManager([streamer])).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     assert len(calls) == 1
     # Simulate a service restart: forget the in-memory cache, keep durations.json.
     _reset_durations_cache(monkeypatch)
@@ -1672,7 +1673,7 @@ def test_duration_cache_survives_restart_without_reprobe(tmp_path, monkeypatch):
     resp = _client(HTTPManager([streamer2])).get(
         "/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(resp.data)["videos"][0]["duration"] == 42.0
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     assert len(calls) == 1   # cache hit from disk, no second ffprobe
 
 
@@ -1680,25 +1681,25 @@ def test_duration_cache_caches_failed_probe_as_null(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _reset_durations_cache(monkeypatch)
     calls = []
-    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: (calls.append(p), None)[1])
+    monkeypatch.setattr(media_cache, "_probe_duration", lambda p: (calls.append(p), None)[1])
     streamer, _ = _make_streamer_with_video()
     _client(HTTPManager([streamer])).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     assert len(calls) == 1
     _reset_durations_cache(monkeypatch)
     resp = _client(HTTPManager([streamer])).get(
         "/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(resp.data)["videos"][0]["duration"] is None
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     assert len(calls) == 1   # a failed probe is cached and never retried
 
 
 def test_duration_cache_tolerates_corrupt_json(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _reset_durations_cache(monkeypatch)
-    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: 7.0)
-    os.makedirs(api_v2._thumbs_dir(), exist_ok=True)
-    with open(api_v2._durations_path(), "w") as f:
+    monkeypatch.setattr(media_cache, "_probe_duration", lambda p: 7.0)
+    os.makedirs(media_cache._thumbs_dir(), exist_ok=True)
+    with open(media_cache._durations_path(), "w") as f:
         f.write("{ not valid json ")
     streamer, _ = _make_streamer_with_video()
     manager = HTTPManager([streamer])
@@ -1707,7 +1708,7 @@ def test_duration_cache_tolerates_corrupt_json(tmp_path, monkeypatch):
     first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert first.status_code == 200
     assert json.loads(first.data)["videos"][0]["duration"] is None
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     resp = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(resp.data)["videos"][0]["duration"] == 7.0
 
@@ -1717,12 +1718,12 @@ def test_prune_durations_removes_only_stale_keys(tmp_path, monkeypatch):
     # dropped, live keys survive, and the atomic rewrite reuses the same file.
     monkeypatch.chdir(tmp_path)
     _reset_durations_cache(monkeypatch)
-    os.makedirs(api_v2._thumbs_dir(), exist_ok=True)
-    with open(api_v2._durations_path(), "w") as f:
+    os.makedirs(media_cache._thumbs_dir(), exist_ok=True)
+    with open(media_cache._durations_path(), "w") as f:
         json.dump({"keep": 10.0, "stale": 20.0}, f)
-    removed = api_v2._prune_durations({"keep"})
+    removed = media_cache._prune_durations({"keep"})
     assert removed == 1
-    with open(api_v2._durations_path()) as f:
+    with open(media_cache._durations_path()) as f:
         assert json.load(f) == {"keep": 10.0}
 
 
@@ -1732,30 +1733,30 @@ def test_duration_cleanup_drops_stale_entry_on_detail(tmp_path, monkeypatch):
     # so the gated sweep fires for a tiny cache.
     monkeypatch.chdir(tmp_path)
     _reset_durations_cache(monkeypatch)
-    monkeypatch.setattr(api_v2, "_probe_duration", lambda p: 55.0)
-    monkeypatch.setattr(api_v2, "_DURATIONS_MAX_KEYS", 0)
-    monkeypatch.setattr(api_v2, "_DURATIONS_CLEANUP_GROWTH", 0)
-    monkeypatch.setattr(api_v2, "_durations_last_sweep_size", 0)
+    monkeypatch.setattr(media_cache, "_probe_duration", lambda p: 55.0)
+    monkeypatch.setattr(media_cache, "_DURATIONS_MAX_KEYS", 0)
+    monkeypatch.setattr(media_cache, "_DURATIONS_CLEANUP_GROWTH", 0)
+    monkeypatch.setattr(media_cache, "_durations_last_sweep_size", 0)
     streamer, path = _make_streamer_with_video()
     manager = HTTPManager([streamer])
 
     _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
-    live_key = api_v2._cache_key(
+    live_key = media_cache._cache_key(
         streamer.video_files[0].abs_path, int(streamer.video_files[0]._stat.st_mtime))
     # The first request queued the probe; wait for the worker, then confirm value.
-    api_v2._probe_queue.join()
+    media_cache._probe_queue.join()
     first = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(first.data)["videos"][0]["duration"] == 55.0
 
     # Inject a stale key (no matching file) and force the next request to re-sweep.
     stale_key = "0" * 40
-    with api_v2._durations_lock:
-        api_v2._durations_cache[stale_key] = 99.0
-    monkeypatch.setattr(api_v2, "_durations_last_sweep_size", 0)
+    with media_cache._durations_lock:
+        media_cache._durations_cache[stale_key] = 99.0
+    monkeypatch.setattr(media_cache, "_durations_last_sweep_size", 0)
 
     second = _client(manager).get("/api/v2/streamers/FakeSite/alice", headers=AUTH)
     assert json.loads(second.data)["videos"][0]["duration"] == 55.0
-    with open(api_v2._durations_path()) as f:
+    with open(media_cache._durations_path()) as f:
         stored = json.load(f)
     assert stale_key not in stored
     assert stored.get(live_key) == 55.0
@@ -1774,20 +1775,20 @@ _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"0" * 32
 
 
 def test_avatar_extractor_stripchat():
-    assert api_v2._avatar_from_stripchat({"model": {"avatarUrl": "u1"}}) == "u1"
-    assert api_v2._avatar_from_stripchat({"model": {"previewUrl": "u2"}}) == "u2"
-    assert api_v2._avatar_from_stripchat({"model": {}}) is None
+    assert branding._avatar_from_stripchat({"model": {"avatarUrl": "u1"}}) == "u1"
+    assert branding._avatar_from_stripchat({"model": {"previewUrl": "u2"}}) == "u2"
+    assert branding._avatar_from_stripchat({"model": {}}) is None
 
 
 def test_avatar_extractor_chaturbate():
-    assert api_v2._avatar_from_chaturbate({"img": "cb"}) == "cb"
-    assert api_v2._avatar_from_chaturbate({}) is None
+    assert branding._avatar_from_chaturbate({"img": "cb"}) == "cb"
+    assert branding._avatar_from_chaturbate({}) is None
 
 
 def test_avatar_source_url_unknown_site_returns_none():
     streamer = make_streamer()  # FakeSite, siteslug "FS" — no extractor registered
     streamer.lastInfo = {"avatarUrl": "whatever"}
-    assert api_v2._avatar_source_url(streamer) is None
+    assert branding._avatar_source_url(streamer) is None
 
 
 def test_avatar_requires_auth(tmp_path, monkeypatch):
@@ -1822,7 +1823,7 @@ def test_avatar_downloads_then_serves_from_cache(tmp_path, monkeypatch):
     calls = []
     streamer.session.get = lambda url, **kw: (calls.append(url) or _FakeResp(_PNG_BYTES))
     # Register a temporary extractor for the fake site's slug.
-    monkeypatch.setitem(api_v2._AVATAR_EXTRACTORS, "FS", lambda info: info.get("avatarUrl"))
+    monkeypatch.setitem(branding._AVATAR_EXTRACTORS, "FS", lambda info: info.get("avatarUrl"))
     manager = HTTPManager([streamer])
     client = _client(manager)
 
@@ -1832,7 +1833,7 @@ def test_avatar_downloads_then_serves_from_cache(tmp_path, monkeypatch):
     assert first.data == _PNG_BYTES
     assert first.headers["Cache-Control"] == "private, max-age=3600"
     assert len(calls) == 1
-    cache_path = api_v2._avatar_cache_path(streamer.site, streamer.username)
+    cache_path = branding._avatar_cache_path(streamer.site, streamer.username)
     assert os.path.exists(cache_path)
 
     # Second request within TTL serves the cached file without re-downloading.
@@ -1847,7 +1848,7 @@ def test_avatar_offline_serves_stale_cache(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     streamer = make_streamer()
     streamer.lastInfo = {}
-    cache_path = api_v2._avatar_cache_path(streamer.site, streamer.username)
+    cache_path = branding._avatar_cache_path(streamer.site, streamer.username)
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     with open(cache_path, "wb") as f:
         f.write(_PNG_BYTES)
@@ -1877,7 +1878,7 @@ def test_site_favicon_unknown_site_404(tmp_path, monkeypatch):
 
 def test_site_favicon_fetch_failure_404(tmp_path, monkeypatch, fake_site):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(api_v2, "_fetch_favicon", lambda domain: None)
+    monkeypatch.setattr(branding, "_fetch_favicon", lambda domain: None)
     manager = HTTPManager([])
     response = _client(manager).get("/api/v2/sites/FS/favicon", headers=AUTH)
     assert response.status_code == 404
@@ -1892,7 +1893,7 @@ def test_site_favicon_fetches_and_caches(tmp_path, monkeypatch, fake_site):
         calls.append(domain)
         return _PNG_BYTES
 
-    monkeypatch.setattr(api_v2, "_fetch_favicon", fake_fetch)
+    monkeypatch.setattr(branding, "_fetch_favicon", fake_fetch)
     manager = HTTPManager([])
     client = _client(manager)
 
@@ -1903,7 +1904,7 @@ def test_site_favicon_fetches_and_caches(tmp_path, monkeypatch, fake_site):
     assert response.headers["Cache-Control"] == "private, max-age=86400"
     assert calls == ["fake"]
 
-    cache_path = api_v2._favicon_cache_path("FS")
+    cache_path = branding._favicon_cache_path("FS")
     assert os.path.exists(cache_path)
 
     # Second request must serve the cached file without fetching again.
@@ -2097,8 +2098,8 @@ def test_schedule_backfills_from_recordings(tmp_path, monkeypatch):
     # on the very first query, without any prior polling observation.
     monkeypatch.chdir(tmp_path)
     _reset_online_history(monkeypatch)
-    monkeypatch.setattr(api_v2, "_durations_cache", None)
-    monkeypatch.setattr(api_v2, "_durations_cache_path", None)
+    monkeypatch.setattr(media_cache, "_durations_cache", None)
+    monkeypatch.setattr(media_cache, "_durations_cache_path", None)
     now = 1_700_000_000.0
     monkeypatch.setattr(online_history, "datetime", _FrozenNow(now))
     streamer, path = _make_streamer_with_video("alice-20260706-120000.mp4")
@@ -2106,10 +2107,10 @@ def test_schedule_backfills_from_recordings(tmp_path, monkeypatch):
     os.utime(path, (now, now))
     streamer.cache_file_list()
     mtime = int(streamer.video_files[0]._stat.st_mtime)
-    with api_v2._durations_lock:
-        api_v2._load_durations_locked(api_v2._durations_path())
-        api_v2._durations_cache[
-            api_v2._cache_key(streamer.video_files[0].abs_path, mtime)] = 2 * _HOUR
+    with media_cache._durations_lock:
+        media_cache._load_durations_locked(media_cache._durations_path())
+        media_cache._durations_cache[
+            media_cache._cache_key(streamer.video_files[0].abs_path, mtime)] = 2 * _HOUR
     manager = HTTPManager([streamer])
     response = _client(manager).get(
         "/api/v2/streamers/FakeSite/alice/schedule", headers=AUTH)
@@ -2143,7 +2144,7 @@ def preserve_webserver_password(monkeypatch):
         parameters, "WEBSERVER_PASSWORD", parameters.WEBSERVER_PASSWORD)
     monkeypatch.setattr(
         parameters, "WEBSERVER_USERNAME", parameters.WEBSERVER_USERNAME)
-    monkeypatch.setattr(api_v2, "PASSWORD_FAILURE_DELAY", 0)
+    monkeypatch.setattr(settings_api, "PASSWORD_FAILURE_DELAY", 0)
     yield
 
 
@@ -2185,11 +2186,13 @@ def test_set_password_success_persists_and_takes_effect(
         json={"currentPassword": "admin", "newPassword": "newpass"}, headers=AUTH)
     assert response.status_code == 200
     assert json.loads(response.data)["ok"] is True
-    assert parameters.get_webserver_password() == "newpass"
-    # Other keys survive the atomic rewrite and the new password is stored.
+    # Only a salted hash is stored and persisted, never the plaintext.
+    assert parameters.webserver_password_is_hashed()
+    assert parameters.check_webserver_password("newpass")
     env_text = (tmp_path / ".env").read_text()
     assert "STRMNTR_PORT=5000" in env_text
-    assert 'STRMNTR_PASSWORD="newpass"' in env_text
+    assert "newpass" not in env_text
+    assert 'STRMNTR_PASSWORD="pbkdf2:' in env_text or 'STRMNTR_PASSWORD="scrypt:' in env_text
     assert not (tmp_path / ".env.tmp").exists()
     # No restart needed: the old password stops working immediately.
     assert client.get("/api/v2/streamers", headers=AUTH).status_code == 401
@@ -2315,7 +2318,7 @@ def test_set_username_and_password_together(
         headers=AUTH)
     assert response.status_code == 200
     assert parameters.get_webserver_username() == "operator"
-    assert parameters.get_webserver_password() == "newpass"
+    assert parameters.check_webserver_password("newpass")
     assert client.get(
         "/api/v2/streamers",
         headers=basic_auth("operator", "newpass")).status_code == 200

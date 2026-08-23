@@ -14,9 +14,11 @@ class CamsCom(Bot):
         return f'https://camscdn.cams.com/camscdn/cdn-{self.username.lower()}.m3u8'
 
     def getStatus(self):
-        r = self.session.get(f'https://beta-api.cams.com/models/stream/{self.username}/')
-        self.lastInfo = r.json()
-        
+        body = self._fetch_json('GET', f'https://beta-api.cams.com/models/stream/{self.username}/')
+        if body is None or not isinstance(body, dict):
+            return Status.UNKNOWN
+        self.lastInfo = body
+
         if 'stream_name' not in self.lastInfo:
             return Status.NOTEXIST
         if self.lastInfo['online'] == '0':

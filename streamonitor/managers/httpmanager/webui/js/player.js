@@ -42,21 +42,10 @@ function savePlayerPrefs(){
 let playerPrefs = loadPlayerPrefs();
 const PLAYER_SPEEDS = [0.5, 1, 1.25, 1.5, 2];
 
-/* ---- DoD-faithful default hotkeys, layered under any saved overrides ----
- * base table lives in store.js (DEFAULT_HOTKEYS); the player owns the engine,
- * so it re-derives settings.hotkeys with the richer default set (adds volume/mute
- * and Shift+Arrow / bracket bindings) while preserving user-saved keys. */
-const PLAYER_HOTKEY_DEFAULTS = {
-  playPause:'Space', seekBack:'ArrowLeft', seekFwd:'ArrowRight',
-  jumpBack:'Shift+ArrowLeft', jumpFwd:'Shift+ArrowRight',
-  volumeUp:'ArrowUp', volumeDown:'ArrowDown',
-  prevVideo:'PageUp', nextVideo:'PageDown', mark:'m', mute:'x',
-};
-(function initHotkeys(){
-  let saved = {};
-  try { const raw = localStorage.getItem('sm_hotkeys'); if (raw) saved = JSON.parse(raw) || {}; } catch(e){}
-  settings.hotkeys = Object.assign({}, PLAYER_HOTKEY_DEFAULTS, saved);
-})();
+/* Hotkey defaults live in ONE place: store.js DEFAULT_HOTKEYS (store.js loads
+ * before this file). store.js already initialized settings.hotkeys via
+ * loadHotkeys(); the duplicated table + re-derivation here used to drift from
+ * the store copy and silently lose keys on "restore defaults". */
 
 /* ---- injected styles (keeps console.css untouched to avoid parallel conflicts) ---- */
 (function injectPlayerStyles(){
@@ -328,7 +317,7 @@ function renderPlayer(s){
   if (!cur){
     if (!s.files.length && liveWatchable(s)){   // recording with no finished files yet (or detail still loading): offer the live entry immediately
       const sub = apiState.mode==='api' && !s._detailLoaded ? t('apiLoading') : t('noRecordings');   // don't claim "no recordings" before the detail payload lands
-      return `<div class="player-empty live-empty" data-watchlive="${s.id}">
+      return `<div class="player-empty live-empty" data-watchlive="${esc(s.id)}">
         <button class="plive-cta"><span class="ldot"></span><span>${t('liveWatchNow')}</span></button>
         <span class="live-empty-sub">${sub}</span>
       </div>`;
@@ -347,7 +336,7 @@ function renderPlayer(s){
   return `
     <div class="player ${player.playing?'playing':''}" id="playerBox">
       ${media}
-      ${liveWatchable(s)?`<button class="plive-chip" data-watchlive="${s.id}"><span class="ldot"></span><span>${t('liveChip')}</span></button>`:''}
+      ${liveWatchable(s)?`<button class="plive-chip" data-watchlive="${esc(s.id)}"><span class="ldot"></span><span>${t('liveChip')}</span></button>`:''}
       ${speed!==1?`<div class="pspeed-badge">${speed}×</div>`:''}
     </div>
     <div class="pbar">
@@ -376,14 +365,14 @@ function renderPlayer(s){
         <select class="pspeed" id="pspeed" title="${pt('speed')}">
           ${PLAYER_SPEEDS.map(v=>`<option value="${v}" ${v===speed?'selected':''}>${v}×</option>`).join('')}
         </select>
-        <button class="icon-btn ${cur.marked?'markon':''}" data-mark="${cur.id}" title="${cur.marked?t('unmark'):t('mark')}">${cur.marked?IC.markFill:IC.mark}</button>
-        <button class="icon-btn" data-dl="${cur.id}" title="${t('download')}">${IC.down}</button>
+        <button class="icon-btn ${cur.marked?'markon':''}" data-mark="${esc(cur.id)}" title="${cur.marked?t('unmark'):t('mark')}">${cur.marked?IC.markFill:IC.mark}</button>
+        <button class="icon-btn" data-dl="${esc(cur.id)}" title="${t('download')}">${IC.down}</button>
         <button class="icon-btn" data-pfull="1" title="${t('fullscreen')}">${IC.full}</button>
       </div>
     </div>
     <div class="now-file">
       <span style="color:var(--text-faint)">${t('nowPlaying')}</span>
-      <span class="fname">${fileName(s,cur)}</span>
+      <span class="fname">${esc(fileName(s,cur))}</span>
       ${cur._recording?`<span>·</span><span class="rec-note">${t('recInProgress')}</span>`:''}
       <span>·</span><span style="font-family:var(--mono);font-size:11.5px">${dateWd(cur.dt)} ${timeShort(cur.dt)}</span>
       <span>·</span><span>${fmtSize(cur.size)}</span>

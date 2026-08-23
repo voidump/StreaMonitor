@@ -124,30 +124,44 @@ def test_failures_are_logged_with_source_ip(preserve_credentials, caplog):
     assert any('127.0.0.1' in rec.getMessage() for rec in caplog.records)
 
 
-# --- factory-default password hardening ---
+# --- startup credential hardening (default replacement + hash migration) ---
 
-def test_default_password_is_replaced(monkeypatch, preserve_credentials):
+def test_default_password_is_replaced_with_a_hash(monkeypatch, preserve_credentials):
     persisted = []
     monkeypatch.setattr(parameters, 'persist_webserver_password',
                         lambda value: persisted.append(value))
     manager = HTTPManager([])
-    generated = manager._harden_default_password()
+    generated = manager._harden_credentials()
     assert generated is not None and generated != 'admin'
-    assert parameters.get_webserver_password() == generated
-    assert persisted == [generated]
+    assert parameters.webserver_password_is_hashed()
+    assert parameters.check_webserver_password(generated)
+    assert len(persisted) == 1 and parameters.webserver_password_is_hashed(persisted[0])
 
 
-def test_explicit_password_is_left_alone(monkeypatch, preserve_credentials):
+def test_explicit_plaintext_password_is_migrated_to_hash(monkeypatch, preserve_credentials):
     parameters.set_webserver_password('my-own-password')
+    persisted = []
+    monkeypatch.setattr(parameters, 'persist_webserver_password',
+                        lambda value: persisted.append(value))
+    manager = HTTPManager([])
+    assert manager._harden_credentials() is None  # nothing generated
+    assert parameters.webserver_password_is_hashed()
+    assert parameters.check_webserver_password('my-own-password')
+    assert len(persisted) == 1 and parameters.webserver_password_is_hashed(persisted[0])
+
+
+def test_already_hashed_password_is_left_alone(monkeypatch, preserve_credentials):
+    hashed = parameters.hash_webserver_password('pw')
+    parameters.set_webserver_password(hashed)
     monkeypatch.setattr(parameters, 'persist_webserver_password',
                         lambda value: pytest.fail('must not persist'))
     manager = HTTPManager([])
-    assert manager._harden_default_password() is None
-    assert parameters.get_webserver_password() == 'my-own-password'
+    assert manager._harden_credentials() is None
+    assert parameters.get_webserver_password() == hashed
 
 
 def test_disabled_auth_is_left_alone(monkeypatch, preserve_credentials):
     parameters.set_webserver_password('')
     manager = HTTPManager([])
-    assert manager._harden_default_password() is None
+    assert manager._harden_credentials() is None
     assert parameters.get_webserver_password() == ''

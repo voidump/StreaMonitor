@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import time
 
 import parameters
@@ -85,10 +86,17 @@ def save_history(history):
         return False
 
 
+# Serializes every read-modify-write of history.json: do_purge inserts here
+# while the history API deletes/re-adds concurrently, and unsynchronized
+# load-modify-save pairs silently overwrite each other's changes.
+history_lock = threading.RLock()
+
+
 def add_history_entry(entry):
-    history = load_history()
-    history.insert(0, entry)
-    return save_history(history)
+    with history_lock:
+        history = load_history()
+        history.insert(0, entry)
+        return save_history(history)
 
 
 def loadStreamers():

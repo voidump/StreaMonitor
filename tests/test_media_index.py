@@ -697,3 +697,42 @@ def test_classification_source_migration_marks_existing_labels_auto(tmp_path, mo
             "SELECT abs_path, classification_source FROM media_files").fetchall())
     assert rows[os.path.abspath(labeled)] == "auto"
     assert rows[os.path.abspath(unlabeled)] is None
+
+
+def test_scan_does_not_churn_rows_with_unknown_duration(tmp_path, monkeypatch):
+    import parameters
+    from contextlib import closing
+    # A row whose duration is NULL (never probed, or probe failed) must not be
+    # rewritten on every scan cycle: on a large library that was thousands of
+    # upserts every 5 minutes, forever, with updated_ts churn to match.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(parameters, "DOWNLOADS_DIR", "downloads")
+    folder = tmp_path / "downloads" / "alice [FS]"
+    folder.mkdir(parents=True)
+    video = folder / "alice-20260101-000000.mp4"
+    video.write_bytes(b"0" * 2048)
+    old = time.time() - 3600
+    os.utime(video, (old, old))
+    monkeypatch.setattr(parameters, "MIN_VIDEO_SIZE_MB", 0)
+
+    media_index.scan_once()
+    with closing(media_index.connect()) as conn:
+        first = conn.execute(
+            "SELECT duration, updated_ts FROM media_files").fetchone()
+    assert first[0] is None  # duration unknown (nothing probed in tests)
+
+    media_index.scan_once()
+    with closing(media_index.connect()) as conn:
+        second = conn.execute(
+            "SELECT duration, updated_ts FROM media_files").fetchone()
+    assert second == first, "unchanged NULL-duration row must not be re-upserted"
+
+    # Once the warm cache knows a real duration, one refresh happens.
+    monkeypatch.setattr(media_index, "_duration_cache_entry",
+                        lambda abs_path, mtime: (True, 123.0))
+    monkeypatch.setattr(media_index, "_duration_and_thumb",
+                        lambda abs_path, mtime: (123.0, None))
+    media_index.scan_once()
+    with closing(media_index.connect()) as conn:
+        third = conn.execute("SELECT duration FROM media_files").fetchone()
+    assert third[0] == 123.0

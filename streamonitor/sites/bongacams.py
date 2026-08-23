@@ -24,22 +24,28 @@ class BongaCams(Bot):
             'X-Requested-With': 'XMLHttpRequest'
         }
         data = 'method=getRoomData&args%5B%5D=' + self.username + '&args%5B%5D=false'
-        r = self.session.post('https://de.bongacams.net/tools/amf.php', data=data, headers=headers)
-
-        if r.status_code == 200:
-            self.lastInfo = r.json()
-            if self.lastInfo["status"] == "error":
+        body = self._fetch_json('POST', 'https://de.bongacams.net/tools/amf.php', data=data, headers=headers)
+        if body is None:
+            return Status.UNKNOWN
+        self.lastInfo = body
+        try:
+            if body["status"] == "error":
                 return Status.NOTEXIST
-            if self.username != self.lastInfo['performerData']['username']:
-                self.username = self.lastInfo['performerData']['username']
+            if self.username != body['performerData']['username']:
+                self.username = body['performerData']['username']
                 self.logger = self.getLogger()
-            if self.lastInfo['performerData']['showType'] in ['private', 'group']:
+            if body['performerData']['showType'] in ['private', 'group']:
                 return Status.PRIVATE
-            if 'videoServerUrl' in self.lastInfo['localData']:
-                r = self.session.get(self.getPlaylistUrl())
-                if len(r.text) == 25 or r.status_code == 404:
-                    return Status.OFFLINE
-                return Status.PUBLIC
-            else:
+            if 'videoServerUrl' not in body['localData']:
                 return Status.OFFLINE
-        return Status.UNKNOWN
+        except (KeyError, TypeError):
+            self.logger.warning('Unexpected response shape from amf endpoint')
+            return Status.UNKNOWN
+        try:
+            r = self.session.get(self.getPlaylistUrl())
+        except Exception as e:
+            self.logger.warning(f'Playlist check failed: {e}')
+            return Status.UNKNOWN
+        if len(r.text) == 25 or r.status_code == 404:
+            return Status.OFFLINE
+        return Status.PUBLIC

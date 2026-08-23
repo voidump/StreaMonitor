@@ -159,6 +159,17 @@ def connect():
     return conn
 
 
+def _duration_cache_entry(abs_path, mtime):
+    # (found, duration) from api_v2's warm cache; (False, None) when the web
+    # API is unavailable. Lets the scanner tell "never probed / probe failed"
+    # from "probed successfully".
+    try:
+        from streamonitor.managers.httpmanager.api_v2 import media_cache
+        return media_cache.get_duration_cache_entry(abs_path, mtime)
+    except Exception:
+        return False, None
+
+
 def _duration_and_thumb(abs_path, mtime):
     # Reuse api_v2's warm caches (both keyed by path+mtime) without ever
     # probing: duration comes from durations.json, and the thumb path is
@@ -316,8 +327,17 @@ def scan_once(streamers=None):
         upserts = []
         for site, username, filename, abs_path, size, mtime in disk:
             prev = existing.get(abs_path)
-            if prev and prev[0] == size and prev[1] == mtime and prev[2] == 0 and prev[3] is not None:
-                continue
+            if prev and prev[0] == size and prev[1] == mtime and prev[2] == 0:
+                if prev[3] is not None:
+                    continue
+                # Row exists but its duration is NULL: only rewrite once the
+                # warm cache actually knows a duration. A cache miss (never
+                # probed) or a cached probe failure used to re-upsert every
+                # such row on every scan cycle — endless churn for broken or
+                # never-viewed files.
+                found, duration = _duration_cache_entry(abs_path, mtime)
+                if not found or duration is None:
+                    continue
             duration, thumb_path = _duration_and_thumb(abs_path, mtime)
             upserts.append((site, username, filename, abs_path, size, mtime, duration, thumb_path, now))
         if upserts:
@@ -726,6 +746,11 @@ def _index_readable():
     # scanner has not produced anything yet and callers should fall back to
     # their existing disk-scan logic.
     return parameters.MEDIA_INDEX_ENABLED and os.path.isfile(index_db_path())
+
+
+def is_readable():
+    """Public form of _index_readable for other modules (the web API)."""
+    return _index_readable()
 
 
 def list_videos(siteslug, username):
