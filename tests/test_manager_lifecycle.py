@@ -57,3 +57,39 @@ def test_bot_threads_are_daemon():
 
     bot = _DaemonProbeBot('someone')
     assert bot.daemon is True
+
+
+def test_concurrent_remove_and_save_never_drops_unrelated_streamers(monkeypatch):
+    # saveConfig exports by iterating the shared streamers list while other
+    # threads remove entries; without the manager lock the shifting list makes
+    # the export skip an unrelated streamer, which then gets persisted away.
+    import threading
+
+    saves = []
+    monkeypatch.setattr(manager_mod.config, 'save_config',
+                        lambda data: saves.append(data) or True)
+    streamers = [FakeStreamer(username=f'u{i}') for i in range(50)]
+    m = Manager(list(streamers))
+    survivors = {f'u{i}' for i in range(25, 50)}
+
+    def remove_first_half():
+        for s in streamers[:25]:
+            m.do_remove(s, s.username, s.site)
+
+    def save_repeatedly():
+        for _ in range(300):
+            m.saveConfig()
+
+    threads = [threading.Thread(target=remove_first_half),
+               threading.Thread(target=save_repeatedly)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert {s.username for s in m.streamers} == survivors
+    for data in saves:
+        exported = {entry['username'] for entry in data}
+        # A save may or may not include not-yet-removed entries, but the 25
+        # streamers nobody touched must be present in every single export.
+        assert survivors <= exported, f'export lost unrelated streamers: {survivors - exported}'

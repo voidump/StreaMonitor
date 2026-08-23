@@ -1,8 +1,9 @@
 import math
 import shutil
 import time
+from functools import wraps
 from logging import INFO, WARN, ERROR
-from threading import Thread
+from threading import RLock, Thread
 from termcolor import colored
 import terminaltables.terminal_io
 from terminaltables import AsciiTable
@@ -12,6 +13,22 @@ from streamonitor.bot import Bot, LOADED_SITES
 from streamonitor.managers.outofspace_detector import OOSDetector
 
 from streamonitor.enums import Status
+
+# One process-wide lock: every Manager flavor (CLI/ZMQ/HTTP/bulk) shares the
+# same streamers list, and Flask serves requests from multiple threads. All
+# command handlers and saveConfig hold it, so a save can never iterate the
+# list mid-mutation (which used to drop an unrelated streamer from
+# config.json) and two commands can never interleave their mutations.
+_commands_lock = RLock()
+
+
+def _locked(fn):
+    # RLock so nested commands (do_restart -> do_stop/do_start) just re-enter.
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _commands_lock:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 class Manager(Thread):
@@ -33,6 +50,7 @@ class Manager(Thread):
             streamer = self.getStreamer(username, site)
             return command(streamer, username, site)
 
+    @_locked
     def getStreamer(self, username, site):
         found = None
         site = Bot.str2site(site)
@@ -51,9 +69,11 @@ class Manager(Thread):
                         return None
         return found
 
+    @_locked
     def saveConfig(self):
         config.save_config([s.export() for s in self.streamers])
 
+    @_locked
     def do_add(self, streamer, username, site):
         if streamer:
             return 'Streamer already exists'
@@ -70,6 +90,7 @@ class Manager(Thread):
         else:
             return "Missing value(s)"
 
+    @_locked
     def do_remove(self, streamer, username, site):
         if not streamer:
             return "Streamer not found"
@@ -86,6 +107,7 @@ class Manager(Thread):
             self.logger.error(e)
             return "Failed to remove streamer"
 
+    @_locked
     def do_pause(self, streamer, username, site):
         # Layer 1: temporarily stop recording, keep the entry as-is
         # (monitorState stays 'active'; the paused state is derived from running).
@@ -93,12 +115,14 @@ class Manager(Thread):
             return "Streamer not found"
         return self.do_stop(streamer, username, site)
 
+    @_locked
     def do_resume(self, streamer, username, site):
         # Layer 1: resume a paused streamer.
         if not streamer:
             return "Streamer not found"
         return self.do_start(streamer, username, site)
 
+    @_locked
     def do_stop_recording(self, streamer, username, site):
         # Layer 2: archive the streamer. Stop the bot and mark it stopped, but
         # keep the config entry (name/link/local files) for a one-click restart.
@@ -107,6 +131,7 @@ class Manager(Thread):
         streamer.monitorState = 'stopped'
         return self.do_stop(streamer, username, site)
 
+    @_locked
     def do_reactivate(self, streamer, username, site):
         # Layer 2 inverse: restore an archived streamer and start it again.
         if not streamer:
@@ -114,6 +139,7 @@ class Manager(Thread):
         streamer.monitorState = 'active'
         return self.do_start(streamer, username, site)
 
+    @_locked
     def do_purge(self, streamer, username, site, delete_files=False):
         # Layer 3: permanent delete. Stop the bot, record it in history, drop it
         # from config and optionally remove its recordings on disk.
@@ -140,6 +166,7 @@ class Manager(Thread):
             self.logger.error(e)
             return "Failed to delete streamer"
 
+    @_locked
     def do_start(self, streamer, username, site):
         if not streamer:
             if username == '*':
@@ -162,6 +189,7 @@ class Manager(Thread):
                 self.logger.error(e)
                 return "Failed to start"
 
+    @_locked
     def do_stop(self, streamer, username, site):
         if not streamer:
             if username == '*':
@@ -180,12 +208,14 @@ class Manager(Thread):
                 self.logger.error(e)
                 return "Failed to stop"
 
+    @_locked
     def do_restart(self, streamer, username, site):
         if not streamer:
             return "Streamer not found"
         self.do_stop(streamer, username, site)
         return self.do_start(streamer, username, site)
         
+    @_locked
     def do_status(self, streamer, username, site):
         output = [["Username", "Site", "Started", "Status"]]
 
@@ -202,6 +232,7 @@ class Manager(Thread):
                 line()
         return "Status:\n" + f'Free space: {str(round(OOSDetector.free_space(), 3))}%\n\n' + AsciiTable(output).table
 
+    @_locked
     def do_status2(self, streamer, username, site):
         maxlen = max([len(s.username) for s in self.streamers] or [0])
         termwidth = terminaltables.terminal_io.terminal_size()[0]
