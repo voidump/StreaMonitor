@@ -98,3 +98,12 @@ def test_streamate_200_is_public_with_lastinfo():
     _stub_session(bot, _Resp(status_code=200, body={'formats': {}}))
     assert bot.getStatus() == Status.PUBLIC
     assert bot.lastInfo == {'formats': {}}
+
+
+def test_streamate_200_with_unparseable_body_is_unknown():
+    # A CDN challenge page (200 + HTML) is a transport problem, not a room
+    # state: mapping it through Status(200) called it PUBLIC with a stale
+    # lastInfo and started doomed recording attempts.
+    bot = _bot(StreaMate)
+    _stub_session(bot, _Resp(status_code=200, body=None, raw=b'<html>challenge</html>'))
+    assert bot.getStatus() == Status.UNKNOWN

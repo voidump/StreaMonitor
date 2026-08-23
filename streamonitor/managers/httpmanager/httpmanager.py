@@ -207,8 +207,16 @@ class HTTPManager(Manager):
             if not password_enabled():
                 return redirect('/')
             if request.method == 'GET':
-                if flask_session.get('authenticated') is True:
+                # Same full check as authenticated(): a session whose auth_gen
+                # no longer matches (revoked by a password change, or issued
+                # before generations existed) must land on the login page —
+                # checking only the authenticated flag here while / checks the
+                # generation bounced such sessions between / and /login in an
+                # infinite redirect loop.
+                if authenticated() and flask_session.get('authenticated') is True:
                     return redirect('/')
+                if flask_session.get('authenticated') is True:
+                    flask_session.clear()  # revoked session: drop it cleanly
                 return send_from_directory(webui_dir, 'login.html')
             data = request.get_json(silent=True) or {}
             password = data.get('password')
@@ -322,6 +330,17 @@ class HTTPManager(Manager):
                     'the next start.')
             return generated
         if stored and not parameters.webserver_password_is_hashed(stored):
+            # Idempotency: with the password supplied as an OS env var (the
+            # compose/README way) the plaintext re-appears on every boot even
+            # though a previous run already persisted a hash. Re-adopt that
+            # hash instead of re-hashing with a fresh salt — a new salt would
+            # change the session generation and revoke every login on every
+            # restart.
+            persisted = parameters.read_persisted_env_value('STRMNTR_PASSWORD')
+            if (persisted and parameters.webserver_password_is_hashed(persisted)
+                    and parameters.verify_password_hash(persisted, stored)):
+                parameters.set_webserver_password(persisted)
+                return None
             hashed = parameters.hash_webserver_password(stored)
             parameters.set_webserver_password(hashed)
             try:

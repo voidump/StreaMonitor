@@ -16,23 +16,28 @@ def _entry_identity(entry):
 def _resolve_entry(history, idx, data):
     """Resolve the entry a client addressed by index, verified against the
     identity it optionally sends. history.json is a shared list: a concurrent
-    purge inserts at the front and shifts every index, so a bare index can hit
-    the wrong entry. When the request body carries (site, username, deletedAt)
-    and the entry at idx doesn't match, the entry is found by identity instead.
-    Returns (idx, entry) or (None, response)."""
-    if idx < 0 or idx >= len(history):
-        return None, _json({'error': 'History entry not found'}, 404)
-    entry = history[idx]
+    purge inserts at the front (indexes shift right) and a concurrent delete
+    shrinks it (a stale index can go out of bounds), so whenever the request
+    carries (site, username, deletedAt) the identity wins — including when the
+    stale index no longer exists at all. Returns (idx, entry) or (None,
+    response)."""
     wanted = (data.get('site'), data.get('username'), data.get('deletedAt'))
-    if any(v is not None for v in wanted):
-        wanted = tuple(w if w is not None else e
-                       for w, e in zip(wanted, _entry_identity(entry)))
-        if wanted != _entry_identity(entry):
-            for i, candidate in enumerate(history):
-                if _entry_identity(candidate) == wanted:
-                    return i, candidate
-            return None, _json({'error': 'History entry not found'}, 404)
-    return idx, entry
+    has_identity = any(v is not None for v in wanted)
+    if 0 <= idx < len(history):
+        entry = history[idx]
+        if has_identity:
+            wanted = tuple(w if w is not None else e
+                           for w, e in zip(wanted, _entry_identity(entry)))
+            if wanted == _entry_identity(entry):
+                return idx, entry
+        else:
+            return idx, entry
+    elif not has_identity:
+        return None, _json({'error': 'History entry not found'}, 404)
+    for i, candidate in enumerate(history):
+        if _entry_identity(candidate) == wanted:
+            return i, candidate
+    return None, _json({'error': 'History entry not found'}, 404)
 
 
 def register(app, manager, login_required):

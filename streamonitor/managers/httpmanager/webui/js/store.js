@@ -302,28 +302,36 @@ function mapStreamers(list){
   });
 }
 
-/* ---- fetch + poll ---- */
+/* ---- fetch + poll ----
+ * Two-part staleness strategy:
+ * - Every refreshStreamers() call gets a generation number; a response only
+ *   applies while its generation is still the newest, so a slow poll response
+ *   from BEFORE a write can never overwrite the post-write list an explicit
+ *   refresh just fetched.
+ * - Only the poll timer skips while a request is in flight (pollRefresh);
+ *   explicit refreshes after writes and the error-banner retry always fire. */
+let refreshSeq = 0;
 let refreshInFlight = false;
 async function refreshStreamers(){
-  // Re-entrancy guard: when the backend answers slower than the poll period,
-  // interval ticks used to stack requests and a slow stale response could
-  // overwrite a newer list.
-  if (refreshInFlight) return;
+  const seq = ++refreshSeq;
   refreshInFlight = true;
   try {
     const data = await apiGet('/streamers');
+    if (seq !== refreshSeq) return;   // superseded by a newer refresh
     streamers = mapStreamers(Array.isArray(data) ? data : (data && data.streamers) || []);
     apiState.error = false; apiState.loading = false;
     if (pendingRoute && typeof resolvePendingRoute==='function'){ resolvePendingRoute(); return; }   // land a deep-linked view now that data is in
     render();
     if (route.view==='detail'){ const s = streamers.find(x=>x.id===route.id); if (s){ loadDetail(s.site, s.user); if (!s._schedLoaded) loadSchedule(s.site, s.user); } }
   } catch(e){
+    if (seq !== refreshSeq) return;   // a newer refresh owns the UI state now
     apiState.loading = false; apiState.error = true;
     render();   // keep last data on screen; banner surfaces the failure
   } finally {
-    refreshInFlight = false;
+    if (seq === refreshSeq) refreshInFlight = false;
   }
 }
+function pollRefresh(){ if (!refreshInFlight) refreshStreamers(); }
 /* V37C: short-cycle duration backfill. When the detail payload still has finished
  * (non-recording) files with an unknown duration, re-pull once after a short delay so
  * the "--:--" placeholders resolve to real times. Single self-arming timer (deduped),
@@ -420,7 +428,7 @@ async function loadBaseSettings(){
     auth.enabled = b.authEnabled===true;
   } catch(e){ /* basesettings is optional */ }
 }
-function startPolling(){ stopPolling(); apiState.timer = setInterval(refreshStreamers, apiState.pollMs); }
+function startPolling(){ stopPolling(); apiState.timer = setInterval(pollRefresh, apiState.pollMs); }
 function stopPolling(){ if (apiState.timer){ clearInterval(apiState.timer); apiState.timer=null; } }
 
 /* ================= v2 write operations (B2B) =================

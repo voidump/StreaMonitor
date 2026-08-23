@@ -493,7 +493,45 @@ _PASSWORD_HASH_PREFIXES = ('pbkdf2:', 'scrypt:')
 
 def webserver_password_is_hashed(value=None):
     value = WEBSERVER_PASSWORD if value is None else value
-    return isinstance(value, str) and value.startswith(_PASSWORD_HASH_PREFIXES)
+    # Prefix alone is not enough: a hand-written plaintext like
+    # "pbkdf2:mypassword" would be misdetected, skip migration and then never
+    # match through check_password_hash — a silent lockout. Require the full
+    # werkzeug shape (method$salt$hash).
+    return (isinstance(value, str)
+            and value.startswith(_PASSWORD_HASH_PREFIXES)
+            and value.count('$') >= 2)
+
+
+def verify_password_hash(hashed_value, plaintext):
+    from werkzeug.security import check_password_hash
+    try:
+        return check_password_hash(hashed_value, plaintext)
+    except Exception:
+        return False
+
+
+def read_persisted_env_value(key):
+    # Read a value straight from the data-dir .env, bypassing the normal
+    # loading order where OS environment variables take precedence. Needed by
+    # the startup migration: a compose-style STRMNTR_PASSWORD env var keeps
+    # re-supplying the plaintext on every boot, and without looking at what a
+    # previous run already persisted the migration would re-hash with a fresh
+    # salt each time (changing the session generation -> all sessions revoked
+    # on every restart).
+    env_path = data_path('.env')
+    try:
+        with open(env_path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(key + '='):
+            value = stripped[len(key) + 1:]
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                value = value[1:-1].replace('\\"', '"').replace('\\\\', '\\')
+            return value
+    return None
 
 
 def hash_webserver_password(plaintext):

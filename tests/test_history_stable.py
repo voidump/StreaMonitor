@@ -45,3 +45,15 @@ def test_delete_without_identity_keeps_working(tmp_path, monkeypatch):
     client = HTTPManager([]).create_app().test_client()
     assert client.delete('/api/v2/history/1', headers=AUTH).status_code == 200
     assert [e['username'] for e in config.load_history()] == ['a']
+
+
+def test_identity_wins_even_when_stale_index_is_out_of_bounds(tmp_path, monkeypatch):
+    # The list SHRANK since the client fetched it (another tab deleted rows):
+    # the stale index is out of bounds, but the identity still resolves.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(config, 'history_loc', 'history.json')
+    config.save_history([_entry('keeper', 100), _entry('target', 200)])
+    client = HTTPManager([]).create_app().test_client()
+    response = client.delete('/api/v2/history/7', json=_entry('target', 200), headers=AUTH)
+    assert response.status_code == 200
+    assert [e['username'] for e in config.load_history()] == ['keeper']
