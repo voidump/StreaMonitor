@@ -379,6 +379,16 @@ function purgeStreamerVideos(s){
 }
 
 /* ---------------- event wiring ---------------- */
+/* Any click outside an open classification menu (and its trigger) closes it.
+ * Capture phase so the flag is already cleared by the time the normal handlers
+ * re-render; the deferred check only forces a render when nothing else did (a
+ * click on empty background), so playback/scroll side effects aren't undone. */
+document.addEventListener('click', e=>{
+  if (!clsMenuFileId) return;
+  if (e.target.closest('.cls-menu') || e.target.closest('[data-clsmenu]')) return;
+  clsMenuFileId = null;
+  setTimeout(()=>{ if (document.querySelector('.cls-menu')) render(); }, 0);
+}, true);
 document.addEventListener('click', e=>{
   const navBtn = e.target.closest('[data-nav]');
   if (navBtn){ nav({view:navBtn.dataset.nav}); return; }
@@ -440,6 +450,13 @@ document.addEventListener('click', e=>{
       if (sp) purgeStreamerVideos(sp);
       return;
     }
+    if (modalState.type==='clsManual'){
+      const sc = streamers.find(x=>x.id===modalState.id);
+      const fc = sc && sc.files.find(f=>f.id===modalState.fileId);
+      modalState=null; renderModal();
+      if (fc) apiSetClassification(sc, fc, 'non-adult');
+      return;
+    }
     const s = streamers.find(x=>x.id===modalState.id);
     if (modalState.type==='batch'){
       modalState=null; renderModal();
@@ -468,6 +485,7 @@ document.addEventListener('click', e=>{
 document.addEventListener('keydown', e=>{
   if (e.key==='Escape'){
     if (modalState){ modalState=null; renderModal(); }
+    else if (clsMenuFileId && route.view==='detail'){ clsMenuFileId=null; render(); }
     else if (confirmDelId && route.view==='detail'){ confirmDelId=null; render(); }
     else if (route.view==='dashboard' && (selMode || selected.size>0)){ selMode=false; selected.clear(); render(); }   // NB9: Esc leaves selection mode
     return;
@@ -591,13 +609,37 @@ function bindDetail(s){
   // real thumbnails: if the ffmpeg frame 404s (broken/unparseable file), fall back to the generated placeholder
   document.querySelectorAll('[data-thumb-fallback]').forEach(img=>img.addEventListener('error', ()=>{ img.src = genThumb(img.dataset.thumbFallback); }, {once:true}));
   document.querySelectorAll('[data-watchlive]').forEach(b=>b.addEventListener('click', e=>{
-    if (e.target.closest('.acts')||e.target.closest('.confirm-del')) return;   // recording tile: let its action buttons keep working
+    if (e.target.closest('.acts')||e.target.closest('.confirm-del')||e.target.closest('.cls-menu')) return;   // recording tile: let its action buttons keep working
     e.stopPropagation();
     startLive(s);   // L2: play the watch-while-recording stream in the player area
   }));
   // list filter toggle (all / marked)
   document.querySelectorAll('[data-filefilter]').forEach(b=>b.addEventListener('click', ()=>{
-    detailState.fileFilter = b.dataset.filefilter; render();
+    detailState.fileFilter = b.dataset.filefilter; clsMenuFileId=null; render();
+  }));
+  // classification filter (all / non-adult / adult / unknown / unanalyzed / in recycle)
+  document.querySelectorAll('[data-clsfilter]').forEach(b=>b.addEventListener('click', ()=>{
+    detailState.clsFilter = b.dataset.clsfilter; clsMenuFileId=null; render();
+  }));
+  // manual override: open the per-item menu, then apply the chosen label
+  document.querySelectorAll('[data-clsmenu]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    clsMenuFileId = clsMenuFileId===b.dataset.clsmenu ? null : b.dataset.clsmenu;
+    render();
+  }));
+  document.querySelectorAll('[data-clsset]').forEach(b=>b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const f = s.files.find(x=>x.id===b.dataset.clsfile);
+    if (!f) return;
+    const label = b.dataset.clsset;
+    // marking non-adult only writes the label; the configured action runs on the
+    // next scheduled scan, so warn first when that action removes the file
+    if (label==='non-adult' && (nsfw.action==='recycle' || nsfw.action==='delete')){
+      clsMenuFileId = null;
+      modalState = {type:'clsManual', id:s.id, fileId:f.id};
+      render(); renderModal(); return;
+    }
+    apiSetClassification(s, f, label);
   }));
   const playFileById = id=>{
     const f = s.files.find(x=>x.id===id);
@@ -612,7 +654,7 @@ function bindDetail(s){
   };
   // play file — click thumbnail (outside action row) or the play button in the action row
   document.querySelectorAll('[data-playfile]').forEach(el=>el.addEventListener('click', e=>{
-    if (e.target.closest('.acts')||e.target.closest('.confirm-del')) return;
+    if (e.target.closest('.acts')||e.target.closest('.confirm-del')||e.target.closest('.cls-menu')) return;
     playFileById(el.dataset.playfile);
   }));
   document.querySelectorAll('[data-play]').forEach(b=>b.addEventListener('click', e=>{

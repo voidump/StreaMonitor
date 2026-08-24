@@ -1021,6 +1021,7 @@ def preserve_nsfw(monkeypatch):
     monkeypatch.setattr(parameters, "NSFW_RECYCLE_RETENTION_DAYS", parameters.NSFW_RECYCLE_RETENTION_DAYS)
     monkeypatch.setattr(parameters, "NSFW_SCAN_INTERVAL_HOURS", parameters.NSFW_SCAN_INTERVAL_HOURS)
     monkeypatch.setattr(parameters, "NSFW_THRESHOLD", parameters.NSFW_THRESHOLD)
+    monkeypatch.setattr(parameters, "NSFW_MODEL_PATH", parameters.NSFW_MODEL_PATH)
     monkeypatch.setattr(nsfw_analyzer, "_session", nsfw_analyzer._session)
     monkeypatch.setattr(nsfw_analyzer, "_session_failed", nsfw_analyzer._session_failed)
     yield
@@ -1221,6 +1222,189 @@ def test_set_nsfw_threshold_accepts_bounds(tmp_path, monkeypatch, preserve_nsfw,
         headers=AUTH)
     assert response.status_code == 200
     assert parameters.get_nsfw_threshold() == float(value)
+
+
+# --- settings: NSFW model management (list / activate / delete) ---
+
+def _model_dir(tmp_path, monkeypatch, active="nsfw-model.onnx"):
+    # Point the active model path into a fresh directory; get_nsfw_models_dir
+    # derives the model directory from it.
+    models = tmp_path / "models"
+    models.mkdir(exist_ok=True)
+    monkeypatch.setattr(parameters, "NSFW_MODEL_PATH", str(models / active))
+    return models
+
+
+@pytest.mark.parametrize("method,url", [
+    ("get", "/api/v2/settings/nsfw/models"),
+    ("post", "/api/v2/settings/nsfw/models/activate"),
+    ("delete", "/api/v2/settings/nsfw/models/other.onnx"),
+])
+def test_nsfw_models_require_auth(tmp_path, monkeypatch, method, url):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = getattr(_client(manager), method)(url)
+    assert response.status_code == 401
+
+
+def test_get_nsfw_models_lists_directory(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    (models / "nsfw-model.onnx").write_bytes(b"x" * 10)
+    (models / "other.onnx").write_bytes(b"y" * 20)
+    (models / "notes.txt").write_text("ignored")
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/nsfw/models", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["modelsDir"] == str(models)
+    assert payload["activeModel"] == "nsfw-model.onnx"
+    by_file = {m["file"]: m for m in payload["models"]}
+    assert set(by_file) == {"nsfw-model.onnx", "other.onnx"}     # .txt ignored
+    assert by_file["nsfw-model.onnx"]["active"] is True
+    assert by_file["other.onnx"]["active"] is False
+    assert by_file["other.onnx"]["sizeBytes"] == 20
+    assert isinstance(by_file["other.onnx"]["mtime"], int)
+    assert isinstance(payload["catalog"], list)
+
+
+def test_get_nsfw_models_missing_dir_is_empty(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(parameters, "NSFW_MODEL_PATH",
+                        str(tmp_path / "gone" / "nsfw-model.onnx"))
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/nsfw/models", headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["models"] == []
+
+
+def test_nsfw_payload_exposes_active_model(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    _model_dir(tmp_path, monkeypatch, active="vit.onnx")
+    manager = HTTPManager([])
+    response = _client(manager).get("/api/v2/settings/nsfw", headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["activeModel"] == "vit.onnx"
+
+
+def test_activate_nsfw_model_switches_and_unloads(tmp_path, monkeypatch, preserve_nsfw):
+    import streamonitor.nsfw_analyzer as nsfw_analyzer
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    (models / "nsfw-model.onnx").write_bytes(b"x")
+    (models / "vit.onnx").write_bytes(b"y")
+    nsfw_analyzer._session = object()          # pretend a model is loaded
+    nsfw_analyzer._session_failed = True
+    manager = HTTPManager([])
+    response = _client(manager).post(
+        "/api/v2/settings/nsfw/models/activate", json={"file": "vit.onnx"}, headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["activeModel"] == "vit.onnx"
+    assert parameters.get_nsfw_model_path() == str(models / "vit.onnx")
+    assert nsfw_analyzer._session is None              # released, lazy reload
+    assert nsfw_analyzer._session_failed is False      # failure latch reset
+    env_text = (tmp_path / ".env").read_text()         # persisted for restart
+    assert "STRMNTR_NSFW_MODEL_PATH=" in env_text
+    assert str(models / "vit.onnx") in env_text
+
+
+def test_activate_nsfw_model_missing_file_404(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    manager = HTTPManager([])
+    response = _client(manager).post(
+        "/api/v2/settings/nsfw/models/activate", json={"file": "gone.onnx"}, headers=AUTH)
+    assert response.status_code == 404
+    assert json.loads(response.data)["code"] == "not_found"
+    assert parameters.get_nsfw_model_path() == str(models / "nsfw-model.onnx")
+
+
+@pytest.mark.parametrize("bad", [
+    None, "", "   ", 5, True, "model", "model.txt",
+    "../evil.onnx", "sub/model.onnx", "sub\\model.onnx",
+    "/etc/model.onnx", "..", ".", "mo\0del.onnx",
+])
+def test_activate_nsfw_model_invalid_400(tmp_path, monkeypatch, preserve_nsfw, bad):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    manager = HTTPManager([])
+    response = _client(manager).post(
+        "/api/v2/settings/nsfw/models/activate", json={"file": bad}, headers=AUTH)
+    assert response.status_code == 400, bad
+    assert json.loads(response.data)["code"] == "invalid"
+    assert parameters.get_nsfw_model_path() == str(models / "nsfw-model.onnx")
+    assert not (tmp_path / ".env").exists()            # nothing persisted
+
+
+def test_activate_nsfw_model_traversal_cannot_escape(tmp_path, monkeypatch, preserve_nsfw):
+    # A real file outside the model directory must stay unreachable.
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    outside = tmp_path / "outside.onnx"
+    outside.write_bytes(b"x")
+    manager = HTTPManager([])
+    response = _client(manager).post(
+        "/api/v2/settings/nsfw/models/activate",
+        json={"file": "../outside.onnx"}, headers=AUTH)
+    assert response.status_code == 400
+    assert parameters.get_nsfw_model_path() == str(models / "nsfw-model.onnx")
+
+
+def test_delete_nsfw_model_removes_file(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    (models / "nsfw-model.onnx").write_bytes(b"x")
+    victim = models / "old.onnx"
+    victim.write_bytes(b"y")
+    manager = HTTPManager([])
+    response = _client(manager).delete(
+        "/api/v2/settings/nsfw/models/old.onnx", headers=AUTH)
+    assert response.status_code == 200
+    assert not victim.exists()
+    files = [m["file"] for m in json.loads(response.data)["models"]]
+    assert files == ["nsfw-model.onnx"]
+
+
+def test_delete_active_nsfw_model_409(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    active = models / "nsfw-model.onnx"
+    active.write_bytes(b"x")
+    manager = HTTPManager([])
+    response = _client(manager).delete(
+        "/api/v2/settings/nsfw/models/nsfw-model.onnx", headers=AUTH)
+    assert response.status_code == 409
+    assert json.loads(response.data)["code"] == "active"
+    assert active.exists()
+
+
+def test_delete_nsfw_model_missing_404(tmp_path, monkeypatch, preserve_nsfw):
+    monkeypatch.chdir(tmp_path)
+    _model_dir(tmp_path, monkeypatch)
+    manager = HTTPManager([])
+    response = _client(manager).delete(
+        "/api/v2/settings/nsfw/models/gone.onnx", headers=AUTH)
+    assert response.status_code == 404
+    assert json.loads(response.data)["code"] == "not_found"
+
+
+@pytest.mark.parametrize("name", [
+    "model.txt", "..%2Fevil.onnx", "sub/model.onnx", "..",
+    "sub%2F..%2F..%2Fevil.onnx",
+])
+def test_delete_nsfw_model_invalid_400(tmp_path, monkeypatch, preserve_nsfw, name):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    outside = tmp_path / "evil.onnx"
+    outside.write_bytes(b"x")
+    manager = HTTPManager([])
+    response = _client(manager).delete(
+        f"/api/v2/settings/nsfw/models/{name}", headers=AUTH)
+    assert response.status_code == 400, name
+    assert json.loads(response.data)["code"] == "invalid"
+    assert outside.exists()
+    assert models.exists()
 
 
 # --- NSFW analyzer: runtime load/unload regression ---

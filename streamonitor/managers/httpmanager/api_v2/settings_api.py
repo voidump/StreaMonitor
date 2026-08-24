@@ -94,7 +94,7 @@ def _nsfw_runtime_available():
 def _nsfw_payload():
     # Readiness is informational only: the toggle may be enabled without the
     # model or runtime packages (analysis then degrades to 'unknown' labels).
-    model_path = parameters.NSFW_MODEL_PATH
+    model_path = parameters.get_nsfw_model_path()
     return {
         'enabled': parameters.get_nsfw_enabled(),
         'action': parameters.get_nsfw_action(),
@@ -103,7 +103,88 @@ def _nsfw_payload():
         'threshold': parameters.get_nsfw_threshold(),
         'modelPresent': os.path.isfile(model_path),
         'modelPath': model_path,
+        'activeModel': os.path.basename(model_path),
         'runtimeAvailable': _nsfw_runtime_available(),
+    }
+
+
+# Models are plain files inside the model directory; only this extension is
+# listed, activatable and deletable.
+MODEL_EXTENSION = '.onnx'
+
+
+def _safe_model_name(raw):
+    # Returns (filename, None) for a plain .onnx file name or (None, message)
+    # for anything that could escape the model directory. Path separators,
+    # traversal segments and NUL bytes are all refused rather than normalized.
+    if not isinstance(raw, str):
+        return None, 'file must be a string'
+    name = raw.strip()
+    if not name or name in ('.', '..'):
+        return None, 'file must not be empty'
+    if name != os.path.basename(name) or os.path.isabs(name):
+        return None, 'file must be a plain file name'
+    if any(c in name for c in ('/', '\\', '\0')):
+        return None, 'file contains invalid characters'
+    if not name.lower().endswith(MODEL_EXTENSION):
+        return None, f'file must be a {MODEL_EXTENSION} model'
+    return name, None
+
+
+def _model_catalog(models_dir):
+    # The curated download catalog lives with the download task; the endpoint
+    # degrades to an empty catalog when that module is absent or broken so the
+    # local model list never depends on it.
+    try:
+        from streamonitor import nsfw_model_download
+        catalog = nsfw_model_download.CATALOG
+    except Exception:
+        return []
+    entries = []
+    for item in catalog:
+        try:
+            filename = item['filename']
+            entries.append({
+                'id': item['id'],
+                'name': item.get('name', item['id']),
+                'desc': item.get('desc', ''),
+                'sizeBytes': item.get('sizeBytes'),
+                'downloaded': os.path.isfile(os.path.join(models_dir, filename)),
+            })
+        except Exception:
+            continue
+    return entries
+
+
+def _models_payload():
+    models_dir = parameters.get_nsfw_models_dir()
+    active = os.path.basename(parameters.get_nsfw_model_path())
+    models = []
+    try:
+        names = sorted(os.listdir(models_dir))
+    except OSError:
+        names = []     # directory not created yet: an empty list, not a 500
+    for name in names:
+        if not name.lower().endswith(MODEL_EXTENSION):
+            continue
+        full = os.path.join(models_dir, name)
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        if not os.path.isfile(full):
+            continue
+        models.append({
+            'file': name,
+            'sizeBytes': st.st_size,
+            'mtime': int(st.st_mtime),
+            'active': name == active,
+        })
+    return {
+        'models': models,
+        'modelsDir': models_dir,
+        'activeModel': active,
+        'catalog': _model_catalog(models_dir),
     }
 
 
@@ -286,6 +367,51 @@ def register(app, manager, login_required):
             nsfw_analyzer.unload_session()
         return _json(_nsfw_payload())
 
+    @app.route('/api/v2/settings/nsfw/models', methods=['GET'])
+    @login_required
+    def api_v2_get_nsfw_models():
+        return _json(_models_payload())
+
+    @app.route('/api/v2/settings/nsfw/models/activate', methods=['POST'])
+    @login_required
+    def api_v2_activate_nsfw_model():
+        data = request.get_json(silent=True) or {}
+        name, message = _safe_model_name(data.get('file'))
+        if message:
+            return _json({'error': message, 'code': 'invalid'}, 400)
+        models_dir = parameters.get_nsfw_models_dir()
+        path = os.path.join(models_dir, name)
+        if not os.path.isfile(path):
+            return _json({'error': 'Model file not found', 'code': 'not_found'}, 404)
+        # Takes effect immediately: releasing the session makes the next
+        # inference lazy-load the new model. In-progress recordings keep
+        # running; a concurrent inference finishes on its old session.
+        parameters.set_nsfw_model_path(path)
+        parameters.persist_nsfw_model_path(path)
+        from streamonitor import nsfw_analyzer
+        nsfw_analyzer.unload_session()
+        return _json(_models_payload())
+
+    @app.route('/api/v2/settings/nsfw/models/<path:file>', methods=['DELETE'])
+    @login_required
+    def api_v2_delete_nsfw_model(file):
+        name, message = _safe_model_name(file)
+        if message:
+            return _json({'error': message, 'code': 'invalid'}, 400)
+        models_dir = parameters.get_nsfw_models_dir()
+        path = os.path.join(models_dir, name)
+        if not os.path.isfile(path):
+            return _json({'error': 'Model file not found', 'code': 'not_found'}, 404)
+        # The active model is never deleted from under a running analysis;
+        # switch to another model first.
+        if name == os.path.basename(parameters.get_nsfw_model_path()):
+            return _json({'error': 'Cannot delete the active model', 'code': 'active'}, 409)
+        try:
+            os.remove(path)
+        except OSError as e:
+            return _json({'error': f'Cannot delete model: {e}', 'code': 'delete_failed'}, 500)
+        return _json(_models_payload())
+
     @app.route('/api/v2/settings/nsfw/backscan/progress', methods=['GET'])
     @login_required
     def api_v2_get_nsfw_backscan():
@@ -311,6 +437,39 @@ def register(app, manager, login_required):
         # Stops after the file being analyzed finishes; a no-op when idle.
         from streamonitor import nsfw_backfill
         return _json(nsfw_backfill.cancel(manager.streamers))
+
+    @app.route('/api/v2/settings/nsfw/models/download', methods=['POST'])
+    @login_required
+    def api_v2_start_nsfw_model_download():
+        # Streams one curated model into the model directory in a single
+        # background thread. A running download is never restarted, its current
+        # state is returned instead.
+        from streamonitor import nsfw_model_download
+        data = request.get_json(silent=True) or {}
+        catalog_id = data.get('catalogId')
+        if not isinstance(catalog_id, str) or not catalog_id.strip():
+            return _json({'error': 'catalogId is required', 'code': 'missing'}, 400)
+        state, started, err = nsfw_model_download.start(catalog_id.strip())
+        if err:
+            code, message = err
+            return _json({'error': message, 'code': code},
+                         404 if code == 'unknown_model' else 409)
+        state['started'] = started
+        return _json(state)
+
+    @app.route('/api/v2/settings/nsfw/models/download/progress', methods=['GET'])
+    @login_required
+    def api_v2_get_nsfw_model_download():
+        from streamonitor import nsfw_model_download
+        return _json(nsfw_model_download.progress())
+
+    @app.route('/api/v2/settings/nsfw/models/download/cancel', methods=['POST'])
+    @login_required
+    def api_v2_cancel_nsfw_model_download():
+        # Stops after the chunk being written finishes and removes the partial
+        # file; a no-op when idle.
+        from streamonitor import nsfw_model_download
+        return _json(nsfw_model_download.cancel())
 
     @app.route('/api/v2/settings/recording-resolution', methods=['GET'])
     @login_required

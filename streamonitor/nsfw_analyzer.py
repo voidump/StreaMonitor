@@ -20,7 +20,8 @@ through the settings API; disabling it releases the loaded model
 classifications. All failures are swallowed so analysis can never affect a
 recording.
 
-Supported models (parameters.NSFW_MODEL_PATH, bring your own file):
+Supported models (parameters.get_nsfw_model_path(), managed via the settings API
+or brought in by hand):
 - 2-class normal/nsfw classifiers with NCHW float32 input, e.g. the ViT at
   https://huggingface.co/onnx-community/nsfw_image_detection-ONNX
   (preprocessing: (x/255 - 0.5) / 0.5); adult score = p(nsfw)
@@ -70,7 +71,7 @@ def _get_session():
             return _session
         try:
             import onnxruntime
-            model_path = parameters.NSFW_MODEL_PATH
+            model_path = parameters.get_nsfw_model_path()
             if not os.path.isfile(model_path):
                 raise FileNotFoundError(f'model file not found: {model_path} '
                                         '(set STRMNTR_NSFW_MODEL_PATH, see streamonitor/nsfw_analyzer.py)')

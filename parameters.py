@@ -295,10 +295,32 @@ def set_nsfw_threshold(value):
 def persist_nsfw_threshold(value):
     _persist_env_key('STRMNTR_NSFW_THRESHOLD', f'{float(value):g}')
 
-# Path to the ONNX classifier model file (bring your own model, it is not
-# downloaded automatically; see streamonitor/nsfw_analyzer.py for options).
+# Path to the ONNX classifier model file (see streamonitor/nsfw_analyzer.py for
+# the supported architectures). Runtime-configurable, persisted setting: read it
+# via get_nsfw_model_path() at call time so switching the active model through
+# the settings API takes effect without a restart.
 NSFW_MODEL_PATH = env.str("STRMNTR_NSFW_MODEL_PATH",
                           data_path(os.path.join('models', 'nsfw-model.onnx')))
+
+
+def get_nsfw_model_path():
+    return NSFW_MODEL_PATH
+
+
+def set_nsfw_model_path(value):
+    global NSFW_MODEL_PATH
+    NSFW_MODEL_PATH = str(value)
+
+
+def persist_nsfw_model_path(value):
+    _persist_env_key('STRMNTR_NSFW_MODEL_PATH', _env_quote(str(value)))
+
+
+def get_nsfw_models_dir():
+    # The model directory is the directory the active model file lives in
+    # (default <data dir>/models); every .onnx file in it is a selectable
+    # model. Resolved at call time so switching models keeps it in sync.
+    return os.path.dirname(os.path.abspath(os.path.expanduser(get_nsfw_model_path())))
 
 # Maximum number of frames sampled evenly across the finished file when live
 # sampling produced fewer scores than this (short recordings, unseekable tails).
