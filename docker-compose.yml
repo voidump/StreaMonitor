@@ -21,8 +21,15 @@ services:
       # unbind web interface (bound to 127.0.0.1 by default)
       # NOTE: this exposes the console to the network — set your own password.
       STRMNTR_HOST: '0.0.0.0'
+      # use the redesigned web console
+      STRMNTR_SKIN: 'webui'
       # minimum free disk space percentage (default: 5.0)
       STRMNTR_MIN_FREE_SPACE: "0.5"
+      # keep the application path stable; the host storage is bound from J:
+      STRMNTR_DOWNLOAD_DIR: '/app/downloads'
+      # repair leftover temp recordings in the background instead of blocking
+      # the web service during startup (periodic repair defaults to 30 minutes)
+      STRMNTR_REPAIR_TEMP_ON_START: 'false'
       # video resolution (240, 360, 480, 720, 1080, 1440, 99999)
       STRMNTR_RESOLUTION: "1080"
       # video container format (mp4, mkv)
@@ -41,8 +48,10 @@ services:
       # set refresh frequency on list page
       STRMNTR_LIST_FREQ: "30"
     volumes:
-      # Downloads directory - relative path to current project
-      - ./downloads:/app/downloads
+      # Downloads directory - stored on the J: drive
+      - type: bind
+        source: J:/JM/live
+        target: /app/downloads
       # One volume for all runtime state. Single-file mounts are gone for a
       # reason: os.replace() onto a bind-mounted file fails with EBUSY inside
       # the container, so every config save silently failed and changes were

@@ -11,11 +11,15 @@ function siteBadgeIconError(img){
   if (dot) img.replaceWith(dot);
 }
 function siteBadge(siteKey){
-  const s = SITES[siteKey];
+  // API rows keep the backend slug (for example "SC") so action URLs can use
+  // it directly. Resolve that slug through the shared metadata helper instead
+  // of indexing SITES, whose static keys are frontend names such as
+  // "stripchat". Unknown future sites also get the neutral fallback.
+  const s = siteMeta(siteKey);
   const dot = `<svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="${s.color}"/></svg>`;
   let icon = dot;
   if (typeof apiState!=='undefined' && apiState.mode==='api'){
-    const src = apiUrl('/sites/'+encodeURIComponent(siteKey)+'/favicon');
+    const src = apiUrl('/sites/'+encodeURIComponent(s.slug||siteKey)+'/favicon');
     icon = `<img src="${src}" width="12" height="12" style="width:12px;height:12px;border-radius:2px;object-fit:contain" alt="" data-dot="${dot.replace(/"/g,'&quot;')}" onerror="siteBadgeIconError(this)">`;
   }
   return `<span class="sitebadge" style="color:${s.color};background:${s.color}1a;border-color:${s.color}33" title="${s.name}">
@@ -139,8 +143,12 @@ function renderDashboard(){
     return `<button class="chip ${filters.status===c?'on':''}" data-fs="${c}">
       <span class="dot" style="${dot}"></span>${c==='error'?t('errGroup'):meta.label()} <span class="n">${n}</span></button>`;
   }).join('');
-  const siteChips = Object.entries(SITES).filter(([k])=>streamers.some(s=>s.site===k))
-    .map(([k,st])=>{
+  // Streamers coming from the API use backend slugs while mock rows use the
+  // frontend keys. Build chips from the identities actually present and look
+  // up their display metadata through siteMeta() so both forms work.
+  const siteChips = [...new Set(streamers.map(s=>s.site))]
+    .map(k=>{
+      const st = siteMeta(k);
       const n = streamers.filter(x=>x.site===k).length;
       return `<button class="chip ${filters.site===k?'on':''}" data-site="${k}"><span class="dot" style="background:${st.color}"></span>${st.name} <span class="n">${n}</span></button>`;
     }).join('');

@@ -76,7 +76,7 @@ function resolveDetailStreamer(r){
   s = streamers.find(x=>{
     if (x.user!==user) return false;
     if (x.site.toLowerCase()===siteLc) return true;   // slug/abbr, case-insensitive
-    const meta = SITES[x.site];
+    const meta = siteMeta(x.site);
     return !!(meta && meta.name && meta.name.toLowerCase()===siteLc);   // full site name
   });
   if (s) r.id = s.id;   // normalize to the canonical id
@@ -145,7 +145,7 @@ function doAdd(siteKey, user){
   streamers.unshift(s);
   addMsg = null;
   addDraft = {url:'', user:''};
-  toast(t('addOk')(user, SITES[siteKey].name));
+  toast(t('addOk')(user, siteMeta(siteKey).name));
   if (orphanN) toast(t('addOkLocal')(orphanN));
   // simulate first status check completing
   setTimeout(()=>{
@@ -405,7 +405,7 @@ document.addEventListener('click', e=>{
   if (ext){
     e.stopPropagation();
     const s = streamers.find(x=>x.id===ext.dataset.ext);
-    if (s) window.open(s.url || SITES[s.site].url(s.user), '_blank');
+    if (s) window.open(s.url || siteMeta(s.site).url(s.user), '_blank');
     return;
   }
   const rm = e.target.closest('[data-remove]');

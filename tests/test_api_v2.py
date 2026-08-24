@@ -125,6 +125,39 @@ def test_webui_serves_css_assets(webui_client):
     assert response.status_code == 200
 
 
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="node is required for web UI JS regression test",
+)
+def test_webui_site_badge_accepts_backend_slug():
+    """The API returns siteslug=SC while SITES is keyed by 'stripchat'."""
+    webui_js = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "streamonitor", "managers", "httpmanager", "webui", "js",
+    )
+    script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+const root = process.argv[1];
+const ctx = vm.createContext({console, URL});
+vm.runInContext(fs.readFileSync(path.join(root, 'data.js'), 'utf8'), ctx);
+vm.runInContext("const apiState={mode:'api'}; function apiUrl(p){return p}", ctx);
+vm.runInContext(fs.readFileSync(path.join(root, 'views', 'dashboard.js'), 'utf8'), ctx);
+const known = vm.runInContext("siteBadge('SC')", ctx);
+const unknown = vm.runInContext("siteBadge('FUTURE')", ctx);
+if (!known.includes('StripChat') || !known.includes('#e0455a')) process.exit(2);
+if (!unknown.includes('#6b7688')) process.exit(3);
+"""
+    result = subprocess.run(
+        [shutil.which("node"), "-e", script, webui_js],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_basesettings_includes_web_list_frequency(client):
     response = client.get("/api/v2/basesettings", headers=AUTH)
     payload = json.loads(response.data)

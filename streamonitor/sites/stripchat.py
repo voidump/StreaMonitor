@@ -73,7 +73,6 @@ class StripChat(RoomIdBot):
         with open(_mouflon_cache_filename) as f:
             try:
                 _mouflon_keys.update(json.load(f))
-                print('Loaded StripChat mouflon key cache')
             except Exception as e:
                 print('Error loading mouflon key cache:', e)
 
