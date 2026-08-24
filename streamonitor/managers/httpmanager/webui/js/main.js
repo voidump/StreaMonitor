@@ -444,6 +444,13 @@ document.addEventListener('click', e=>{
       removeHistoryAt(i); toast(t('histRemovedToast'), 'warn'); render();
       return;
     }
+    if (modalState.type==='nsfwModelActivate' || modalState.type==='nsfwModelDelete'){
+      const del = modalState.type==='nsfwModelDelete';
+      const file = modalState.id;
+      modalState=null; renderModal();
+      if (del) deleteNsfwModel(file); else activateNsfwModel(file);
+      return;
+    }
     if (modalState.type==='purgeVideos'){
       const sp = streamers.find(x=>x.id===modalState.id);
       modalState=null; renderModal();

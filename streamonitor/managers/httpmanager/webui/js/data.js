@@ -181,6 +181,20 @@ const MOCK_DOWNLOAD_DIR = '/srv/streamonitor/downloads';   // shown by the setti
 const MOCK_MIN_VIDEO_SIZE_MB = 10;   // shown by the min-video-size settings panel in mock mode
 const MOCK_NSFW = {enabled:false, action:'mark_only', recycleRetentionDays:7, scanIntervalHours:6, threshold:0.7, modelPresent:true, runtimeAvailable:true};   // shown by the NSFW settings panel in mock mode
 const MOCK_NSFW_BACKFILL_PENDING = 12;   // unclassified-file count shown by the NSFW backfill block in mock mode
+/* local model files + download catalog shown by the NSFW model panel in mock mode */
+const MOCK_NSFW_MODELS = {
+  modelsDir: '/srv/streamonitor/models',
+  models: [
+    {file:'nsfw-model-quantized.onnx', sizeBytes:87333629, mtime:1730000000, active:true},
+    {file:'nsfw-model-legacy.onnx', sizeBytes:23145728, mtime:1720000000, active:false},
+  ],
+  catalog: [
+    // filename is mock-only (the real catalog payload omits it); the mock
+    // download needs it to name the file it pretends to fetch.
+    {id:'vit-nsfw-quantized', name:'NSFW image detection (ViT, quantized)', desc:'Smaller and faster, slightly less accurate. Recommended default.', sizeBytes:87333629, downloaded:true, filename:'nsfw-model-quantized.onnx'},
+    {id:'vit-nsfw', name:'NSFW image detection (ViT, full precision)', desc:'Full precision weights, most accurate but ~4x the download.', sizeBytes:343401688, downloaded:false, filename:'nsfw-model.onnx'},
+  ],
+};
 
 /* ---------------- formatting ---------------- */
 function fmtSize(b){

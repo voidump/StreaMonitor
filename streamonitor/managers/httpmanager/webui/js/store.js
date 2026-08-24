@@ -131,7 +131,7 @@ function nav(to){
     if (s2 && !s2._schedLoaded) loadSchedule(s2.site, s2.user);
   }
   if (apiState.mode==='api' && to.view==='history') loadHistory();   // pull real deletion history
-  if (to.view!=='settings') stopNsfwBackfillPoll();   // never keep polling the backfill worker from another view
+  if (to.view!=='settings'){ stopNsfwBackfillPoll(); stopNsfwModelDownloadPoll(); }   // never keep polling the backfill/model-download workers from another view
   if (to.view==='settings'){ loadDownloadDir(); loadMinVideoSize(); loadRecResolution(); loadNsfw(); if (auth.enabled) loadPasswordSettings(); }   // read the current download dir + cleanup threshold + recording resolution + NSFW toggle + password bounds (mock fills demo values)
   const sc=document.querySelector('.detail-scroll,.list-scroll,.settings-wrap');
   if(sc)sc.scrollTop=0;
@@ -754,7 +754,7 @@ function _applyNsfwPayload(d){
 async function loadNsfw(){
   if (apiState.mode!=='api'){   // mock: show a representative state, no backend call
     if (!nsfw.loaded){ Object.assign(nsfw, MOCK_NSFW); nsfw.retentionDraft = String(nsfw.recycleRetentionDays); nsfw.scanDraft = String(nsfw.scanIntervalHours); nsfw.thresholdDraft = String(nsfw.threshold); nsfw.loaded = true; }
-    if (nsfw.enabled) loadNsfwBackfill();
+    if (nsfw.enabled){ loadNsfwBackfill(); loadNsfwModels(); }
     return;
   }
   nsfw.loading = true; nsfw.error = null; render();
@@ -763,7 +763,7 @@ async function loadNsfw(){
     _applyNsfwPayload(d);
     nsfw.loaded = true; nsfw.loading = false; nsfw.error = null;
     render();
-    if (nsfw.enabled) loadNsfwBackfill();   // backfill block is only shown while NSFW is on
+    if (nsfw.enabled){ loadNsfwBackfill(); loadNsfwModels(); }   // both blocks are only shown while NSFW is on
   } catch(e){
     nsfw.loading = false; nsfw.error = 'nsfwLoadErr'; render();
   }
@@ -799,7 +799,10 @@ async function saveNsfw(patch){
     nsfw.scanDraft = String(nsfw.scanIntervalHours);
     nsfw.thresholdDraft = String(nsfw.threshold);
     nsfw.error = null;
-    if (toggled){ if (nsfw.enabled) loadNsfwBackfill(); else { stopNsfwBackfillPoll(); finishMockNsfwBackfill(); } }
+    if (toggled){
+      if (nsfw.enabled){ loadNsfwBackfill(); loadNsfwModels(); }
+      else { stopNsfwBackfillPoll(); finishMockNsfwBackfill(); stopNsfwModelDownloadPoll(); finishMockNsfwModelDl(); }
+    }
     toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render(); return;
   }
   nsfw.saving = true; nsfw.error = null; render();
@@ -815,8 +818,8 @@ async function saveNsfw(patch){
     _applyNsfwPayload(data);
     nsfw.saving = false; nsfw.error = null;
     if (toggled){   // switching NSFW off stops the worker server-side too
-      if (nsfw.enabled) loadNsfwBackfill();
-      else { stopNsfwBackfillPoll(); nsfwBackfill.running = false; nsfwBackfill.currentFile = null; }
+      if (nsfw.enabled){ loadNsfwBackfill(); loadNsfwModels(); }
+      else { stopNsfwBackfillPoll(); nsfwBackfill.running = false; nsfwBackfill.currentFile = null; stopNsfwModelDownloadPoll(); }
     }
     toast(t(toggled ? (nsfw.enabled ? 'nsfwOnToast' : 'nsfwOffToast') : 'nsfwSavedToast')); render();
   } catch(e){
@@ -924,6 +927,171 @@ async function pollNsfwBackfill(){
 function stopNsfwBackfillPoll(){
   if (nsfwBackfill.timer){ clearInterval(nsfwBackfill.timer); nsfwBackfill.timer = null; }
   if (nsfwBackfill.mockTimer){ clearInterval(nsfwBackfill.mockTimer); nsfwBackfill.mockTimer = null; }
+}
+
+/* ---- NSFW model management ----
+ * Local .onnx files in the model directory plus the curated download catalog.
+ * Activate/delete are confirmed through a modal; the download runs server-side
+ * in one background thread and is polled like the backfill worker (settings
+ * view only, see stopNsfwModelDownloadPoll). error holds an i18n KEY. */
+const NSFW_MODELS_PATH = '/settings/nsfw/models';
+let nsfwModels = {models:[], catalog:[], modelsDir:'', busyFile:null,
+                  error:null, loaded:false};
+let nsfwModelDl = {running:false, catalogId:null, filename:null, totalBytes:0, doneBytes:0,
+                   starting:null, cancelling:false, error:null, timer:null, mockTimer:null};
+function _applyModelsPayload(d){
+  nsfwModels.models = (d && Array.isArray(d.models)) ? d.models : [];
+  nsfwModels.catalog = (d && Array.isArray(d.catalog)) ? d.catalog : [];
+  nsfwModels.modelsDir = (d && d.modelsDir) || '';
+  nsfwModels.loaded = true;
+}
+function _modelErrKey(e){
+  const code = e && e.data && e.data.code;
+  if (code==='active') return 'nsfwModelErrActive';
+  if (code==='not_found') return 'nsfwModelErrNotFound';
+  if (code==='exists') return 'nsfwModelErrExists';
+  if (code==='insufficient_space') return 'nsfwModelErrSpace';
+  if (code==='unknown_model') return 'nsfwModelErrUnknown';
+  return 'nsfwModelErrGeneric';
+}
+async function loadNsfwModels(){
+  if (apiState.mode!=='api'){   // mock: representative local files + catalog, no backend call
+    if (!nsfwModels.loaded){
+      nsfwModels.models = MOCK_NSFW_MODELS.models.map(m=>Object.assign({}, m));
+      nsfwModels.catalog = MOCK_NSFW_MODELS.catalog.map(c=>Object.assign({}, c));
+      nsfwModels.modelsDir = MOCK_NSFW_MODELS.modelsDir;
+      nsfwModels.loaded = true;
+    }
+    return;
+  }
+  try {
+    _applyModelsPayload(await apiGet(NSFW_MODELS_PATH));
+    nsfwModels.error = null;
+  } catch(e){
+    nsfwModels.loaded = true; nsfwModels.error = 'nsfwModelsLoadErr';
+  }
+  loadNsfwModelDownload();
+  render();
+}
+async function activateNsfwModel(file){
+  if (nsfwModels.busyFile) return;
+  if (apiState.mode!=='api'){   // mock: flip the active flag locally
+    nsfwModels.models.forEach(m=>{ m.active = m.file===file; });
+    nsfwModels.error = null;
+    toast(t('nsfwModelActivatedToast')(file)); render(); return;
+  }
+  nsfwModels.busyFile = file; nsfwModels.error = null; render();
+  try {
+    _applyModelsPayload(await apiSend('POST', NSFW_MODELS_PATH+'/activate', {file}));
+    nsfwModels.busyFile = null;
+    toast(t('nsfwModelActivatedToast')(file)); render();
+  } catch(e){
+    nsfwModels.busyFile = null; nsfwModels.error = _modelErrKey(e); render();
+  }
+}
+async function deleteNsfwModel(file){
+  if (nsfwModels.busyFile) return;
+  if (apiState.mode!=='api'){   // mock: drop it from the local list
+    nsfwModels.models = nsfwModels.models.filter(m=>m.file!==file);
+    nsfwModels.error = null;
+    toast(t('nsfwModelDeletedToast')(file), 'warn'); render(); return;
+  }
+  nsfwModels.busyFile = file; nsfwModels.error = null; render();
+  try {
+    _applyModelsPayload(await apiSend('DELETE', NSFW_MODELS_PATH+'/'+encodeURIComponent(file)));
+    nsfwModels.busyFile = null;
+    toast(t('nsfwModelDeletedToast')(file), 'warn'); render();
+  } catch(e){
+    nsfwModels.busyFile = null; nsfwModels.error = _modelErrKey(e); render();
+  }
+}
+function _applyModelDlPayload(d){
+  nsfwModelDl.running = !!(d && d.running);
+  nsfwModelDl.catalogId = (d && d.catalogId) || null;
+  nsfwModelDl.filename = (d && d.filename) || null;
+  nsfwModelDl.totalBytes = (d && d.totalBytes!=null) ? d.totalBytes : 0;
+  nsfwModelDl.doneBytes = (d && d.doneBytes!=null) ? d.doneBytes : 0;
+  nsfwModelDl.error = (d && d.error) || null;   // the server state is authoritative, a stale local error must clear
+}
+async function loadNsfwModelDownload(){
+  if (apiState.mode!=='api'){ syncNsfwModelDlPoll(); return; }
+  try {
+    _applyModelDlPayload(await apiGet(NSFW_MODELS_PATH+'/download/progress'));
+  } catch(e){ /* transient: keep the last known state */ }
+  syncNsfwModelDlPoll();
+}
+async function downloadNsfwModel(catalogId){
+  if (nsfwModelDl.starting || nsfwModelDl.running) return;
+  const entry = nsfwModels.catalog.find(c=>c.id===catalogId);
+  if (apiState.mode!=='api'){   // mock: walk a fake byte counter so the UI can be exercised standalone
+    const total = (entry && entry.sizeBytes) || 1;
+    nsfwModelDl.running = true; nsfwModelDl.catalogId = catalogId;
+    nsfwModelDl.filename = (entry && entry.filename) || (catalogId + '.onnx');
+    nsfwModelDl.totalBytes = total; nsfwModelDl.doneBytes = 0; nsfwModelDl.error = null;
+    if (nsfwModelDl.mockTimer) clearInterval(nsfwModelDl.mockTimer);
+    nsfwModelDl.mockTimer = setInterval(()=>{
+      nsfwModelDl.doneBytes = Math.min(total, nsfwModelDl.doneBytes + Math.ceil(total/12));
+      if (nsfwModelDl.doneBytes>=total){
+        finishMockNsfwModelDl();
+        if (entry){
+          entry.downloaded = true;
+          nsfwModels.models.push({file:nsfwModelDl.filename, sizeBytes:total, mtime:Math.floor(Date.now()/1000), active:false});
+        }
+        toast(t('nsfwModelDlDoneToast'));
+      }
+      render();
+    }, 700);
+    render(); return;
+  }
+  nsfwModelDl.starting = catalogId; nsfwModelDl.error = null; render();
+  try {
+    _applyModelDlPayload(await apiSend('POST', NSFW_MODELS_PATH+'/download', {catalogId}));
+    nsfwModelDl.starting = null;
+    syncNsfwModelDlPoll(); render();
+  } catch(e){
+    nsfwModelDl.starting = null; nsfwModelDl.error = t(_modelErrKey(e)); render();
+  }
+}
+async function cancelNsfwModelDownload(){
+  if (nsfwModelDl.cancelling) return;
+  if (apiState.mode!=='api'){ finishMockNsfwModelDl(); toast(t('nsfwModelDlCancelledToast'), 'warn'); render(); return; }
+  nsfwModelDl.cancelling = true; render();
+  try {
+    _applyModelDlPayload(await apiSend('POST', NSFW_MODELS_PATH+'/download/cancel'));
+    nsfwModelDl.cancelling = false;
+    syncNsfwModelDlPoll(); render();
+  } catch(e){
+    nsfwModelDl.cancelling = false; nsfwModelDl.error = t('nsfwModelErrGeneric'); render();
+  }
+}
+function finishMockNsfwModelDl(){
+  if (nsfwModelDl.mockTimer){ clearInterval(nsfwModelDl.mockTimer); nsfwModelDl.mockTimer = null; }
+  nsfwModelDl.running = false;
+}
+function syncNsfwModelDlPoll(){
+  const want = route.view==='settings' && nsfw.enabled && nsfwModelDl.running && apiState.mode==='api';
+  if (want && !nsfwModelDl.timer){
+    nsfwModelDl.timer = setInterval(pollNsfwModelDownload, 2000);
+  } else if (!want && nsfwModelDl.timer){
+    clearInterval(nsfwModelDl.timer); nsfwModelDl.timer = null;
+  }
+}
+async function pollNsfwModelDownload(){
+  if (route.view!=='settings'){ stopNsfwModelDownloadPoll(); return; }
+  const wasRunning = nsfwModelDl.running;
+  try {
+    _applyModelDlPayload(await apiGet(NSFW_MODELS_PATH+'/download/progress'));
+  } catch(e){ return; }   // transient failure: keep the last known state and retry on the next tick
+  if (wasRunning && !nsfwModelDl.running){
+    if (!nsfwModelDl.error) toast(t('nsfwModelDlDoneToast'));
+    loadNsfwModels();   // the new file only shows up once the download settles
+  }
+  syncNsfwModelDlPoll();
+  render();
+}
+function stopNsfwModelDownloadPoll(){
+  if (nsfwModelDl.timer){ clearInterval(nsfwModelDl.timer); nsfwModelDl.timer = null; }
+  if (nsfwModelDl.mockTimer){ clearInterval(nsfwModelDl.mockTimer); nsfwModelDl.mockTimer = null; }
 }
 
 /* ---- recording resolution (server-side, v3.3): read + change-to-save ---- */

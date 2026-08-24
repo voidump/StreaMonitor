@@ -166,7 +166,8 @@ function renderNsfwPanel(){
             <button class="btn primary" data-nsfw-threshold-save ${busy?'disabled':''}>${n.saving?t('dlDirSaving'):t('dlDirSave')}</button>
           </div>
         </div>
-        ${renderNsfwBackfillBlock(notReady)}`:''}
+        ${renderNsfwBackfillBlock(notReady)}
+        ${renderNsfwModelsBlock()}`:''}
       </div>`;
 }
 
@@ -198,6 +199,67 @@ function renderNsfwBackfillBlock(notReady){
           ${notReady?`<div class="desc">${t('nsfwBackfillNotReady')}</div>`:''}
           ${body}
           ${b.error?`<div class="dldir-err">${t(b.error)}</div>`:''}
+        </div>`;
+}
+
+/* Model management: the local .onnx files (switch / delete, the active one is
+ * never deletable) plus the curated download catalog. A running download shows
+ * a byte progress bar and a cancel button; the worker lives server-side and
+ * this block only reflects the polled progress. */
+function renderNsfwModelsBlock(){
+  const m = nsfwModels;
+  const dl = nsfwModelDl;
+  const rows = m.models.map(x=>{
+    const busy = m.busyFile===x.file;
+    return `
+            <div class="nsfw-mdl-row ${x.active?'active':''}">
+              <span class="nsfw-mdl-name" title="${esc(x.file)}">${esc(x.file)}</span>
+              <span class="nsfw-mdl-meta">${fmtSize(x.sizeBytes||0)}</span>
+              ${x.active
+                ? `<span class="nsfw-mdl-tag">${t('nsfwModelActive')}</span>`
+                : `<button class="btn" data-nsfw-model-activate="${esc(x.file)}" ${busy?'disabled':''}>${t('nsfwModelActivate')}</button>`}
+              ${x.active
+                ? `<button class="btn" disabled title="${t('nsfwModelActiveDelHint')}">${t('nsfwModelDelete')}</button>`
+                : `<button class="btn danger" data-nsfw-model-delete="${esc(x.file)}" ${busy?'disabled':''}>${t('nsfwModelDelete')}</button>`}
+            </div>`;
+  }).join('');
+  const pct = dl.totalBytes>0 ? Math.min(100, Math.round(dl.doneBytes/dl.totalBytes*100)) : 0;
+  const dlBlock = dl.running ? `
+          <div class="nsfw-bf-bar"><i style="width:${pct}%"></i></div>
+          <div class="nsfw-bf-status">
+            <span>${t('nsfwModelDlProgress')(fmtSize(dl.doneBytes||0), fmtSize(dl.totalBytes||0))}</span>
+            ${dl.filename?`<span class="nsfw-bf-file" title="${esc(dl.filename)}">${esc(dl.filename)}</span>`:''}
+          </div>
+          <div class="nsfw-num">
+            <button class="btn" data-nsfw-model-dl-cancel ${dl.cancelling?'disabled':''}>${dl.cancelling?t('nsfwModelDlCancelling'):t('nsfwModelDlCancel')}</button>
+          </div>` : '';
+  const catalogRows = m.catalog.map(c=>{
+    const have = !!c.downloaded;
+    const starting = dl.starting===c.id;
+    return `
+            <div class="nsfw-mdl-row">
+              <span class="nsfw-mdl-cat">
+                <span class="nsfw-mdl-name" title="${esc(c.name||c.id)}">${esc(c.name||c.id)}</span>
+                ${c.desc?`<div class="nsfw-mdl-desc">${esc(c.desc)}</div>`:''}
+              </span>
+              <span class="nsfw-mdl-meta">${c.sizeBytes?fmtSize(c.sizeBytes):''}</span>
+              ${have
+                ? `<span class="nsfw-mdl-tag">${t('nsfwModelDownloaded')}</span>`
+                : `<button class="btn primary" data-nsfw-model-download="${esc(c.id)}" ${(dl.running||starting)?'disabled':''}>${t('nsfwModelDownload')}</button>`}
+            </div>`;
+  }).join('');
+  return `
+        <div class="nsfw-sub">
+          <div>
+            <div class="k" style="font-size:12.5px">${t('nsfwModels')}</div>
+            <div class="desc">${t('nsfwModelsDesc')}</div>
+          </div>
+          ${m.modelsDir?`<div class="nsfw-bf-status"><span class="nsfw-bf-file" title="${esc(m.modelsDir)}">${t('nsfwModelsDir')(esc(m.modelsDir))}</span></div>`:''}
+          ${m.models.length?`<div class="nsfw-mdl-list">${rows}</div>`:`<div class="desc">${t('nsfwModelsEmpty')}</div>`}
+          ${m.catalog.length?`<div class="nsfw-mdl-h">${t('nsfwModelCatalog')}</div><div class="nsfw-mdl-list">${catalogRows}</div>`:''}
+          ${dlBlock}
+          ${m.error?`<div class="dldir-err">${t(m.error)}</div>`:''}
+          ${dl.error?`<div class="dldir-err">${esc(dl.error)}</div>`:''}
         </div>`;
 }
 
@@ -398,6 +460,31 @@ document.addEventListener('click', e=>{
   if (e.target.closest('[data-nsfw-backfill-cancel]')){
     e.stopPropagation();
     cancelNsfwBackfill();
+    return;
+  }
+  const mAct = e.target.closest('[data-nsfw-model-activate]');
+  if (mAct){
+    e.stopPropagation();
+    modalState = {type:'nsfwModelActivate', id: mAct.dataset.nsfwModelActivate};
+    renderModal();
+    return;
+  }
+  const mDel = e.target.closest('[data-nsfw-model-delete]');
+  if (mDel){
+    e.stopPropagation();
+    modalState = {type:'nsfwModelDelete', id: mDel.dataset.nsfwModelDelete};
+    renderModal();
+    return;
+  }
+  const mDl = e.target.closest('[data-nsfw-model-download]');
+  if (mDl){
+    e.stopPropagation();
+    downloadNsfwModel(mDl.dataset.nsfwModelDownload);
+    return;
+  }
+  if (e.target.closest('[data-nsfw-model-dl-cancel]')){
+    e.stopPropagation();
+    cancelNsfwModelDownload();
     return;
   }
   if (e.target.closest('[data-logout]')){

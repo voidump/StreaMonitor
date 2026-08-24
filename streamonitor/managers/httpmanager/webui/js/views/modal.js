@@ -99,6 +99,23 @@ function renderModalInner(){
     </div>`;
     return;
   }
+  // NSFW model management: switching the model in use / deleting a model file
+  if (modalState.type==='nsfwModelActivate' || modalState.type==='nsfwModelDelete'){
+    const del = modalState.type==='nsfwModelDelete';
+    const file = modalState.id;
+    root.innerHTML = `
+    <div class="modal-backdrop" id="modalBk">
+      <div class="modal">
+        <div class="modal-h">${t(del?'nsfwModelDelTitle':'nsfwModelActivateTitle')}</div>
+        <div class="modal-b" style="padding-bottom:14px">${t(del?'nsfwModelDelDesc':'nsfwModelActivateDesc')(esc(file))}</div>
+        <div class="modal-f">
+          <button class="btn" id="modalCancel">${t('cancel')}</button>
+          <button class="btn ${del?'danger-solid':'primary'}" id="modalConfirm">${t(del?'nsfwModelDelBtn':'nsfwModelActivateBtn')}</button>
+        </div>
+      </div>
+    </div>`;
+    return;
+  }
   const s = streamers.find(x=>x.id===modalState.id);
   if (!s){ modalState=null; root.innerHTML=''; return; }
   // manual non-adult override under a recycle/delete policy: the file is not
