@@ -62,6 +62,15 @@ class StripChat(RoomIdBot):
     _PRIVATE_STATUSES = frozenset(["private", "groupShow", "p2p", "virtualPrivate", "p2pVoice"])
     _OFFLINE_STATUSES = frozenset(["off", "idle"])
 
+    # Consecutive bulk rounds a model may be absent before it is considered a
+    # deleted/banned account rather than a transient API anomaly.
+    _BULK_ABSENT_THRESHOLD = 10
+    _bulk_absent_count = 0
+    # Seconds between two "failed to parse JSON" messages of the same streamer;
+    # anti-bot HTTP 418 replies would otherwise log on every poll.
+    _JSON_FAIL_LOG_INTERVAL = 300
+    _json_fail_log_ts = 0.0
+
     _GENDER_MAP = {
         'female': Gender.FEMALE,
         'male': Gender.MALE,
@@ -461,7 +470,13 @@ class StripChat(RoomIdBot):
         try:
             data = r.json()
         except requests.exceptions.JSONDecodeError:
-            self.log('Failed to parse JSON response')
+            # Deleted/banned accounts get an anti-bot HTTP 418 with an empty
+            # body on every poll; log at debug level and rate-limit the notice.
+            now = time.time()
+            if now - self._json_fail_log_ts >= self._JSON_FAIL_LOG_INTERVAL:
+                self._json_fail_log_ts = now
+                self.logger.debug(
+                    f'Failed to parse JSON response (HTTP {r.status_code})')
             return None
         return data
 
@@ -588,8 +603,19 @@ class StripChat(RoomIdBot):
                 # previous status instead of forcing UNKNOWN, which otherwise
                 # strands the streamer in the "checking" dead-end. bot.py runs a
                 # single getStatus fallback while sc is UNKNOWN/NOTRUNNING.
-                streamer.logger.warning('Bulk status: model not present in response, keeping previous status')
+                # Persistent absence means the account was deleted/banned.
+                streamer._bulk_absent_count += 1
+                if streamer._bulk_absent_count >= cls._BULK_ABSENT_THRESHOLD:
+                    if streamer.sc != Status.NOTEXIST:
+                        streamer.logger.warning(
+                            f'Bulk status: model absent for {streamer._bulk_absent_count} '
+                            'consecutive rounds, marking as non-existent')
+                        streamer.setStatus(Status.NOTEXIST)
+                    streamer.lastCheckTs = now
+                else:
+                    streamer.logger.warning('Bulk status: model not present in response, keeping previous status')
                 continue
+            streamer._bulk_absent_count = 0
             if model_data.get('gender'):
                 streamer.gender = cls._GENDER_MAP.get(model_data.get('gender'))
             if model_data.get('country'):

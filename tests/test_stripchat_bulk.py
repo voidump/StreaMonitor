@@ -18,6 +18,7 @@ def make_sc(room_id, sc=Status.OFFLINE):
     s.lastCheckTs = None
     s.username = f"user{room_id}"
     s.logger = logging.getLogger("test_stripchat_bulk")
+    s._bulk_absent_count = 0
     return s
 
 
@@ -121,3 +122,67 @@ def test_unknown_status_is_set_and_timestamped(monkeypatch):
 
     assert streamer.sc == Status.UNKNOWN
     assert streamer.lastCheckTs is not None
+
+
+def test_persistent_absence_marks_notexist(monkeypatch):
+    # A deleted/banned account stays absent from the bulk response forever.
+    # Below the threshold the previous status is kept; once reached the
+    # streamer is marked NOTEXIST so it leaves the "checking" dead-end.
+    streamer = make_sc("777", sc=Status.OFFLINE)
+
+    def handler(url):
+        return FakeResp({"models": []})
+
+    patch_session(monkeypatch, handler)
+
+    for _ in range(StripChat._BULK_ABSENT_THRESHOLD - 1):
+        StripChat.getStatusBulk([streamer])
+        assert streamer.sc == Status.OFFLINE
+        assert streamer.lastCheckTs is None
+
+    StripChat.getStatusBulk([streamer])
+    assert streamer.sc == Status.NOTEXIST
+    assert streamer.lastCheckTs is not None
+
+
+def test_reappearance_resets_absence_and_status(monkeypatch):
+    # Once the account shows up again the counter is cleared and the reported
+    # status applies, so the streamer automatically leaves NOTEXIST.
+    streamer = make_sc("778", sc=Status.OFFLINE)
+    present = {"v": False}
+
+    def handler(url):
+        if present["v"]:
+            return FakeResp({"models": [{"id": 778, "status": "public"}]})
+        return FakeResp({"models": []})
+
+    patch_session(monkeypatch, handler)
+
+    for _ in range(StripChat._BULK_ABSENT_THRESHOLD):
+        StripChat.getStatusBulk([streamer])
+    assert streamer.sc == Status.NOTEXIST
+
+    present["v"] = True
+    StripChat.getStatusBulk([streamer])
+    assert streamer.sc == Status.PUBLIC
+    assert streamer._bulk_absent_count == 0
+
+    # A later single absent round must not immediately fall back to NOTEXIST.
+    present["v"] = False
+    StripChat.getStatusBulk([streamer])
+    assert streamer.sc == Status.PUBLIC
+
+
+def test_absent_count_defaults_without_instance_attribute(monkeypatch):
+    # Instances built by __init__ rely on the class-level default.
+    streamer = make_sc("779", sc=Status.OFFLINE)
+    del streamer._bulk_absent_count
+
+    def handler(url):
+        return FakeResp({"models": []})
+
+    patch_session(monkeypatch, handler)
+    StripChat.getStatusBulk([streamer])
+
+    assert streamer._bulk_absent_count == 1
+    assert streamer.sc == Status.OFFLINE
