@@ -3,6 +3,8 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -1405,6 +1407,254 @@ def test_delete_nsfw_model_invalid_400(tmp_path, monkeypatch, preserve_nsfw, nam
     assert json.loads(response.data)["code"] == "invalid"
     assert outside.exists()
     assert models.exists()
+
+
+# --- settings: NSFW model download (background task) ---
+
+@pytest.fixture
+def nsfw_download(monkeypatch):
+    # Idle module state per test, and a no-op loadability check so the mocked
+    # payloads (not real ONNX files) pass validation.
+    from streamonitor import nsfw_model_download as dl
+    dl._cancel.clear()
+    monkeypatch.setattr(dl, "_state", dict(dl._state, running=False, catalogId=None,
+                                           filename=None, totalBytes=0, doneBytes=0,
+                                           error=None, startedTs=None))
+    monkeypatch.setattr(dl, "_check_loadable", lambda path: None)
+    monkeypatch.setattr(dl, "_MIN_MODEL_BYTES", 8)
+    yield dl
+    dl._cancel.set()
+    _wait_idle(dl)
+    dl._cancel.clear()
+
+
+def _wait_idle(dl, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not dl.progress()["running"]:
+            return dl.progress()
+        time.sleep(0.01)
+    raise AssertionError("download did not finish")
+
+
+class _FakeResponse:
+    def __init__(self, chunks, headers=None, error=None):
+        self._chunks = chunks
+        self.headers = headers or {}
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self._error:
+            raise self._error
+
+    def iter_content(self, chunk_size):
+        return iter(self._chunks)
+
+
+def _fake_get(monkeypatch, response):
+    import requests
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return response
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    return calls
+
+
+@pytest.mark.parametrize("method,url", [
+    ("post", "/api/v2/settings/nsfw/models/download"),
+    ("get", "/api/v2/settings/nsfw/models/download/progress"),
+    ("post", "/api/v2/settings/nsfw/models/download/cancel"),
+])
+def test_nsfw_model_download_requires_auth(tmp_path, monkeypatch, method, url):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = getattr(_client(manager), method)(url)
+    assert response.status_code == 401
+
+
+def test_nsfw_model_download_progress_idle(tmp_path, monkeypatch, nsfw_download):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).get(
+        "/api/v2/settings/nsfw/models/download/progress", headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["running"] is False
+    assert payload["catalogId"] is None
+    assert payload["doneBytes"] == 0
+    assert payload["error"] is None
+
+
+@pytest.mark.parametrize("body", [{}, {"catalogId": ""}, {"catalogId": "   "},
+                                  {"catalogId": 5}, {"catalogId": None}])
+def test_nsfw_model_download_missing_id_400(tmp_path, monkeypatch, nsfw_download, body):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).post(
+        "/api/v2/settings/nsfw/models/download", json=body, headers=AUTH)
+    assert response.status_code == 400
+    assert json.loads(response.data)["code"] == "missing"
+    assert nsfw_download.progress()["running"] is False
+
+
+def test_nsfw_model_download_unknown_id_404(tmp_path, monkeypatch, nsfw_download):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([])
+    response = _client(manager).post("/api/v2/settings/nsfw/models/download",
+                                    json={"catalogId": "nope"}, headers=AUTH)
+    assert response.status_code == 404
+    assert json.loads(response.data)["code"] == "unknown_model"
+
+
+def test_nsfw_model_download_writes_file_atomically(tmp_path, monkeypatch,
+                                                    preserve_nsfw, nsfw_download):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    entry = nsfw_download.CATALOG[0]
+    payload = b"m" * 32
+    _fake_get(monkeypatch, _FakeResponse([payload[:16], payload[16:]],
+                                         {"Content-Length": str(len(payload))}))
+    manager = HTTPManager([])
+    response = _client(manager).post("/api/v2/settings/nsfw/models/download",
+                                     json={"catalogId": entry["id"]}, headers=AUTH)
+    assert response.status_code == 200
+    assert json.loads(response.data)["started"] is True
+    state = _wait_idle(nsfw_download)
+    assert state["error"] is None
+    assert state["doneBytes"] == state["totalBytes"] == len(payload)
+    dest = models / entry["filename"]
+    assert dest.read_bytes() == payload
+    assert not (models / (entry["filename"] + ".part")).exists()
+
+
+def test_nsfw_model_download_failure_reports_error(tmp_path, monkeypatch,
+                                                   preserve_nsfw, nsfw_download):
+    import requests
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    entry = nsfw_download.CATALOG[0]
+    _fake_get(monkeypatch, _FakeResponse([], error=requests.RequestException("boom")))
+    manager = HTTPManager([])
+    response = _client(manager).post("/api/v2/settings/nsfw/models/download",
+                                     json={"catalogId": entry["id"]}, headers=AUTH)
+    assert response.status_code == 200
+    state = _wait_idle(nsfw_download)
+    assert "boom" in state["error"]
+    assert not (models / entry["filename"]).exists()
+    assert not (models / (entry["filename"] + ".part")).exists()
+
+
+def test_nsfw_model_download_truncated_is_error(tmp_path, monkeypatch,
+                                                preserve_nsfw, nsfw_download):
+    # Fewer bytes than Content-Length announced: no model file is published.
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    entry = nsfw_download.CATALOG[0]
+    _fake_get(monkeypatch, _FakeResponse([b"m" * 16], {"Content-Length": "32"}))
+    manager = HTTPManager([])
+    _client(manager).post("/api/v2/settings/nsfw/models/download",
+                          json={"catalogId": entry["id"]}, headers=AUTH)
+    state = _wait_idle(nsfw_download)
+    assert "incomplete download" in state["error"]
+    assert not (models / entry["filename"]).exists()
+    assert not (models / (entry["filename"] + ".part")).exists()
+
+
+def test_nsfw_model_download_cancel_leaves_no_part(tmp_path, monkeypatch,
+                                                   preserve_nsfw, nsfw_download):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    entry = nsfw_download.CATALOG[0]
+    started = threading.Event()
+
+    def slow_chunks():
+        yield b"m" * 16
+        started.set()
+        for _ in range(1000):
+            time.sleep(0.01)
+            yield b"m" * 16
+
+    _fake_get(monkeypatch, _FakeResponse(slow_chunks(), {"Content-Length": "99999"}))
+    client = _client(HTTPManager([]))
+    client.post("/api/v2/settings/nsfw/models/download",
+                json={"catalogId": entry["id"]}, headers=AUTH)
+    assert started.wait(5)
+    response = client.post("/api/v2/settings/nsfw/models/download/cancel", headers=AUTH)
+    assert response.status_code == 200
+    state = _wait_idle(nsfw_download)
+    assert state["error"] is None                 # cancelling is not a failure
+    assert not (models / entry["filename"]).exists()
+    assert not (models / (entry["filename"] + ".part")).exists()
+
+
+def test_nsfw_model_download_second_start_returns_state(tmp_path, monkeypatch,
+                                                        preserve_nsfw, nsfw_download):
+    monkeypatch.chdir(tmp_path)
+    _model_dir(tmp_path, monkeypatch)
+    entry = nsfw_download.CATALOG[0]
+    started = threading.Event()
+
+    def slow_chunks():
+        started.set()
+        for _ in range(1000):
+            time.sleep(0.01)
+            yield b"m" * 16
+
+    _fake_get(monkeypatch, _FakeResponse(slow_chunks(), {"Content-Length": "99999"}))
+    client = _client(HTTPManager([]))
+    client.post("/api/v2/settings/nsfw/models/download",
+                json={"catalogId": entry["id"]}, headers=AUTH)
+    assert started.wait(5)
+    response = client.post("/api/v2/settings/nsfw/models/download",
+                           json={"catalogId": nsfw_download.CATALOG[1]["id"]}, headers=AUTH)
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["started"] is False
+    assert payload["catalogId"] == entry["id"]    # the running one, not the new id
+
+
+def test_nsfw_model_download_existing_file_409(tmp_path, monkeypatch,
+                                               preserve_nsfw, nsfw_download):
+    monkeypatch.chdir(tmp_path)
+    models = _model_dir(tmp_path, monkeypatch)
+    entry = nsfw_download.CATALOG[0]
+    (models / entry["filename"]).write_bytes(b"already here")
+    manager = HTTPManager([])
+    response = _client(manager).post("/api/v2/settings/nsfw/models/download",
+                                     json={"catalogId": entry["id"]}, headers=AUTH)
+    assert response.status_code == 409
+    assert json.loads(response.data)["code"] == "exists"
+    assert (models / entry["filename"]).read_bytes() == b"already here"
+
+
+def test_nsfw_model_download_insufficient_space_409(tmp_path, monkeypatch,
+                                                    preserve_nsfw, nsfw_download):
+    monkeypatch.chdir(tmp_path)
+    _model_dir(tmp_path, monkeypatch)
+    entry = nsfw_download.CATALOG[0]
+    monkeypatch.setattr(nsfw_download.shutil, "disk_usage", lambda p: _FakeUsage(1024))
+    manager = HTTPManager([])
+    response = _client(manager).post("/api/v2/settings/nsfw/models/download",
+                                     json={"catalogId": entry["id"]}, headers=AUTH)
+    assert response.status_code == 409
+    assert json.loads(response.data)["code"] == "insufficient_space"
+    assert nsfw_download.progress()["running"] is False
+
+
+class _FakeUsage:
+    def __init__(self, free):
+        self.free = free
+        self.total = free
+        self.used = 0
 
 
 # --- NSFW analyzer: runtime load/unload regression ---
