@@ -20,7 +20,7 @@ from .media_cache import (_get_duration_cache_only, _maybe_cleanup_durations,
 # deleted files (video_filter, temp repair, manual rm) would keep inflating
 # videoCount/totalSize until the next scan or a detail request. Re-validation
 # stats every indexed file, so it runs on a background thread at a fixed
-# interval instead of on the request path: the list endpoint is polled
+# interval rather than on the request path: the list endpoint is polled
 # frequently, and a per-file stat on every poll would undo the point of the
 # aggregate query and tie the response to disk latency.
 _LIST_VALIDATE_INTERVAL = 30  # seconds
