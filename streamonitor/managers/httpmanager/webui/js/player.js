@@ -16,10 +16,12 @@ const PIC = {
 const PLAYER_I18N = {
   zh:{ speed:'倍速', mute:'静音', unmute:'取消静音', prevVid:'上一个视频', nextVid:'下一个（更早）视频',
     back30:'后退 30 秒', back5:'后退 5 秒', fwd5:'前进 5 秒', fwd30:'前进 30 秒', volTitle:'音量',
-    hints:'空格 播放/暂停 · ← → ±5秒 · Shift+← → ±30秒 · ↑ ↓ 音量 · [ ] 或 PgUp/PgDn 上/下一个 · X 静音 · M 标记' },
+    hints:'空格 播放/暂停 · ← → ±5秒 · Shift+← → ±30秒 · ↑ ↓ 音量 · [ ] 或 PgUp/PgDn 上/下一个 · X 静音 · M 标记',
+    mpegtsFail:'直播播放组件加载失败，请重试。' },
   en:{ speed:'Speed', mute:'Mute', unmute:'Unmute', prevVid:'Previous video', nextVid:'Next (older) video',
     back30:'Back 30s', back5:'Back 5s', fwd5:'Forward 5s', fwd30:'Forward 30s', volTitle:'Volume',
-    hints:'Space play/pause · ← → ±5s · Shift+← → ±30s · ↑ ↓ volume · [ ] or PgUp/PgDn prev/next · X mute · M mark' },
+    hints:'Space play/pause · ← → ±5s · Shift+← → ±30s · ↑ ↓ volume · [ ] or PgUp/PgDn prev/next · X mute · M mark',
+    mpegtsFail:'Failed to load the live player component — try again.' },
 };
 const pt = k => (PLAYER_I18N[lang] || PLAYER_I18N.en)[k] || k;
 
@@ -189,6 +191,24 @@ function togglePlayerFullscreen(){
  * (no backend) shows a simulated live frame and issues no network requests. */
 let liveSession = null;   // {mode:'connecting'|'native'|'mpegts'|'mock', url, controller, mp, sid}
 
+/* mpegts.js is only needed for raw-TS live streams, so it is kept off the initial
+ * page load and fetched the first time a live preview actually needs it. The
+ * promise is cached: concurrent/repeat opens share one <script> request. */
+let mpegtsLoad = null;
+function ensureMpegts(){
+  if (window.mpegts) return Promise.resolve(true);
+  if (!mpegtsLoad){
+    mpegtsLoad = new Promise(resolve=>{
+      const el = document.createElement('script');
+      el.src = 'js/vendor/mpegts.js';
+      el.onload = ()=> resolve(!!window.mpegts);
+      el.onerror = ()=>{ mpegtsLoad = null; resolve(false); };   // allow a retry on the next open
+      document.head.appendChild(el);
+    });
+  }
+  return mpegtsLoad;
+}
+
 function liveWatchable(s){
   return apiState.mode==='api' ? !!s._liveAvailable : s.status==='recording';
 }
@@ -204,6 +224,7 @@ function startLive(s){
 }
 async function probeLive(s){
   const ctrl = new AbortController();
+  const sess = liveSession;
   liveSession.controller = ctrl;
   let ct = '';
   try {
@@ -217,6 +238,9 @@ async function probeLive(s){
   if (!player.live || !liveSession || liveSession.controller!==ctrl) return;   // superseded while awaiting
   ctrl.abort(); liveSession.controller = null;   // headers are all we needed; playback opens its own connection
   if (ct.indexOf('mp2t')>=0 || ct.indexOf('mpegts')>=0){
+    const loaded = await ensureMpegts();   // raw TS: pull the player library in now (first live open only)
+    if (!player.live || liveSession!==sess) return;   // superseded while the library was loading
+    if (!loaded){ toast(pt('mpegtsFail'), 'err'); liveEndedState(); return; }
     if (window.mpegts && mpegts.isSupported()) liveSession.mode = 'mpegts';
     else { toast(t('liveUnsupported'), 'warn'); liveEndedState(); return; }
   } else {

@@ -1242,13 +1242,24 @@ async function initDataSource(){
   if (cfg.listFrequency!=null && !isNaN(Number(cfg.listFrequency))){ const n = Number(cfg.listFrequency); if (n>0) apiState.pollMs = Math.max(2000, n*1000); }
   if (cfg.useApi === true){
     apiState.mode='api'; apiState.loading=true; streamers=[]; render();
-    await loadBaseSettings(); await refreshStreamers(); startPolling();
+    await startApiMode();
   } else if (cfg.useApi === 'auto'){
     if (await probeApi()){
       apiState.mode='api'; apiState.loading=true; render();
-      await loadBaseSettings(); await refreshStreamers(); startPolling();
+      await startApiMode();
     }   // else: stay on mock silently (no console noise)
   }   // default (no SM_CONFIG): mock only, no network calls
+}
+/* Both requests go out together and the first paint only waits on /streamers,
+ * so a slow/failing basesettings can no longer delay the list. Its results
+ * (disk widget, auth flag) are folded in with one render once it lands, and
+ * polling starts after it has had its say on apiState.pollMs. */
+async function startApiMode(){
+  const base = loadBaseSettings();
+  await refreshStreamers();
+  await base;
+  render();
+  startPolling();
 }
 
 /* ---- loading / error banner (API mode only) ---- */
