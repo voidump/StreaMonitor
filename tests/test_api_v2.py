@@ -2381,6 +2381,80 @@ def test_site_favicon_fetches_and_caches(tmp_path, monkeypatch, fake_site):
     assert calls == ["fake"]
 
 
+# --- unreachable external network must not hold request threads ---
+
+def test_fetch_favicon_never_calls_google_by_default(monkeypatch):
+    # On a network that cannot reach Google the fallback only costs a connect
+    # timeout, so it must not be attempted unless explicitly enabled.
+    tried = []
+
+    def unreachable(url):
+        tried.append(url)
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(branding, "_favicon_http_get", unreachable)
+    assert branding._fetch_favicon("example.com") is None
+    # The homepage probe and the site's own /favicon.ico, nothing else.
+    assert tried == ["https://example.com/", "https://example.com/favicon.ico"]
+
+
+def test_favicon_timeout_is_short():
+    assert branding._FAVICON_TIMEOUT <= 3
+
+
+def test_site_favicon_unreachable_is_negatively_cached(tmp_path, monkeypatch, fake_site):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def unreachable(domain):
+        calls.append(domain)
+        return None
+
+    monkeypatch.setattr(branding, "_fetch_favicon", unreachable)
+    client = _client(HTTPManager([]))
+
+    first = client.get("/api/v2/sites/FS/favicon", headers=AUTH)
+    assert first.status_code == 404
+    # Within the negative-cache TTL the fetch is not retried at all.
+    second = client.get("/api/v2/sites/FS/favicon", headers=AUTH)
+    assert second.status_code == 404
+    assert calls == ["fake"]
+
+
+def test_avatar_unreachable_is_negatively_cached(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    streamer.lastInfo = {"avatarUrl": "https://example/av.png"}
+    calls = []
+
+    def unreachable(url, **kw):
+        calls.append(url)
+        raise OSError("network unreachable")
+
+    streamer.session.get = unreachable
+    monkeypatch.setitem(branding._AVATAR_EXTRACTORS, "FS", lambda info: info.get("avatarUrl"))
+    client = _client(HTTPManager([streamer]))
+
+    first = client.get("/api/v2/streamers/FakeSite/alice/avatar", headers=AUTH)
+    assert first.status_code == 404
+    second = client.get("/api/v2/streamers/FakeSite/alice/avatar", headers=AUTH)
+    assert second.status_code == 404
+    assert len(calls) == 1
+
+
+def test_streamers_list_does_not_validate_index_on_request_path(tmp_path, monkeypatch):
+    # The per-file stat sweep moved to a background thread; the list endpoint
+    # must not run it while serving a request.
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(streamers_api, "_validate_indexed_files",
+                        lambda streamers: calls.append(1))
+    response = _client(HTTPManager([make_streamer()])).get(
+        "/api/v2/streamers", headers=AUTH)
+    assert response.status_code == 200
+    assert calls == []
+
+
 # --- live recording speed + resolution on the list card (V31D) ---
 
 def test_streamers_list_recording_metrics_null_when_not_recording(tmp_path, monkeypatch):
