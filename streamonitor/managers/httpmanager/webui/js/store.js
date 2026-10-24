@@ -435,9 +435,7 @@ async function loadBaseSettings(){
     auth.enabled = b.authEnabled===true;
   } catch(e){ /* basesettings is optional */ }
 }
-/* ms overrides the configured cadence (the SSE stream slows the poll down to a
- * safety net, see startEventStream); no argument = the normal interval. */
-function startPolling(ms){ stopPolling(); apiState.timer = setInterval(pollRefresh, ms || apiState.pollMs); }
+function startPolling(){ stopPolling(); apiState.timer = setInterval(pollRefresh, apiState.pollMs); }
 function stopPolling(){ if (apiState.timer){ clearInterval(apiState.timer); apiState.timer=null; } }
 
 /* ================= live state push (SSE, P2) =================
@@ -446,12 +444,12 @@ function stopPolling(){ if (apiState.timer){ clearInterval(apiState.timer); apiS
  * about a second instead of waiting for the list poll. Events only patch the
  * matching entry of `streamers` and re-render (the dashboard render is keyed
  * and incremental); nothing here re-pulls the list on its own.
- * Polling is never replaced, only slowed: while the stream is up it runs at
- * SSE_IDLE_POLL_MS (counters like videoCount/totalSize still come from it) and
- * any stream failure restores the configured cadence. After SSE_MAX_RETRIES
- * failed reconnects the console stops trying and stays on plain polling. */
+ * Polling is never replaced or slowed: the list poll keeps the configured
+ * cadence while the stream is up, because numbers the events deliberately don't
+ * carry (recording bytes/speed/resolution, videoCount/totalSize) only refresh
+ * with it. After SSE_MAX_RETRIES failed reconnects the console stops trying and
+ * stays on plain polling. */
 const SSE_PATH = '/events';
-const SSE_IDLE_POLL_MS = 120000;
 const SSE_MAX_RETRIES = 5;
 const sse = {es:null, open:false, fails:0, retryTimer:null, refreshTimer:null};
 
@@ -462,7 +460,7 @@ function startEventStream(){
   try { es = new EventSource(apiUrl(SSE_PATH), {withCredentials:true}); }
   catch(e){ return; }
   sse.es = es;
-  es.onopen = ()=>{ sse.open = true; sse.fails = 0; startPolling(SSE_IDLE_POLL_MS); };
+  es.onopen = ()=>{ sse.open = true; sse.fails = 0; if (!apiState.timer) startPolling(); };   // keep the configured cadence; only re-arm if the poll isn't running
   es.addEventListener('state', applyStateEvent);
   es.addEventListener('ping', ()=>{});   // heartbeat: keeps the connection (and its liveness check) honest
   // Covers a dropped connection, a 503 over the server-side connection cap and
