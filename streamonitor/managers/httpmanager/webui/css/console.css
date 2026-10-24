@@ -40,8 +40,9 @@
   /* controls */
   --track:#2a3546;
   --thumb:#dfe9f5;
-  --font:'IBM Plex Sans',-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
-  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,monospace;
+  /* local system stacks only — no webfont request, so the first paint never waits on a network font */
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;
   --radius:6px;
   --sidebar-w:200px;
 }
@@ -799,3 +800,47 @@ kbd{font-family:var(--mono);font-size:10.5px;background:var(--bg-active);border:
   .kbd-hints{display:none}
   .batchbar{left:12px;right:12px;transform:none;justify-content:space-between;flex-wrap:wrap;gap:8px}
 }
+
+
+/* ========== P1: dashboard skeleton + unified loading / empty / error states ========== */
+/* shared shimmer placeholder (same wave as the detail skeleton) */
+.sk-line,.sk-box{
+  display:inline-block;background-color:var(--bg-active);
+  background-image:linear-gradient(90deg,rgba(255,255,255,0) 0,rgba(255,255,255,.06) 50%,rgba(255,255,255,0) 100%);
+  background-size:200% 100%;background-repeat:no-repeat;animation:skwave 1.4s ease-in-out infinite;
+  border-radius:3px;
+}
+.sk-line{height:10px;vertical-align:middle}
+.sk-line.w40{width:40%}.sk-line.w50{width:50%}.sk-line.w60{width:60%}
+.sk-line.w70{width:70%}.sk-line.w80{width:80%}
+.sk-avatar{width:30px;height:30px;border-radius:50%;flex:none}
+.sk-cover{position:absolute;inset:0;width:100%;height:100%;border-radius:0}
+.sk-note{
+  padding:9px 10px;border-bottom:1px solid var(--border);
+  font-size:11px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.5px;
+}
+.sk-wrap .roster tr.sk-row{cursor:default}
+.sk-wrap .roster tr.sk-row:hover{background:transparent}
+.card.sk-card{cursor:default}
+.card.sk-card:hover{border-color:var(--border)}
+.sk-card .grow{display:flex;flex-direction:column;gap:7px}
+/* loading: the counts/filters still read 0 until the payload lands — mute them */
+.view.loading .counts,.view.loading .filters{opacity:.45}
+@media (prefers-reduced-motion:reduce){
+  .sk-line,.sk-box{animation:none}
+}
+
+/* one block shape for "nothing to show": empty roster, empty filter result, load failure */
+.empty .big{display:flex;align-items:center;justify-content:center;gap:7px}
+.empty .sub{font-size:12.5px;color:var(--text-faint);margin:0 auto 14px;max-width:420px;line-height:1.5}
+.empty.empty-error .big{color:var(--danger-text)}
+
+/* loading / error banner (background refreshes; the dashboard renders its own first-load state) */
+.api-banner{
+  position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:400;
+  display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:7px;
+  font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.35);
+}
+.api-banner.load{background:var(--bg-panel);border:1px solid var(--accent-dim);color:var(--accent)}
+.api-banner.err{background:var(--danger-bg);border:1px solid var(--danger-border-strong);color:var(--danger-text)}
+.api-banner a{color:inherit;text-decoration:underline;cursor:pointer}

@@ -8,7 +8,9 @@ function siteBadgeIconError(img){
   const span = document.createElement('span');
   span.innerHTML = img.dataset.dot;
   const dot = span.firstElementChild;
-  if (dot) img.replaceWith(dot);
+  // the marker tells the incremental renderer to keep this dot instead of
+  // re-inserting the <img> (and re-requesting the favicon) on every poll
+  if (dot){ dot.setAttribute('data-badge-fallback', '1'); img.replaceWith(dot); }
 }
 function siteBadge(siteKey){
   // API rows keep the backend slug (for example "SC") so action URLs can use
@@ -60,6 +62,7 @@ function sparkline(s){
  * keeps the generated avatar and makes zero network calls. */
 function avatarImgError(img){
   img.onerror = null;
+  if (!img.dataset.imgOrig) img.dataset.imgOrig = img.getAttribute('src') || '';   // remember the failed URL so re-renders don't retry it
   img.src = genAvatar(img.dataset.seed, img.dataset.user);
 }
 function avatarEl(s, lg){
@@ -67,14 +70,15 @@ function avatarEl(s, lg){
   const dims = `width="${px}" height="${px}" style="width:100%;height:100%;object-fit:cover"`;
   if (typeof apiState!=='undefined' && apiState.mode==='api'){
     const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/avatar');
-    return `<span class="avatar ${lg?'lg':''}"><img src="${src}" data-seed="${s.seed}" data-user="${s.user}" ${dims} alt="" onerror="avatarImgError(this)"></span>`;
+    return `<span class="avatar ${lg?'lg':''}"><img src="${src}" data-seed="${s.seed}" data-user="${s.user}" ${dims} loading="lazy" alt="" onerror="avatarImgError(this)"></span>`;
   }
-  return `<span class="avatar ${lg?'lg':''}"><img src="${genAvatar(s.seed,s.user)}" ${dims} alt=""></span>`;
+  return `<span class="avatar ${lg?'lg':''}"><img src="${genAvatar(s.seed,s.user)}" ${dims} loading="lazy" alt=""></span>`;
 }
 /* NB13: card cover with a three-level fallback — most recent recording
  * thumbnail (NB6 /thumb) > model avatar (NB12) > generated placeholder. Mock
  * mode uses the generated placeholder directly (zero network). */
 function cardCoverError(img){
+  if (!img.dataset.imgOrig) img.dataset.imgOrig = img.getAttribute('src') || '';   // the source the template keeps emitting — never retried while it stays the same
   if (img.dataset.coverStage==='thumb' && img.dataset.coverAvatar){
     img.dataset.coverStage='avatar';
     img.src = img.dataset.coverAvatar;
@@ -85,17 +89,18 @@ function cardCoverError(img){
   img.src = genThumb(img.dataset.coverSeed);
 }
 function cardCover(s){
+  const dims = `width="320" height="180"`;   // intrinsic ratio placeholder; CSS stretches it into the 16/9 cover box
   if (typeof apiState!=='undefined' && apiState.mode==='api'){
     const av = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/avatar');
     const recent = (s.files||[]).find(f=>f._filename);
     if (recent){
       const ver = s._lastRecordedTs!=null ? s._lastRecordedTs : (recent.dt&&recent.dt.getTime?Math.floor(recent.dt.getTime()/1000):0);   // busts the immutable thumb cache when a newer recording lands
       const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(recent._filename)+'/thumb')+'?v='+ver;
-      return `<img class="card-cover-img" src="${src}" alt="" loading="lazy" data-cover-stage="thumb" data-cover-avatar="${av}" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
+      return `<img class="card-cover-img" src="${src}" alt="" ${dims} loading="lazy" data-cover-stage="thumb" data-cover-avatar="${av}" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
     }
-    return `<img class="card-cover-img" src="${av}" alt="" loading="lazy" data-cover-stage="avatar" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
+    return `<img class="card-cover-img" src="${av}" alt="" ${dims} loading="lazy" data-cover-stage="avatar" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
   }
-  return `<img class="card-cover-img" src="${genThumb(s.seed)}" alt="">`;
+  return `<img class="card-cover-img" src="${genThumb(s.seed)}" alt="" ${dims} loading="lazy">`;
 }
 /* NB13/NB15: most recent recording time for the card meta row. API mode carries
  * lastRecordedTs on the list item (epoch seconds/ms, tsToSecAgo adapts); the mock
@@ -132,6 +137,77 @@ function sortList(list){
     return r*dir;
   });
 }
+/* ---------------- P1: first-paint skeleton + unified list states ----------------
+ * While the first /streamers request is in flight the roster area shows placeholder
+ * rows/cards with the real geometry, so the data drops in without a layout jump.
+ * Placeholders carry data-key, so the keyed incremental morph replaces them with the
+ * real keyed rows instead of patching one into the other.
+ * The same area owns the three terminal states — empty roster, empty filter result,
+ * load failure — in one `.empty` block shape. */
+const SKELETON_N = 8;
+function dashLoading(){
+  return typeof apiState!=='undefined' && apiState.mode==='api' && apiState.loading && streamers.length===0;
+}
+/* true while the dashboard renders the API loading/error state inline; syncApiBanner()
+ * reads this so the floating banner never doubles up with the in-list state */
+function dashboardOwnsApiState(){
+  return typeof apiState!=='undefined' && apiState.mode==='api' && route.view==='dashboard'
+    && streamers.length===0 && (apiState.loading || apiState.error);
+}
+function skeletonRows(n){
+  let out = '';
+  for (let i=0;i<n;i++) out += `<tr class="sk-row" data-key="sk-row-${i}" aria-hidden="true">
+      <td class="sel-cell"></td>
+      <td style="width:130px"><span class="sk-line w70"></span></td>
+      <td><div class="cell-streamer"><span class="sk-box sk-avatar"></span><span class="sk-line w50" style="flex:1"></span></div></td>
+      <td style="width:90px"><span class="sk-line w70"></span></td>
+      <td style="width:80px"><span class="sk-line w80"></span></td>
+      <td class="num" style="width:60px"><span class="sk-line w50"></span></td>
+      <td class="num" style="width:86px"><span class="sk-line w70"></span></td>
+      <td class="num" style="width:96px"><span class="sk-line w60"></span></td>
+      <td class="num" style="width:96px"><span class="sk-line w60"></span></td>
+      <td style="width:116px"><span class="sk-line w50"></span></td>
+    </tr>`;
+  return out;
+}
+function skeletonCards(n){
+  let out = '';
+  for (let i=0;i<n;i++) out += `<div class="card sk-card" data-key="sk-card-${i}" aria-hidden="true">
+      <div class="card-cover"><span class="sk-box sk-cover"></span></div>
+      <div class="card-body">
+        <span class="sk-box sk-avatar"></span>
+        <div class="grow"><span class="sk-line w60"></span><span class="sk-line w80"></span></div>
+      </div>
+    </div>`;
+  return out;
+}
+function rosterSkeleton(){
+  return `<div class="sk-wrap" data-key="roster-skeleton">
+    <div class="sk-note">${t('loadingRoster')}</div>
+    <table class="roster"><tbody>${skeletonRows(SKELETON_N)}</tbody></table>
+    <div class="cards">${skeletonCards(SKELETON_N)}</div>
+  </div>`;
+}
+/* the empty / failed states, same block shape and typography */
+function rosterStateBlock(){
+  if (typeof apiState!=='undefined' && apiState.mode==='api' && apiState.error && streamers.length===0){
+    return `<div class="empty empty-error" data-key="roster-state">
+      <div class="big">${IC.alert}${t('loadFailed')}</div>
+      <div class="sub">${t('loadFailedHint')}</div>
+      <button class="btn" id="stateRetry">${t('apiRetry')}</button>
+    </div>`;
+  }
+  if (!streamers.length){
+    return `<div class="empty" data-key="roster-state">
+      <div class="big">${t('emptyRoster')}</div>
+      <div class="sub">${t('emptyRosterHint')}</div>
+    </div>`;
+  }
+  return `<div class="empty" data-key="roster-state">
+    <div class="big">${t('emptyFiltered')}</div>
+    <button class="btn" id="clearFilters">${t('clearFilters')}</button>
+  </div>`;
+}
 function renderDashboard(){
   const list = sortList(applyFilters());
   const nRec = streamers.filter(s=>s.status==='recording').length;
@@ -156,6 +232,7 @@ function renderDashboard(){
   const selArr = streamers.filter(s=>selected.has(s.id));
   const selSize = fmtSize(selArr.reduce((a,s)=>a+sizeOf(s),0));
   const inSel = selMode || selArr.length>0;   // NB9: selection mode active
+  const loading = dashLoading();   // first API list request in flight and nothing to show yet
 
   const th = (key,label,cls='')=>{
     const arr = sort.key===key ? `<span class="arrow">${sort.dir>0?'▲':'▼'}</span>`:'';
@@ -240,7 +317,7 @@ function renderDashboard(){
     <div class="add-toggle"><button data-addmode="url">${t('addUrlToggle')}</button></div>`;
 
   return `
-  <div class="view view-${viewMode}${selArr.length?' has-sel':''}${inSel?' selmode':''}">
+  <div class="view view-${viewMode}${selArr.length?' has-sel':''}${inSel?' selmode':''}${loading?' loading':''}" data-view-root="dashboard">
     <div class="topbar">
       <h1>${t('navDashboard')}</h1>
       <div class="counts">
@@ -277,7 +354,8 @@ function renderDashboard(){
       <div class="search-box">${IC.search}<input id="qFilter" placeholder="${t('searchPh')}" value="${esc(filters.q)}"></div>
     </div>
     <div class="list-scroll">
-      ${list.length? `
+      ${loading? rosterSkeleton()
+      : list.length? `
       <table class="roster">
         <thead><tr>
           <th class="sel-cell"></th>
@@ -294,7 +372,7 @@ function renderDashboard(){
         <tbody>${rows}</tbody>
       </table>
       <div class="cards">${cards}</div>`
-      : `<div class="empty"><div class="big">${t('emptyFiltered')}</div><button class="btn" id="clearFilters">${t('clearFilters')}</button></div>`}
+      : rosterStateBlock()}
     </div>
     ${selArr.length? `
     <div class="batchbar">

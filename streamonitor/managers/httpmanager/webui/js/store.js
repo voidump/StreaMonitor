@@ -18,7 +18,12 @@ let viewMode = loadViewMode();   // dashboard 'list'|'card' view preference (per
 
 /* ---------------- extended state (v2 scaffolding — data only, no UI yet) ---------------- */
 let history = [];   // {user, site, url, avatarDataUrl, addedDate, removedDate}
-let detailState = {fileFilter:'all', clsFilter:'all'};   // fileFilter 'all'|'marked'; clsFilter 'all'|'non-adult'|'adult'|'unknown'|'unanalyzed'|'recycle'
+/* P2: the detail video list renders in pages of DETAIL_PAGE_SIZE; visibleFiles is the
+ * current window size, grown when the grid's sentinel scrolls into view and reset
+ * whenever the displayed set changes (entering a detail, switching a filter). */
+const DETAIL_PAGE_SIZE = 30;
+let detailState = {fileFilter:'all', clsFilter:'all', visibleFiles:DETAIL_PAGE_SIZE};   // fileFilter 'all'|'marked'; clsFilter 'all'|'non-adult'|'adult'|'unknown'|'unanalyzed'|'recycle'
+function resetDetailFileWindow(){ detailState.visibleFiles = DETAIL_PAGE_SIZE; }
 let clsMenuFileId = null;   // detail: file whose classification menu is open (null = none)
 
 /* ---------------- history ops ---------------- */
@@ -112,6 +117,7 @@ function nav(to){
   selected.clear();
   detailState.fileFilter = 'all';
   detailState.clsFilter = 'all';
+  resetDetailFileWindow();
   clsMenuFileId = null;
   if (to.view==='detail'){
     const s = streamers.find(x=>x.id===to.id);
@@ -176,6 +182,7 @@ function handleUnauthorized(){
   if (auth.redirecting) return true;
   auth.redirecting = true;
   stopPolling();
+  stopEventStream();
   if (location.pathname !== LOGIN_PATH) location.replace(LOGIN_PATH);
   return true;
 }
@@ -208,7 +215,7 @@ async function doLogout(){
       method:'POST', credentials:'same-origin', headers:{'Accept':'application/json'},
     });
     if (!r.ok && r.status!==401){ auth.loggingOut = false; toast(t('logoutErr'), 'err'); render(); return; }
-    auth.redirecting = true; stopPolling();
+    auth.redirecting = true; stopPolling(); stopEventStream();
     location.replace(LOGIN_PATH);
   } catch(e){
     auth.loggingOut = false; toast(t('logoutErr'), 'err'); render();
@@ -430,6 +437,82 @@ async function loadBaseSettings(){
 }
 function startPolling(){ stopPolling(); apiState.timer = setInterval(pollRefresh, apiState.pollMs); }
 function stopPolling(){ if (apiState.timer){ clearInterval(apiState.timer); apiState.timer=null; } }
+
+/* ================= live state push (SSE, P2) =================
+ * /api/v2/events streams lightweight {site,user,status,running,recording,
+ * monitorState} changes, so a recording start/stop reaches the dashboard in
+ * about a second instead of waiting for the list poll. Events only patch the
+ * matching entry of `streamers` and re-render (the dashboard render is keyed
+ * and incremental); nothing here re-pulls the list on its own.
+ * Polling is never replaced or slowed: the list poll keeps the configured
+ * cadence while the stream is up, because numbers the events deliberately don't
+ * carry (recording bytes/speed/resolution, videoCount/totalSize) only refresh
+ * with it. After SSE_MAX_RETRIES failed reconnects the console stops trying and
+ * stays on plain polling. */
+const SSE_PATH = '/events';
+const SSE_MAX_RETRIES = 5;
+const sse = {es:null, open:false, fails:0, retryTimer:null, refreshTimer:null};
+
+function startEventStream(){
+  if (apiState.mode!=='api' || sse.es || auth.redirecting) return;
+  if (typeof window==='undefined' || typeof window.EventSource!=='function') return;   // no SSE support: polling only
+  let es;
+  try { es = new EventSource(apiUrl(SSE_PATH), {withCredentials:true}); }
+  catch(e){ return; }
+  sse.es = es;
+  es.onopen = ()=>{ sse.open = true; sse.fails = 0; if (!apiState.timer) startPolling(); };   // keep the configured cadence; only re-arm if the poll isn't running
+  es.addEventListener('state', applyStateEvent);
+  es.addEventListener('ping', ()=>{});   // heartbeat: keeps the connection (and its liveness check) honest
+  // Covers a dropped connection, a 503 over the server-side connection cap and
+  // a stream the backend closed. We always close and reconnect ourselves so the
+  // backoff is ours, not EventSource's fixed retry.
+  es.onerror = ()=>{ sseDown(); };
+}
+function stopEventStream(){
+  if (sse.retryTimer){ clearTimeout(sse.retryTimer); sse.retryTimer = null; }
+  if (sse.refreshTimer){ clearTimeout(sse.refreshTimer); sse.refreshTimer = null; }
+  if (sse.es){ try { sse.es.close(); } catch(e){} sse.es = null; }
+  sse.open = false;
+}
+function sseDown(){
+  if (sse.es){ try { sse.es.close(); } catch(e){} sse.es = null; }
+  sse.open = false;
+  sse.fails++;
+  if (auth.redirecting) return;
+  startPolling();   // fall back to the normal cadence while the stream is down
+  if (sse.fails > SSE_MAX_RETRIES) return;   // give up: plain polling from here on
+  const delay = Math.min(60000, 2000 * Math.pow(2, sse.fails-1));
+  if (sse.retryTimer) clearTimeout(sse.retryTimer);
+  sse.retryTimer = setTimeout(()=>{ sse.retryTimer = null; startEventStream(); }, delay);
+}
+/* a recording start/stop also changes file counts / live availability, which the
+ * event payload deliberately doesn't carry — pull them once, debounced */
+function scheduleSseRefresh(){
+  if (sse.refreshTimer) return;
+  sse.refreshTimer = setTimeout(()=>{ sse.refreshTimer = null; pollRefresh(); }, 2000);
+}
+function applyStateEvent(ev){
+  let data = null;
+  try { data = JSON.parse(ev.data); } catch(e){ return; }
+  const changed = (data && data.changed) || [];
+  const removed = (data && data.removed) || [];
+  if (removed.length){ pollRefresh(); return; }   // membership change: authoritative re-pull
+  let dirty = false, recToggled = false, unknown = false;
+  changed.forEach(item=>{
+    const s = streamers.find(x=>x.id===(item.site||'')+'/'+(item.user||''));
+    if (!s){ unknown = true; return; }   // streamer we don't know yet (just added)
+    const ms = String(item.monitorState||'active').toLowerCase();
+    const next = resolveStatus(item);
+    if (s.status===next && s._running===!!item.running && s._monitorState===ms) return;
+    if ((s.status==='recording') !== (next==='recording')) recToggled = true;
+    s.status = next; s._running = !!item.running; s._monitorState = ms;
+    s.monitorState = ms==='stopped' ? 'unmonitored' : 'active';
+    dirty = true;
+  });
+  if (unknown){ pollRefresh(); return; }
+  if (dirty) render();
+  if (recToggled) scheduleSseRefresh();
+}
 
 /* ================= v2 write operations (B2B) =================
  * Wire dashboard/detail/history actions to the real /api/v2 write endpoints.
@@ -1242,32 +1325,47 @@ async function initDataSource(){
   if (cfg.listFrequency!=null && !isNaN(Number(cfg.listFrequency))){ const n = Number(cfg.listFrequency); if (n>0) apiState.pollMs = Math.max(2000, n*1000); }
   if (cfg.useApi === true){
     apiState.mode='api'; apiState.loading=true; streamers=[]; render();
-    await loadBaseSettings(); await refreshStreamers(); startPolling();
+    await startApiMode();
   } else if (cfg.useApi === 'auto'){
     if (await probeApi()){
       apiState.mode='api'; apiState.loading=true; render();
-      await loadBaseSettings(); await refreshStreamers(); startPolling();
+      await startApiMode();
     }   // else: stay on mock silently (no console noise)
   }   // default (no SM_CONFIG): mock only, no network calls
 }
+/* Both requests go out together and the first paint only waits on /streamers,
+ * so a slow/failing basesettings can no longer delay the list. Its results
+ * (disk widget, auth flag) are folded in with one render once it lands, and
+ * polling starts after it has had its say on apiState.pollMs. */
+async function startApiMode(){
+  const base = loadBaseSettings();
+  await refreshStreamers();
+  await base;
+  render();
+  startPolling();
+  startEventStream();   // push state changes; the poll above stays as the fallback
+}
 
-/* ---- loading / error banner (API mode only) ---- */
+/* ---- loading / error banner (API mode only) ----
+ * P1: styling lives in console.css (.api-banner) so the banner, the dashboard
+ * skeleton and the in-list state blocks stay visually consistent. The banner is
+ * for background refreshes; when the dashboard already renders the state inline
+ * (first load / load failure with no data) it stays hidden instead of doubling up. */
 function syncApiBanner(){
   let el = document.getElementById('apiBanner');
-  if (apiState.mode!=='api' || (!apiState.loading && !apiState.error)){ if (el) el.remove(); return; }
+  const inline = typeof dashboardOwnsApiState==='function' && dashboardOwnsApiState();
+  if (apiState.mode!=='api' || inline || (!apiState.loading && !apiState.error)){ if (el) el.remove(); return; }
   if (!el){
     el = document.createElement('div'); el.id = 'apiBanner';
-    el.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:400;display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:7px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.35)';
     document.body.appendChild(el);
   }
+  el.className = 'api-banner ' + (apiState.error ? 'err' : 'load');
   if (apiState.error){
-    el.style.cssText += ';background:var(--danger-bg);border:1px solid var(--danger-border-strong);color:var(--danger-text)';
-    el.innerHTML = IC.alert+'<span>'+t('apiError')+'</span> <a href="#" id="apiRetry" style="color:#ffb3b6;text-decoration:underline;cursor:pointer">'+t('apiRetry')+'</a>';
+    el.innerHTML = IC.alert+'<span>'+t('apiError')+'</span> <a href="#" id="apiRetry">'+t('apiRetry')+'</a>';
     const r = el.querySelector('#apiRetry');
     if (r) r.onclick = ev=>{ ev.preventDefault(); apiState.loading=true; apiState.error=false; syncApiBanner(); refreshStreamers(); };
   } else {
-    el.style.cssText += ';background:#12233b;border:1px solid #2f5075;color:#9ec5ef';
-    el.innerHTML = '<span>'+t('apiLoading')+'</span>';
+    el.innerHTML = '<span class="spin"></span><span>'+t('apiLoading')+'</span>';
   }
 }
 

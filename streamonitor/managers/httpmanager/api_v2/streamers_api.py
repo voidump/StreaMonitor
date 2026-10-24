@@ -3,7 +3,7 @@ actions, delete and batch operations."""
 import os
 import threading
 from contextlib import closing
-from time import time
+from time import sleep
 
 from flask import request
 
@@ -18,26 +18,21 @@ from .media_cache import (_get_duration_cache_only, _maybe_cleanup_durations,
 
 # The list endpoint serves aggregates straight from the index, so externally
 # deleted files (video_filter, temp repair, manual rm) would keep inflating
-# videoCount/totalSize until the next scan or a detail request. Re-validate the
-# indexed rows against the disk at most once per interval: the list endpoint is
-# polled frequently, and an unthrottled per-file stat on every poll would undo
-# the point of the aggregate query.
+# videoCount/totalSize until the next scan or a detail request. Re-validation
+# stats every indexed file, so it runs on a background thread at a fixed
+# interval rather than on the request path: the list endpoint is polled
+# frequently, and a per-file stat on every poll would undo the point of the
+# aggregate query and tie the response to disk latency.
 _LIST_VALIDATE_INTERVAL = 30  # seconds
-_list_validate_lock = threading.Lock()
-_list_validated_ts = 0.0
+_validate_manager = None
+_validate_thread = None
+_validate_thread_lock = threading.Lock()
 
 
 def _validate_indexed_files(streamers):
     # Drop index rows whose file no longer exists (same isfile + mark_deleted
     # sync as the detail endpoint). Returns True when anything was marked
-    # deleted so the caller can re-fetch the aggregate. Throttled; no-op inside
-    # the interval.
-    global _list_validated_ts
-    with _list_validate_lock:
-        now = time()
-        if now - _list_validated_ts < _LIST_VALIDATE_INTERVAL:
-            return False
-        _list_validated_ts = now
+    # deleted.
     changed = False
     for s in streamers:
         rows = media_index.list_videos(s.siteslug, s.username)
@@ -46,6 +41,30 @@ def _validate_indexed_files(streamers):
                 media_index.mark_deleted(row['abs_path'])
                 changed = True
     return changed
+
+
+def _validate_worker():
+    # One daemon thread per process; it validates whichever manager registered
+    # last (a running service has exactly one).
+    while True:
+        sleep(_LIST_VALIDATE_INTERVAL)
+        manager = _validate_manager
+        if manager is None:
+            continue
+        try:
+            _validate_indexed_files(manager.streamers)
+        except Exception:
+            pass
+
+
+def _ensure_validate_worker(manager):
+    global _validate_manager, _validate_thread
+    with _validate_thread_lock:
+        _validate_manager = manager
+        if _validate_thread is None or not _validate_thread.is_alive():
+            _validate_thread = threading.Thread(
+                target=_validate_worker, name='index-validate', daemon=True)
+            _validate_thread.start()
 
 
 def _recycle_root():
@@ -85,6 +104,9 @@ def _classification_map(siteslug, username):
 
 
 def register(app, manager, login_required):
+    # Index re-validation happens off the request path (see _validate_worker).
+    _ensure_validate_worker(manager)
+
     @app.route('/api/v2/streamers', methods=['GET'])
     @login_required
     def api_v2_streamers():
@@ -92,8 +114,6 @@ def register(app, manager, login_required):
         # the index (or a missing/disabled index) fall back per-streamer to the
         # cached video_files enumeration inside _streamer_summary.
         stats = media_index.get_stats_by_streamer() or {}
-        if stats and _validate_indexed_files(manager.streamers):
-            stats = media_index.get_stats_by_streamer() or {}
         payload = []
         for s in manager.streamers:
             s_stats = stats.get((s.siteslug, s.username))

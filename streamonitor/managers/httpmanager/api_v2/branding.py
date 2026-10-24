@@ -3,6 +3,7 @@ bot's own session) and site favicons, both cached under .thumbs/."""
 import hashlib
 import os
 import re
+import threading
 from time import time
 from types import SimpleNamespace
 from urllib.parse import urljoin, urlparse
@@ -26,6 +27,31 @@ from .common import (_json, _send_image, _AVATAR_CACHE_CONTROL,
 _AVATAR_TTL = 24 * 60 * 60  # seconds; refetch at most once a day
 _AVATAR_TIMEOUT = 15
 _AVATAR_MAX_BYTES = 8 * 1024 * 1024
+
+# Negative cache for failed external fetches (avatars and favicons alike).
+# Without it every request for a model/site whose image cannot be fetched pays
+# the full connect timeout again, which is exactly how an unreachable network
+# ties up request threads. Keyed by cache file path, so each cache entry (and
+# each test's download dir) is independent.
+_FETCH_FAIL_TTL = 5 * 60  # seconds; retry a failed fetch at most this often
+_fetch_failures = {}
+_fetch_failures_lock = threading.Lock()
+
+
+def _fetch_recently_failed(cache_path):
+    with _fetch_failures_lock:
+        ts = _fetch_failures.get(cache_path)
+        if ts is None:
+            return False
+        if time() - ts < _FETCH_FAIL_TTL:
+            return True
+        del _fetch_failures[cache_path]
+        return False
+
+
+def _mark_fetch_failed(cache_path):
+    with _fetch_failures_lock:
+        _fetch_failures[cache_path] = time()
 
 
 def _avatar_from_stripchat(info):
@@ -127,12 +153,19 @@ def _download_avatar(streamer, url, out_path):
 # itself." The domain is derived from the site's own getWebsiteURL (a live
 # streamer's when available, else the site class with a placeholder instance) and
 # the icon is cached to "<download dir>/.thumbs/favicons/" keyed by siteslug with
-# a long TTL. Fetch order: /favicon.ico -> <link rel=icon> in the homepage HTML
-# -> Google's favicon service as a last resort. Unknown sites or a total failure
-# 404 so the frontend falls back to its colored dot + abbreviation.
+# a long TTL. Fetch order: <link rel=icon> in the homepage HTML -> /favicon.ico.
+# Unknown sites or a total failure 404 so the frontend falls back to its colored
+# dot + abbreviation.
 _FAVICON_TTL = 7 * 24 * 60 * 60  # seconds; refetch at most once a week
-_FAVICON_TIMEOUT = 10
+# Short enough that an unreachable host cannot hold a request thread: the whole
+# fetch (two candidates) stays within a few seconds instead of tens of seconds.
+_FAVICON_TIMEOUT = 3
 _FAVICON_MAX_BYTES = 1024 * 1024
+# Google's favicon service used to be the last-resort fallback, but where Google
+# is unreachable every miss costs a full connect timeout on a request thread for
+# an icon the frontend can perfectly well replace with its placeholder. Off by
+# default; set to True only where Google is reachable.
+_FAVICON_GOOGLE_FALLBACK = False
 
 
 def _favicons_dir():
@@ -216,9 +249,9 @@ def _favicon_from_html(domain):
 
 
 def _fetch_favicon(domain):
-    # Returns raw image bytes or None. Tries the site's own icon first, then a
-    # Google favicon-service fallback so a recognizable icon is (almost) always
-    # returned. Centralized here so tests can monkeypatch a single function.
+    # Returns raw image bytes or None. Tries the site's own icon, plus the
+    # Google favicon service only when that fallback is enabled. Centralized
+    # here so tests can monkeypatch a single function.
     candidates = ['https://' + domain + '/favicon.ico']
     try:
         html_icon = _favicon_from_html(domain)
@@ -226,7 +259,8 @@ def _fetch_favicon(domain):
         html_icon = None
     if html_icon:
         candidates.insert(0, html_icon)
-    candidates.append('https://www.google.com/s2/favicons?sz=64&domain=' + domain)
+    if _FAVICON_GOOGLE_FALLBACK:
+        candidates.append('https://www.google.com/s2/favicons?sz=64&domain=' + domain)
     for url in candidates:
         try:
             content, ctype = _favicon_http_get(url)
@@ -267,9 +301,16 @@ def register(app, manager, login_required):
         fresh = cached and (time() - os.path.getmtime(cache_path) < _AVATAR_TTL)
         if fresh:
             return _send_image(cache_path, _sniff_image_mime(cache_path), _AVATAR_CACHE_CONTROL)
-        url = _avatar_source_url(streamer)
-        if url and _download_avatar(streamer, url, cache_path):
-            return _send_image(cache_path, _sniff_image_mime(cache_path), _AVATAR_CACHE_CONTROL)
+        # Skip the download entirely while a recent attempt is still in the
+        # negative cache, so an unreachable host cannot be re-dialed on every
+        # request.
+        if not _fetch_recently_failed(cache_path):
+            url = _avatar_source_url(streamer)
+            if url:
+                if _download_avatar(streamer, url, cache_path):
+                    return _send_image(cache_path, _sniff_image_mime(cache_path),
+                                       _AVATAR_CACHE_CONTROL)
+                _mark_fetch_failed(cache_path)
         if cached:  # stale but present, and no live source right now — serve it
             return _send_image(cache_path, _sniff_image_mime(cache_path), _AVATAR_CACHE_CONTROL)
         # No extractor / offline with no prior cache / download failed: 404 so the
@@ -287,9 +328,15 @@ def register(app, manager, login_required):
         fresh = cached and (time() - os.path.getmtime(cache_path) < _FAVICON_TTL)
         if fresh:
             return _send_image(cache_path, _favicon_mime(cache_path), _FAVICON_CACHE_CONTROL)
-        domain = _site_domain(manager, site_cls)
-        if domain and _download_favicon(domain, cache_path):
-            return _send_image(cache_path, _favicon_mime(cache_path), _FAVICON_CACHE_CONTROL)
+        # Same negative cache as the avatar: a site whose icon cannot be
+        # fetched is not re-dialed until the TTL expires.
+        if not _fetch_recently_failed(cache_path):
+            domain = _site_domain(manager, site_cls)
+            if domain:
+                if _download_favicon(domain, cache_path):
+                    return _send_image(cache_path, _favicon_mime(cache_path),
+                                       _FAVICON_CACHE_CONTROL)
+                _mark_fetch_failed(cache_path)
         if cached:  # stale but present, and no fresh fetch right now — serve it
             return _send_image(cache_path, _favicon_mime(cache_path), _FAVICON_CACHE_CONTROL)
         # Unknown domain / fetch failed with no prior cache: 404 so the frontend

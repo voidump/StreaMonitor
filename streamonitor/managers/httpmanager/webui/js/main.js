@@ -219,6 +219,120 @@ function restorePlayingVideo(live){
   ph.parentNode.replaceChild(live, ph);
 }
 
+/* ---------------- incremental DOM update (P1) ----------------
+ * The 30s list poll used to rebuild #main wholesale: that reset the scroll
+ * position, re-requested every avatar/thumbnail and visibly flashed the roster.
+ * morphNode() patches the live tree against a freshly rendered one instead.
+ * Element children are matched by key — data-open / data-sel (both carry the
+ * streamer's site/user id) or an explicit data-key — so a poll that only changes
+ * one streamer touches only that row/card, and a re-sort moves existing nodes
+ * instead of rebuilding them. Unkeyed children are matched positionally. */
+function nodeKey(el){
+  return el.getAttribute('data-open') || el.getAttribute('data-sel') || el.getAttribute('data-key') || null;
+}
+function nodeKeyId(el){ const k = nodeKey(el); return k==null ? null : el.tagName+'|'+k; }
+function sameNode(a, b){
+  if (a.nodeType!==b.nodeType) return false;
+  if (a.nodeType!==1) return true;
+  return a.tagName===b.tagName && nodeKey(a)===nodeKey(b);
+}
+/* an <img> whose onerror fallback already swapped the src (site favicon dot,
+ * avatar placeholder, cover thumb→avatar→placeholder) must not be reset to the
+ * URL that just failed — that re-requests it and flashes on every poll */
+function keepsFallbackSrc(oldEl, newEl){
+  const orig = oldEl.dataset ? oldEl.dataset.imgOrig : null;
+  return !!orig && newEl.getAttribute('src')===orig;
+}
+function syncAttrs(oldEl, newEl, skip){
+  for (let i=oldEl.attributes.length-1; i>=0; i--){
+    const n = oldEl.attributes[i].name;
+    if (skip && skip.has(n)) continue;
+    if (!newEl.hasAttribute(n)) oldEl.removeAttribute(n);
+  }
+  for (const a of newEl.attributes){
+    if (skip && skip.has(a.name)) continue;
+    if (oldEl.getAttribute(a.name)!==a.value) oldEl.setAttribute(a.name, a.value);
+  }
+}
+const COVER_SKIP = new Set(['src','data-cover-stage','data-img-orig']);   // fallback state the template does not know about; keep it
+function morphNode(oldNode, newNode){
+  if (oldNode.nodeType!==1){
+    if (oldNode.nodeValue!==newNode.nodeValue) oldNode.nodeValue = newNode.nodeValue;
+    return;
+  }
+  const isInput = oldNode.tagName==='INPUT';
+  const prevValueAttr = isInput ? oldNode.getAttribute('value') : null;
+  syncAttrs(oldNode, newNode, oldNode.tagName==='IMG' && keepsFallbackSrc(oldNode, newNode) ? COVER_SKIP : null);
+  if (isInput){
+    // attributes alone never update an input the user has typed in / toggled,
+    // so mirror the rendered state onto the live properties
+    if (oldNode.type==='checkbox' || oldNode.type==='radio'){
+      const want = newNode.hasAttribute('checked');
+      if (oldNode.checked!==want) oldNode.checked = want;
+    } else {
+      const nv = newNode.getAttribute('value');
+      if (nv!=null && nv!==prevValueAttr && oldNode.value!==nv) oldNode.value = nv;
+    }
+  }
+  if (oldNode.tagName==='TEXTAREA' || oldNode.tagName==='SELECT') return;   // value lives in the live node, not the markup
+  morphChildren(oldNode, newNode);
+}
+function morphChildren(oldParent, newParent){
+  const keyed = new Map();
+  for (let n=oldParent.firstChild; n; n=n.nextSibling){
+    if (n.nodeType===1){ const k = nodeKeyId(n); if (k) keyed.set(k, n); }
+  }
+  let oldNode = oldParent.firstChild;
+  let newNode = newParent.firstChild;
+  while (newNode){
+    const nextNew = newNode.nextSibling;
+    // the site badge keeps its colored-dot fallback instead of re-inserting the
+    // <img> (and re-requesting the favicon) on every poll
+    if (oldNode && oldNode.nodeType===1 && oldNode.hasAttribute('data-badge-fallback')
+        && newNode.nodeType===1 && newNode.tagName==='IMG'){
+      oldNode = oldNode.nextSibling; newNode = nextNew; continue;
+    }
+    const key = newNode.nodeType===1 ? nodeKeyId(newNode) : null;
+    const match = key ? keyed.get(key) : null;
+    if (match){
+      keyed.delete(key);
+      if (match===oldNode) oldNode = oldNode.nextSibling;
+      else oldParent.insertBefore(match, oldNode);   // reordered: move the existing node
+      morphNode(match, newNode);
+      newNode = nextNew; continue;
+    }
+    if (oldNode && !(oldNode.nodeType===1 && nodeKeyId(oldNode)) && sameNode(oldNode, newNode)){
+      const cur = oldNode; oldNode = oldNode.nextSibling;
+      morphNode(cur, newNode);
+      newNode = nextNew; continue;
+    }
+    oldParent.insertBefore(newNode, oldNode);   // new entry (auto-adopted from the template)
+    newNode = nextNew;
+  }
+  while (oldNode){ const next = oldNode.nextSibling; oldParent.removeChild(oldNode); oldNode = next; }
+  keyed.forEach(n=>{ if (n.parentNode===oldParent) oldParent.removeChild(n); });
+}
+/* render the dashboard into #main, patching the existing tree when one is already there */
+function renderDashboardInto(main){
+  const html = renderDashboard();
+  const live = main.firstElementChild;
+  if (live && live.getAttribute('data-view-root')==='dashboard'){
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const fresh = tpl.content.firstElementChild;
+    if (fresh){ morphNode(live, fresh); return; }
+  }
+  main.innerHTML = html;
+}
+/* morphing keeps nodes alive across renders, so listeners must attach only once */
+function bindOnce(el, type, fn){
+  if (!el) return;
+  const flag = '_smBound_'+type;
+  if (el[flag]) return;
+  el[flag] = true;
+  el.addEventListener(type, fn);
+}
+
 /* ---------------- master render ---------------- */
 function render(){
   // preserve scroll offset and focused-input caret across full re-renders;
@@ -250,7 +364,7 @@ function renderView(){
   }
   if (route.view==='settings'){ main.innerHTML = renderSettings(); renderModal(); return; }
   if (route.view==='history'){ main.innerHTML = renderHistory(); bindHistory(); renderModal(); return; }
-  main.innerHTML = renderDashboard();
+  renderDashboardInto(main);   // keyed incremental patch: no flicker / scroll reset on the list poll
   bindDashboard();
   renderModal();
 }
@@ -508,20 +622,22 @@ document.addEventListener('keydown', e=>{
   handlePlayerHotkey(e, s);   // resolve the key against the configurable settings.hotkeys map
 });
 
+/* Nodes now survive a render (see morphNode), so every listener goes through
+ * bindOnce and reads the state it needs at click time instead of closing over
+ * the list/element state of the render that first bound it. */
 function bindDashboard(){
-  document.querySelectorAll('[data-fs]').forEach(b=>b.addEventListener('click', ()=>{
+  document.querySelectorAll('[data-fs]').forEach(b=>bindOnce(b, 'click', ()=>{
     filters.status = b.dataset.fs; render();
   }));
-  document.querySelectorAll('[data-site]').forEach(b=>b.addEventListener('click', ()=>{
+  document.querySelectorAll('[data-site]').forEach(b=>bindOnce(b, 'click', ()=>{
     filters.site = b.dataset.site; render();
   }));
-  document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click', ()=>{
+  document.querySelectorAll('[data-view]').forEach(b=>bindOnce(b, 'click', ()=>{
     if (viewMode===b.dataset.view) return;
     viewMode = b.dataset.view; saveViewMode(viewMode); render();
   }));
   // NB9: selection mode toggle — exit clears the current selection for a clean interface
-  const selToggle = document.getElementById('selToggle');
-  if (selToggle) selToggle.addEventListener('click', ()=>{
+  bindOnce(document.getElementById('selToggle'), 'click', ()=>{
     if (selMode || selected.size>0){ selMode=false; selected.clear(); } else { selMode=true; }
     render();
   });
@@ -531,41 +647,41 @@ function bindDashboard(){
     const list = sortList(applyFilters());
     const allSel = list.length>0 && list.every(s=>selected.has(s.id));
     selAll.indeterminate = !allSel && list.some(s=>selected.has(s.id));
-    selAll.addEventListener('change', ()=>{
-      if (selAll.checked) list.forEach(s=>selected.add(s.id));
-      else list.forEach(s=>selected.delete(s.id));
+    bindOnce(selAll, 'change', ()=>{
+      const cur = sortList(applyFilters());   // the visible set at click time, not at bind time
+      if (selAll.checked) cur.forEach(s=>selected.add(s.id));
+      else cur.forEach(s=>selected.delete(s.id));
       render();
     });
   }
-  document.querySelectorAll('[data-sel]').forEach(cb=>cb.addEventListener('change', ()=>{
+  document.querySelectorAll('[data-sel]').forEach(cb=>bindOnce(cb, 'change', ()=>{
     if (cb.checked) selected.add(cb.dataset.sel); else selected.delete(cb.dataset.sel);
     render();
   }));
-  const bPause = document.getElementById('batchPause');
-  if (bPause) bPause.addEventListener('click', batchPause);
-  const bResume = document.getElementById('batchResume');
-  if (bResume) bResume.addEventListener('click', batchResume);
-  const bUnmon = document.getElementById('batchUnmon');
-  if (bUnmon) bUnmon.addEventListener('click', ()=>{ modalState={type:'batchUnmon'}; renderModal(); });
-  const bPurge = document.getElementById('batchPurge');
-  if (bPurge) bPurge.addEventListener('click', ()=>{ modalState={type:'batchPurge'}; renderModal(); });
-  const bClear = document.getElementById('batchClear');
-  if (bClear) bClear.addEventListener('click', ()=>{ selected.clear(); selMode=false; render(); });
+  bindOnce(document.getElementById('batchPause'), 'click', batchPause);
+  bindOnce(document.getElementById('batchResume'), 'click', batchResume);
+  bindOnce(document.getElementById('batchUnmon'), 'click', ()=>{ modalState={type:'batchUnmon'}; renderModal(); });
+  bindOnce(document.getElementById('batchPurge'), 'click', ()=>{ modalState={type:'batchPurge'}; renderModal(); });
+  bindOnce(document.getElementById('batchClear'), 'click', ()=>{ selected.clear(); selMode=false; render(); });
   const q = document.getElementById('qFilter');
-  if (q) q.addEventListener('input', ()=>{
+  bindOnce(q, 'input', ()=>{
     filters.q=q.value; render();   // render() preserves focus/caret generically
   });
-  document.querySelectorAll('th.sortable').forEach(h=>h.addEventListener('click',()=>{
+  document.querySelectorAll('th.sortable').forEach(h=>bindOnce(h, 'click', ()=>{
     const k=h.dataset.sort;
     if (sort.key===k) sort.dir*=-1; else {sort.key=k; sort.dir=1;}
     render();
   }));
-  const cf = document.getElementById('clearFilters');
-  if (cf) cf.addEventListener('click', ()=>{ filters={site:'all',status:'all',q:''}; render(); });
+  bindOnce(document.getElementById('clearFilters'), 'click', ()=>{ filters={site:'all',status:'all',q:''}; render(); });
+  // P1: retry from the in-list load-failure state (same action as the banner's retry link)
+  bindOnce(document.getElementById('stateRetry'), 'click', ()=>{
+    if (apiState.mode!=='api') return;
+    apiState.loading=true; apiState.error=false; render(); refreshStreamers();
+  });
 
   const addUrl = document.getElementById('addUrl');
   if (addUrl){
-    addUrl.addEventListener('input', ()=>{
+    bindOnce(addUrl, 'input', ()=>{
       addDraft.url = addUrl.value;
       const parsed = document.getElementById('addParsed');
       const res = parseStreamerUrl(addUrl.value);
@@ -575,21 +691,18 @@ function bindDashboard(){
         parsed.style.color='var(--online)';
       } else { parsed.innerHTML=''; }
     });
-    addUrl.addEventListener('keydown', e=>{ if(e.key==='Enter') submitAddUrl(); });
+    bindOnce(addUrl, 'keydown', e=>{ if(e.key==='Enter') submitAddUrl(); });
     if (addUrl.value) addUrl.dispatchEvent(new Event('input'));   // recompute the site hint after re-render
   }
-  const as = document.getElementById('addSubmit');
-  if (as) as.addEventListener('click', submitAddUrl);
-  const asm = document.getElementById('addSubmitManual');
-  if (asm) asm.addEventListener('click', submitAddManual);
+  bindOnce(document.getElementById('addSubmit'), 'click', submitAddUrl);
+  bindOnce(document.getElementById('addSubmitManual'), 'click', submitAddManual);
   const au = document.getElementById('addUser');
   if (au){
-    au.addEventListener('input', ()=>{ addDraft.user = au.value; });
-    au.addEventListener('keydown', e=>{ if(e.key==='Enter') submitAddManual(); });
+    bindOnce(au, 'input', ()=>{ addDraft.user = au.value; });
+    bindOnce(au, 'keydown', e=>{ if(e.key==='Enter') submitAddManual(); });
   }
 
-  const stopAll = document.getElementById('stopAll');
-  if (stopAll) stopAll.addEventListener('click', ()=>{
+  bindOnce(document.getElementById('stopAll'), 'click', ()=>{
     // 'stopped' entries are unmonitored by explicit user choice — leave them alone
     if (apiState.mode==='api'){
       apiBatchTargets('pause', streamerTargets(streamers.filter(s=>s.status!=='paused'&&s.status!=='stopped')), t('stopAllToast'));
@@ -598,8 +711,7 @@ function bindDashboard(){
     streamers.forEach(s=>{ if(s.status!=='paused' && s.status!=='stopped') s.status='paused'; });
     toast(t('stopAllToast')); render();
   });
-  const startAll = document.getElementById('startAll');
-  if (startAll) startAll.addEventListener('click', ()=>{
+  bindOnce(document.getElementById('startAll'), 'click', ()=>{
     if (apiState.mode==='api'){
       apiBatchTargets('resume', streamerTargets(streamers.filter(s=>s.status==='paused')), t('startAllToast'));
       return;
@@ -611,6 +723,42 @@ function bindDashboard(){
   });
 }
 
+/* P2: the detail grid renders DETAIL_PAGE_SIZE tiles at a time. #vidMore sits right
+ * below the grid; once it enters the scroll container (or is clicked, when the browser
+ * has no IntersectionObserver) the window grows by one page and the view re-renders —
+ * render() restores the scroll offset, so the new tiles simply appear underneath. */
+let vidMoreObserver = null;   // observer of the previous render's sentinel, dropped on re-bind
+function bindLazyFileList(){
+  if (vidMoreObserver){ vidMoreObserver.disconnect(); vidMoreObserver = null; }
+  const sentinel = document.getElementById('vidMore');
+  if (!sentinel) return;
+  const scroller = document.querySelector('.detail-scroll');
+  const grow = ()=>{
+    if (!sentinel.isConnected) return;   // the view was re-rendered/left meanwhile
+    detailState.visibleFiles = (detailState.visibleFiles || DETAIL_PAGE_SIZE) + DETAIL_PAGE_SIZE;
+    render();
+  };
+  sentinel.addEventListener('click', grow);
+  if (typeof IntersectionObserver==='function'){
+    const io = new IntersectionObserver(entries=>{
+      if (!entries.some(e=>e.isIntersecting)) return;
+      io.disconnect();   // the next render wires a fresh observer on the new sentinel
+      grow();
+    }, {root: scroller || null, rootMargin: '300px'});
+    vidMoreObserver = io;
+    io.observe(sentinel);
+    return;
+  }
+  if (!scroller) return;
+  const onScroll = ()=>{
+    if (!sentinel.isConnected){ scroller.removeEventListener('scroll', onScroll); return; }
+    if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 300) return;
+    scroller.removeEventListener('scroll', onScroll);
+    grow();
+  };
+  scroller.addEventListener('scroll', onScroll);
+}
+
 function bindDetail(s){
   bindPlayer(s);   // control-bar interactions (seek jumps, skip, speed, volume, fullscreen)
   // real thumbnails: if the ffmpeg frame 404s (broken/unparseable file), fall back to the generated placeholder
@@ -620,13 +768,14 @@ function bindDetail(s){
     e.stopPropagation();
     startLive(s);   // L2: play the watch-while-recording stream in the player area
   }));
-  // list filter toggle (all / marked)
+  bindLazyFileList();   // P2: grow the rendered page of the video grid on scroll
+  // list filter toggle (all / marked) — a different set means a fresh first page
   document.querySelectorAll('[data-filefilter]').forEach(b=>b.addEventListener('click', ()=>{
-    detailState.fileFilter = b.dataset.filefilter; clsMenuFileId=null; render();
+    detailState.fileFilter = b.dataset.filefilter; clsMenuFileId=null; resetDetailFileWindow(); render();
   }));
   // classification filter (all / non-adult / adult / unknown / unanalyzed / in recycle)
   document.querySelectorAll('[data-clsfilter]').forEach(b=>b.addEventListener('click', ()=>{
-    detailState.clsFilter = b.dataset.clsfilter; clsMenuFileId=null; render();
+    detailState.clsFilter = b.dataset.clsfilter; clsMenuFileId=null; resetDetailFileWindow(); render();
   }));
   // manual override: open the per-item menu, then apply the chosen label
   document.querySelectorAll('[data-clsmenu]').forEach(b=>b.addEventListener('click', e=>{
