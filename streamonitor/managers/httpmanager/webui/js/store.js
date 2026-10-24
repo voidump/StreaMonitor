@@ -18,7 +18,12 @@ let viewMode = loadViewMode();   // dashboard 'list'|'card' view preference (per
 
 /* ---------------- extended state (v2 scaffolding — data only, no UI yet) ---------------- */
 let history = [];   // {user, site, url, avatarDataUrl, addedDate, removedDate}
-let detailState = {fileFilter:'all', clsFilter:'all'};   // fileFilter 'all'|'marked'; clsFilter 'all'|'non-adult'|'adult'|'unknown'|'unanalyzed'|'recycle'
+/* P2: the detail video list renders in pages of DETAIL_PAGE_SIZE; visibleFiles is the
+ * current window size, grown when the grid's sentinel scrolls into view and reset
+ * whenever the displayed set changes (entering a detail, switching a filter). */
+const DETAIL_PAGE_SIZE = 30;
+let detailState = {fileFilter:'all', clsFilter:'all', visibleFiles:DETAIL_PAGE_SIZE};   // fileFilter 'all'|'marked'; clsFilter 'all'|'non-adult'|'adult'|'unknown'|'unanalyzed'|'recycle'
+function resetDetailFileWindow(){ detailState.visibleFiles = DETAIL_PAGE_SIZE; }
 let clsMenuFileId = null;   // detail: file whose classification menu is open (null = none)
 
 /* ---------------- history ops ---------------- */
@@ -112,6 +117,7 @@ function nav(to){
   selected.clear();
   detailState.fileFilter = 'all';
   detailState.clsFilter = 'all';
+  resetDetailFileWindow();
   clsMenuFileId = null;
   if (to.view==='detail'){
     const s = streamers.find(x=>x.id===to.id);

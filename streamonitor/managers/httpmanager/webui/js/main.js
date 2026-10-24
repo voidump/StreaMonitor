@@ -723,6 +723,42 @@ function bindDashboard(){
   });
 }
 
+/* P2: the detail grid renders DETAIL_PAGE_SIZE tiles at a time. #vidMore sits right
+ * below the grid; once it enters the scroll container (or is clicked, when the browser
+ * has no IntersectionObserver) the window grows by one page and the view re-renders —
+ * render() restores the scroll offset, so the new tiles simply appear underneath. */
+let vidMoreObserver = null;   // observer of the previous render's sentinel, dropped on re-bind
+function bindLazyFileList(){
+  if (vidMoreObserver){ vidMoreObserver.disconnect(); vidMoreObserver = null; }
+  const sentinel = document.getElementById('vidMore');
+  if (!sentinel) return;
+  const scroller = document.querySelector('.detail-scroll');
+  const grow = ()=>{
+    if (!sentinel.isConnected) return;   // the view was re-rendered/left meanwhile
+    detailState.visibleFiles = (detailState.visibleFiles || DETAIL_PAGE_SIZE) + DETAIL_PAGE_SIZE;
+    render();
+  };
+  sentinel.addEventListener('click', grow);
+  if (typeof IntersectionObserver==='function'){
+    const io = new IntersectionObserver(entries=>{
+      if (!entries.some(e=>e.isIntersecting)) return;
+      io.disconnect();   // the next render wires a fresh observer on the new sentinel
+      grow();
+    }, {root: scroller || null, rootMargin: '300px'});
+    vidMoreObserver = io;
+    io.observe(sentinel);
+    return;
+  }
+  if (!scroller) return;
+  const onScroll = ()=>{
+    if (!sentinel.isConnected){ scroller.removeEventListener('scroll', onScroll); return; }
+    if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 300) return;
+    scroller.removeEventListener('scroll', onScroll);
+    grow();
+  };
+  scroller.addEventListener('scroll', onScroll);
+}
+
 function bindDetail(s){
   bindPlayer(s);   // control-bar interactions (seek jumps, skip, speed, volume, fullscreen)
   // real thumbnails: if the ffmpeg frame 404s (broken/unparseable file), fall back to the generated placeholder
@@ -732,13 +768,14 @@ function bindDetail(s){
     e.stopPropagation();
     startLive(s);   // L2: play the watch-while-recording stream in the player area
   }));
-  // list filter toggle (all / marked)
+  bindLazyFileList();   // P2: grow the rendered page of the video grid on scroll
+  // list filter toggle (all / marked) — a different set means a fresh first page
   document.querySelectorAll('[data-filefilter]').forEach(b=>b.addEventListener('click', ()=>{
-    detailState.fileFilter = b.dataset.filefilter; clsMenuFileId=null; render();
+    detailState.fileFilter = b.dataset.filefilter; clsMenuFileId=null; resetDetailFileWindow(); render();
   }));
   // classification filter (all / non-adult / adult / unknown / unanalyzed / in recycle)
   document.querySelectorAll('[data-clsfilter]').forEach(b=>b.addEventListener('click', ()=>{
-    detailState.clsFilter = b.dataset.clsfilter; clsMenuFileId=null; render();
+    detailState.clsFilter = b.dataset.clsfilter; clsMenuFileId=null; resetDetailFileWindow(); render();
   }));
   // manual override: open the per-item menu, then apply the chosen label
   document.querySelectorAll('[data-clsmenu]').forEach(b=>b.addEventListener('click', e=>{

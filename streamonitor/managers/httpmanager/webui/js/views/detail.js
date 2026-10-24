@@ -68,7 +68,14 @@ function renderDetail(s){
     ${row.map((v,h)=>`<div class="hm-cell l${v}" title="${wd[d]} ${h}:00"></div>`).join('')}
   `).join('');
 
-  const thumbs = displayFiles.map(f=>{
+  // P2: only the first visibleFiles tiles are built; the rest arrive page by page as
+  // the sentinel under the grid scrolls into view (thumbnails stay loading="lazy", so
+  // a tile's frame is still only requested once it approaches the viewport).
+  const windowSize = Math.max(detailState.visibleFiles || DETAIL_PAGE_SIZE, DETAIL_PAGE_SIZE);
+  const shownFiles = displayFiles.slice(0, windowSize);
+  const moreCount = displayFiles.length - shownFiles.length;
+
+  const thumbs = shownFiles.map(f=>{
     const name = fileName(s,f);
     const isCur = cur && cur.id===f.id;
     const confirm = confirmDelId===f.id && !f._recording;
@@ -204,7 +211,9 @@ function renderDetail(s){
         ${clsFilterBar?`<div class="cls-filter-row">${clsFilterBar}</div>`:''}
         ${s.files.length
           ? (displayFiles.length
-              ? `<div class="thumb-grid">${thumbs}</div>`
+              ? `<div class="thumb-grid">${thumbs}</div>${moreCount
+                  ? `<div class="empty vid-more" id="vidMore" style="padding:18px"><span class="spin"></span> ${t('moreVideos')(moreCount)}</div>`
+                  : ''}`
               : `<div class="empty" style="padding:30px">${clsPool.length?t('noClsMatch'):t('noMarked')}</div>`)
           : (apiState.mode==='api' && s._detailError
               ? `<div class="empty" style="padding:30px">${IC.alert} ${t('detailLoadError')}
