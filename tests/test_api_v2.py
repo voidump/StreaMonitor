@@ -2957,3 +2957,106 @@ def test_delete_all_videos_keeps_tmp_files(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert os.path.exists(tmp_file), "in-flight temp file must survive delete-all"
     assert not os.path.exists(final_path)
+
+
+# --- /api/v2/events (SSE state push) ---
+
+from streamonitor.managers.httpmanager.api_v2 import events as events_api
+
+
+def _sse_stream(manager, monkeypatch, poll=0.01, heartbeat=10.0):
+    monkeypatch.setattr(events_api, "_EVENTS_POLL_INTERVAL", poll)
+    monkeypatch.setattr(events_api, "_EVENTS_HEARTBEAT_INTERVAL", heartbeat)
+    response = _client(manager).get("/api/v2/events", headers=AUTH)
+    return response, iter(response.response)
+
+
+def _parse_sse(chunk):
+    if isinstance(chunk, bytes):
+        chunk = chunk.decode()
+    name, payload = None, None
+    for line in chunk.strip().splitlines():
+        if line.startswith("event: "):
+            name = line[len("event: "):]
+        elif line.startswith("data: "):
+            payload = json.loads(line[len("data: "):])
+    return name, payload
+
+
+def test_events_requires_auth(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    response = _client(HTTPManager([make_streamer()])).get("/api/v2/events")
+    assert response.status_code == 401
+
+
+def test_events_streams_initial_snapshot_then_changes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    manager = HTTPManager([streamer])
+    response, stream = _sse_stream(manager, monkeypatch)
+    try:
+        assert response.status_code == 200
+        assert response.mimetype == "text/event-stream"
+        assert response.headers["X-Accel-Buffering"] == "no"
+        assert next(stream).decode().startswith("retry:")   # client reconnect hint
+
+        name, payload = _parse_sse(next(stream))
+        assert name == "state"
+        assert payload["removed"] == []
+        entry = payload["changed"][0]
+        assert entry["site"] == "FS" and entry["user"] == "alice"
+        assert entry["recording"] is False and entry["running"] is True
+        assert entry["monitorState"] == "active" and isinstance(entry["status"], str)
+
+        streamer.recording = True   # the state the dashboard must see immediately
+        name, payload = _parse_sse(next(stream))
+        assert name == "state"
+        assert payload["removed"] == []
+        assert payload["changed"] == [dict(entry, recording=True)]
+    finally:
+        response.close()
+
+
+def test_events_reports_removed_streamers(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    streamer = make_streamer()
+    manager = HTTPManager([streamer])
+    response, stream = _sse_stream(manager, monkeypatch)
+    try:
+        next(stream)
+        _parse_sse(next(stream))   # initial snapshot
+        manager.streamers.remove(streamer)
+        name, payload = _parse_sse(next(stream))
+        assert name == "state"
+        assert payload["changed"] == []
+        assert payload["removed"] == [{"site": "FS", "user": "alice"}]
+    finally:
+        response.close()
+
+
+def test_events_sends_heartbeat_while_idle(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manager = HTTPManager([make_streamer()])
+    response, stream = _sse_stream(manager, monkeypatch, heartbeat=0.02)
+    try:
+        next(stream)
+        _parse_sse(next(stream))   # initial snapshot
+        name, payload = _parse_sse(next(stream))
+        assert name == "ping"
+        assert isinstance(payload["ts"], int)
+    finally:
+        response.close()
+
+
+def test_events_concurrency_cap(tmp_path, monkeypatch):
+    # Each stream pins a WSGI worker thread; over the cap the endpoint must
+    # answer 503 so open consoles can't exhaust the waitress pool.
+    monkeypatch.chdir(tmp_path)
+
+    class Exhausted:
+        def acquire(self, blocking=True):
+            return False
+
+    monkeypatch.setattr(events_api, "_event_slots", Exhausted())
+    response = _client(HTTPManager([make_streamer()])).get("/api/v2/events", headers=AUTH)
+    assert response.status_code == 503

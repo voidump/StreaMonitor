@@ -176,6 +176,7 @@ function handleUnauthorized(){
   if (auth.redirecting) return true;
   auth.redirecting = true;
   stopPolling();
+  stopEventStream();
   if (location.pathname !== LOGIN_PATH) location.replace(LOGIN_PATH);
   return true;
 }
@@ -208,7 +209,7 @@ async function doLogout(){
       method:'POST', credentials:'same-origin', headers:{'Accept':'application/json'},
     });
     if (!r.ok && r.status!==401){ auth.loggingOut = false; toast(t('logoutErr'), 'err'); render(); return; }
-    auth.redirecting = true; stopPolling();
+    auth.redirecting = true; stopPolling(); stopEventStream();
     location.replace(LOGIN_PATH);
   } catch(e){
     auth.loggingOut = false; toast(t('logoutErr'), 'err'); render();
@@ -428,8 +429,86 @@ async function loadBaseSettings(){
     auth.enabled = b.authEnabled===true;
   } catch(e){ /* basesettings is optional */ }
 }
-function startPolling(){ stopPolling(); apiState.timer = setInterval(pollRefresh, apiState.pollMs); }
+/* ms overrides the configured cadence (the SSE stream slows the poll down to a
+ * safety net, see startEventStream); no argument = the normal interval. */
+function startPolling(ms){ stopPolling(); apiState.timer = setInterval(pollRefresh, ms || apiState.pollMs); }
 function stopPolling(){ if (apiState.timer){ clearInterval(apiState.timer); apiState.timer=null; } }
+
+/* ================= live state push (SSE, P2) =================
+ * /api/v2/events streams lightweight {site,user,status,running,recording,
+ * monitorState} changes, so a recording start/stop reaches the dashboard in
+ * about a second instead of waiting for the list poll. Events only patch the
+ * matching entry of `streamers` and re-render (the dashboard render is keyed
+ * and incremental); nothing here re-pulls the list on its own.
+ * Polling is never replaced, only slowed: while the stream is up it runs at
+ * SSE_IDLE_POLL_MS (counters like videoCount/totalSize still come from it) and
+ * any stream failure restores the configured cadence. After SSE_MAX_RETRIES
+ * failed reconnects the console stops trying and stays on plain polling. */
+const SSE_PATH = '/events';
+const SSE_IDLE_POLL_MS = 120000;
+const SSE_MAX_RETRIES = 5;
+const sse = {es:null, open:false, fails:0, retryTimer:null, refreshTimer:null};
+
+function startEventStream(){
+  if (apiState.mode!=='api' || sse.es || auth.redirecting) return;
+  if (typeof window==='undefined' || typeof window.EventSource!=='function') return;   // no SSE support: polling only
+  let es;
+  try { es = new EventSource(apiUrl(SSE_PATH), {withCredentials:true}); }
+  catch(e){ return; }
+  sse.es = es;
+  es.onopen = ()=>{ sse.open = true; sse.fails = 0; startPolling(SSE_IDLE_POLL_MS); };
+  es.addEventListener('state', applyStateEvent);
+  es.addEventListener('ping', ()=>{});   // heartbeat: keeps the connection (and its liveness check) honest
+  // Covers a dropped connection, a 503 over the server-side connection cap and
+  // a stream the backend closed. We always close and reconnect ourselves so the
+  // backoff is ours, not EventSource's fixed retry.
+  es.onerror = ()=>{ sseDown(); };
+}
+function stopEventStream(){
+  if (sse.retryTimer){ clearTimeout(sse.retryTimer); sse.retryTimer = null; }
+  if (sse.refreshTimer){ clearTimeout(sse.refreshTimer); sse.refreshTimer = null; }
+  if (sse.es){ try { sse.es.close(); } catch(e){} sse.es = null; }
+  sse.open = false;
+}
+function sseDown(){
+  if (sse.es){ try { sse.es.close(); } catch(e){} sse.es = null; }
+  sse.open = false;
+  sse.fails++;
+  if (auth.redirecting) return;
+  startPolling();   // fall back to the normal cadence while the stream is down
+  if (sse.fails > SSE_MAX_RETRIES) return;   // give up: plain polling from here on
+  const delay = Math.min(60000, 2000 * Math.pow(2, sse.fails-1));
+  if (sse.retryTimer) clearTimeout(sse.retryTimer);
+  sse.retryTimer = setTimeout(()=>{ sse.retryTimer = null; startEventStream(); }, delay);
+}
+/* a recording start/stop also changes file counts / live availability, which the
+ * event payload deliberately doesn't carry — pull them once, debounced */
+function scheduleSseRefresh(){
+  if (sse.refreshTimer) return;
+  sse.refreshTimer = setTimeout(()=>{ sse.refreshTimer = null; pollRefresh(); }, 2000);
+}
+function applyStateEvent(ev){
+  let data = null;
+  try { data = JSON.parse(ev.data); } catch(e){ return; }
+  const changed = (data && data.changed) || [];
+  const removed = (data && data.removed) || [];
+  if (removed.length){ pollRefresh(); return; }   // membership change: authoritative re-pull
+  let dirty = false, recToggled = false, unknown = false;
+  changed.forEach(item=>{
+    const s = streamers.find(x=>x.id===(item.site||'')+'/'+(item.user||''));
+    if (!s){ unknown = true; return; }   // streamer we don't know yet (just added)
+    const ms = String(item.monitorState||'active').toLowerCase();
+    const next = resolveStatus(item);
+    if (s.status===next && s._running===!!item.running && s._monitorState===ms) return;
+    if ((s.status==='recording') !== (next==='recording')) recToggled = true;
+    s.status = next; s._running = !!item.running; s._monitorState = ms;
+    s.monitorState = ms==='stopped' ? 'unmonitored' : 'active';
+    dirty = true;
+  });
+  if (unknown){ pollRefresh(); return; }
+  if (dirty) render();
+  if (recToggled) scheduleSseRefresh();
+}
 
 /* ================= v2 write operations (B2B) =================
  * Wire dashboard/detail/history actions to the real /api/v2 write endpoints.
@@ -1260,6 +1339,7 @@ async function startApiMode(){
   await base;
   render();
   startPolling();
+  startEventStream();   // push state changes; the poll above stays as the fallback
 }
 
 /* ---- loading / error banner (API mode only) ----

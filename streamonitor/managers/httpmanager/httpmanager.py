@@ -363,6 +363,7 @@ class HTTPManager(Manager):
             app.run(host=WEBSERVER_HOST, port=WEBSERVER_PORT)
             return
         self.logger.info(f'Serving web console on {WEBSERVER_HOST}:{WEBSERVER_PORT}')
-        # /live streams are capped separately (api_v2.LIVE_MAX_CONCURRENT), so
-        # long-lived viewers can't exhaust this pool.
+        # Long-lived streams are capped separately (api_v2.LIVE_MAX_CONCURRENT
+        # for /live, api_v2.EVENTS_MAX_CONCURRENT for the /events SSE stream),
+        # so viewers and open consoles can't exhaust this pool.
         serve(app, host=WEBSERVER_HOST, port=WEBSERVER_PORT, threads=32)
