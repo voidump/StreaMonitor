@@ -8,7 +8,9 @@ function siteBadgeIconError(img){
   const span = document.createElement('span');
   span.innerHTML = img.dataset.dot;
   const dot = span.firstElementChild;
-  if (dot) img.replaceWith(dot);
+  // the marker tells the incremental renderer to keep this dot instead of
+  // re-inserting the <img> (and re-requesting the favicon) on every poll
+  if (dot){ dot.setAttribute('data-badge-fallback', '1'); img.replaceWith(dot); }
 }
 function siteBadge(siteKey){
   // API rows keep the backend slug (for example "SC") so action URLs can use
@@ -60,6 +62,7 @@ function sparkline(s){
  * keeps the generated avatar and makes zero network calls. */
 function avatarImgError(img){
   img.onerror = null;
+  if (!img.dataset.imgOrig) img.dataset.imgOrig = img.getAttribute('src') || '';   // remember the failed URL so re-renders don't retry it
   img.src = genAvatar(img.dataset.seed, img.dataset.user);
 }
 function avatarEl(s, lg){
@@ -67,14 +70,15 @@ function avatarEl(s, lg){
   const dims = `width="${px}" height="${px}" style="width:100%;height:100%;object-fit:cover"`;
   if (typeof apiState!=='undefined' && apiState.mode==='api'){
     const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/avatar');
-    return `<span class="avatar ${lg?'lg':''}"><img src="${src}" data-seed="${s.seed}" data-user="${s.user}" ${dims} alt="" onerror="avatarImgError(this)"></span>`;
+    return `<span class="avatar ${lg?'lg':''}"><img src="${src}" data-seed="${s.seed}" data-user="${s.user}" ${dims} loading="lazy" alt="" onerror="avatarImgError(this)"></span>`;
   }
-  return `<span class="avatar ${lg?'lg':''}"><img src="${genAvatar(s.seed,s.user)}" ${dims} alt=""></span>`;
+  return `<span class="avatar ${lg?'lg':''}"><img src="${genAvatar(s.seed,s.user)}" ${dims} loading="lazy" alt=""></span>`;
 }
 /* NB13: card cover with a three-level fallback — most recent recording
  * thumbnail (NB6 /thumb) > model avatar (NB12) > generated placeholder. Mock
  * mode uses the generated placeholder directly (zero network). */
 function cardCoverError(img){
+  if (!img.dataset.imgOrig) img.dataset.imgOrig = img.getAttribute('src') || '';   // the source the template keeps emitting — never retried while it stays the same
   if (img.dataset.coverStage==='thumb' && img.dataset.coverAvatar){
     img.dataset.coverStage='avatar';
     img.src = img.dataset.coverAvatar;
@@ -85,17 +89,18 @@ function cardCoverError(img){
   img.src = genThumb(img.dataset.coverSeed);
 }
 function cardCover(s){
+  const dims = `width="320" height="180"`;   // intrinsic ratio placeholder; CSS stretches it into the 16/9 cover box
   if (typeof apiState!=='undefined' && apiState.mode==='api'){
     const av = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/avatar');
     const recent = (s.files||[]).find(f=>f._filename);
     if (recent){
       const ver = s._lastRecordedTs!=null ? s._lastRecordedTs : (recent.dt&&recent.dt.getTime?Math.floor(recent.dt.getTime()/1000):0);   // busts the immutable thumb cache when a newer recording lands
       const src = apiUrl('/streamers/'+encodeURIComponent(s.site)+'/'+encodeURIComponent(s.user)+'/videos/'+encodeURIComponent(recent._filename)+'/thumb')+'?v='+ver;
-      return `<img class="card-cover-img" src="${src}" alt="" loading="lazy" data-cover-stage="thumb" data-cover-avatar="${av}" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
+      return `<img class="card-cover-img" src="${src}" alt="" ${dims} loading="lazy" data-cover-stage="thumb" data-cover-avatar="${av}" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
     }
-    return `<img class="card-cover-img" src="${av}" alt="" loading="lazy" data-cover-stage="avatar" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
+    return `<img class="card-cover-img" src="${av}" alt="" ${dims} loading="lazy" data-cover-stage="avatar" data-cover-seed="${esc(s.seed)}" onerror="cardCoverError(this)">`;
   }
-  return `<img class="card-cover-img" src="${genThumb(s.seed)}" alt="">`;
+  return `<img class="card-cover-img" src="${genThumb(s.seed)}" alt="" ${dims} loading="lazy">`;
 }
 /* NB13/NB15: most recent recording time for the card meta row. API mode carries
  * lastRecordedTs on the list item (epoch seconds/ms, tsToSecAgo adapts); the mock
@@ -240,7 +245,7 @@ function renderDashboard(){
     <div class="add-toggle"><button data-addmode="url">${t('addUrlToggle')}</button></div>`;
 
   return `
-  <div class="view view-${viewMode}${selArr.length?' has-sel':''}${inSel?' selmode':''}">
+  <div class="view view-${viewMode}${selArr.length?' has-sel':''}${inSel?' selmode':''}" data-view-root="dashboard">
     <div class="topbar">
       <h1>${t('navDashboard')}</h1>
       <div class="counts">
