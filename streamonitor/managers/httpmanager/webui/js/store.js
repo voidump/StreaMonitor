@@ -1262,23 +1262,26 @@ async function startApiMode(){
   startPolling();
 }
 
-/* ---- loading / error banner (API mode only) ---- */
+/* ---- loading / error banner (API mode only) ----
+ * P1: styling lives in console.css (.api-banner) so the banner, the dashboard
+ * skeleton and the in-list state blocks stay visually consistent. The banner is
+ * for background refreshes; when the dashboard already renders the state inline
+ * (first load / load failure with no data) it stays hidden instead of doubling up. */
 function syncApiBanner(){
   let el = document.getElementById('apiBanner');
-  if (apiState.mode!=='api' || (!apiState.loading && !apiState.error)){ if (el) el.remove(); return; }
+  const inline = typeof dashboardOwnsApiState==='function' && dashboardOwnsApiState();
+  if (apiState.mode!=='api' || inline || (!apiState.loading && !apiState.error)){ if (el) el.remove(); return; }
   if (!el){
     el = document.createElement('div'); el.id = 'apiBanner';
-    el.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:400;display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:7px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.35)';
     document.body.appendChild(el);
   }
+  el.className = 'api-banner ' + (apiState.error ? 'err' : 'load');
   if (apiState.error){
-    el.style.cssText += ';background:var(--danger-bg);border:1px solid var(--danger-border-strong);color:var(--danger-text)';
-    el.innerHTML = IC.alert+'<span>'+t('apiError')+'</span> <a href="#" id="apiRetry" style="color:#ffb3b6;text-decoration:underline;cursor:pointer">'+t('apiRetry')+'</a>';
+    el.innerHTML = IC.alert+'<span>'+t('apiError')+'</span> <a href="#" id="apiRetry">'+t('apiRetry')+'</a>';
     const r = el.querySelector('#apiRetry');
     if (r) r.onclick = ev=>{ ev.preventDefault(); apiState.loading=true; apiState.error=false; syncApiBanner(); refreshStreamers(); };
   } else {
-    el.style.cssText += ';background:#12233b;border:1px solid #2f5075;color:#9ec5ef';
-    el.innerHTML = '<span>'+t('apiLoading')+'</span>';
+    el.innerHTML = '<span class="spin"></span><span>'+t('apiLoading')+'</span>';
   }
 }
 

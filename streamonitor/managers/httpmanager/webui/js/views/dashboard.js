@@ -137,6 +137,77 @@ function sortList(list){
     return r*dir;
   });
 }
+/* ---------------- P1: first-paint skeleton + unified list states ----------------
+ * While the first /streamers request is in flight the roster area shows placeholder
+ * rows/cards with the real geometry, so the data drops in without a layout jump.
+ * Placeholders carry data-key, so the keyed incremental morph replaces them with the
+ * real keyed rows instead of patching one into the other.
+ * The same area owns the three terminal states — empty roster, empty filter result,
+ * load failure — in one `.empty` block shape. */
+const SKELETON_N = 8;
+function dashLoading(){
+  return typeof apiState!=='undefined' && apiState.mode==='api' && apiState.loading && streamers.length===0;
+}
+/* true while the dashboard renders the API loading/error state inline; syncApiBanner()
+ * reads this so the floating banner never doubles up with the in-list state */
+function dashboardOwnsApiState(){
+  return typeof apiState!=='undefined' && apiState.mode==='api' && route.view==='dashboard'
+    && streamers.length===0 && (apiState.loading || apiState.error);
+}
+function skeletonRows(n){
+  let out = '';
+  for (let i=0;i<n;i++) out += `<tr class="sk-row" data-key="sk-row-${i}" aria-hidden="true">
+      <td class="sel-cell"></td>
+      <td style="width:130px"><span class="sk-line w70"></span></td>
+      <td><div class="cell-streamer"><span class="sk-box sk-avatar"></span><span class="sk-line w50" style="flex:1"></span></div></td>
+      <td style="width:90px"><span class="sk-line w70"></span></td>
+      <td style="width:80px"><span class="sk-line w80"></span></td>
+      <td class="num" style="width:60px"><span class="sk-line w50"></span></td>
+      <td class="num" style="width:86px"><span class="sk-line w70"></span></td>
+      <td class="num" style="width:96px"><span class="sk-line w60"></span></td>
+      <td class="num" style="width:96px"><span class="sk-line w60"></span></td>
+      <td style="width:116px"><span class="sk-line w50"></span></td>
+    </tr>`;
+  return out;
+}
+function skeletonCards(n){
+  let out = '';
+  for (let i=0;i<n;i++) out += `<div class="card sk-card" data-key="sk-card-${i}" aria-hidden="true">
+      <div class="card-cover"><span class="sk-box sk-cover"></span></div>
+      <div class="card-body">
+        <span class="sk-box sk-avatar"></span>
+        <div class="grow"><span class="sk-line w60"></span><span class="sk-line w80"></span></div>
+      </div>
+    </div>`;
+  return out;
+}
+function rosterSkeleton(){
+  return `<div class="sk-wrap" data-key="roster-skeleton">
+    <div class="sk-note">${t('loadingRoster')}</div>
+    <table class="roster"><tbody>${skeletonRows(SKELETON_N)}</tbody></table>
+    <div class="cards">${skeletonCards(SKELETON_N)}</div>
+  </div>`;
+}
+/* the empty / failed states, same block shape and typography */
+function rosterStateBlock(){
+  if (typeof apiState!=='undefined' && apiState.mode==='api' && apiState.error && streamers.length===0){
+    return `<div class="empty empty-error" data-key="roster-state">
+      <div class="big">${IC.alert}${t('loadFailed')}</div>
+      <div class="sub">${t('loadFailedHint')}</div>
+      <button class="btn" id="stateRetry">${t('apiRetry')}</button>
+    </div>`;
+  }
+  if (!streamers.length){
+    return `<div class="empty" data-key="roster-state">
+      <div class="big">${t('emptyRoster')}</div>
+      <div class="sub">${t('emptyRosterHint')}</div>
+    </div>`;
+  }
+  return `<div class="empty" data-key="roster-state">
+    <div class="big">${t('emptyFiltered')}</div>
+    <button class="btn" id="clearFilters">${t('clearFilters')}</button>
+  </div>`;
+}
 function renderDashboard(){
   const list = sortList(applyFilters());
   const nRec = streamers.filter(s=>s.status==='recording').length;
@@ -161,6 +232,7 @@ function renderDashboard(){
   const selArr = streamers.filter(s=>selected.has(s.id));
   const selSize = fmtSize(selArr.reduce((a,s)=>a+sizeOf(s),0));
   const inSel = selMode || selArr.length>0;   // NB9: selection mode active
+  const loading = dashLoading();   // first API list request in flight and nothing to show yet
 
   const th = (key,label,cls='')=>{
     const arr = sort.key===key ? `<span class="arrow">${sort.dir>0?'▲':'▼'}</span>`:'';
@@ -245,7 +317,7 @@ function renderDashboard(){
     <div class="add-toggle"><button data-addmode="url">${t('addUrlToggle')}</button></div>`;
 
   return `
-  <div class="view view-${viewMode}${selArr.length?' has-sel':''}${inSel?' selmode':''}" data-view-root="dashboard">
+  <div class="view view-${viewMode}${selArr.length?' has-sel':''}${inSel?' selmode':''}${loading?' loading':''}" data-view-root="dashboard">
     <div class="topbar">
       <h1>${t('navDashboard')}</h1>
       <div class="counts">
@@ -282,7 +354,8 @@ function renderDashboard(){
       <div class="search-box">${IC.search}<input id="qFilter" placeholder="${t('searchPh')}" value="${esc(filters.q)}"></div>
     </div>
     <div class="list-scroll">
-      ${list.length? `
+      ${loading? rosterSkeleton()
+      : list.length? `
       <table class="roster">
         <thead><tr>
           <th class="sel-cell"></th>
@@ -299,7 +372,7 @@ function renderDashboard(){
         <tbody>${rows}</tbody>
       </table>
       <div class="cards">${cards}</div>`
-      : `<div class="empty"><div class="big">${t('emptyFiltered')}</div><button class="btn" id="clearFilters">${t('clearFilters')}</button></div>`}
+      : rosterStateBlock()}
     </div>
     ${selArr.length? `
     <div class="batchbar">

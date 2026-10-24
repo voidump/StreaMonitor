@@ -673,6 +673,11 @@ function bindDashboard(){
     render();
   }));
   bindOnce(document.getElementById('clearFilters'), 'click', ()=>{ filters={site:'all',status:'all',q:''}; render(); });
+  // P1: retry from the in-list load-failure state (same action as the banner's retry link)
+  bindOnce(document.getElementById('stateRetry'), 'click', ()=>{
+    if (apiState.mode!=='api') return;
+    apiState.loading=true; apiState.error=false; render(); refreshStreamers();
+  });
 
   const addUrl = document.getElementById('addUrl');
   if (addUrl){
